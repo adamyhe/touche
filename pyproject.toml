@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ep-touche"
+version = "0.1.0"
+description = "Tools for preprocessing and analyzing high-resolution chromatin contact data."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Adam He" }]
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "statsmodels",
+  "matplotlib",
+  "seaborn",
+]
+
+[project.optional-dependencies]
+fast = ["numba"]
+io = ["polars", "pyarrow"]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "mypy"]
+
+[project.scripts]
+touche = "touche.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/adamyhe/touche"
+Repository = "https://github.com/adamyhe/touche"
+Issues = "https://github.com/adamyhe/touche/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
