@@ -102,6 +102,16 @@ uv run python notes/benchmarks/benchmark_reference_real_data.py \
 Use `--keep-going` to continue after a failed step, and `--progress` to pass
 `--progress` into the profiled `touche` commands.
 
+Regenerate the human-readable report from an existing JSONL result file without
+rerunning any benchmark steps:
+
+```bash
+uv run python notes/benchmarks/benchmark_reference_real_data.py --plot-only
+```
+
+Use `--report-dir path/to/report` to place the report somewhere other than the
+default work directory, or `--no-report` to skip report generation.
+
 ## Outputs
 
 Default work directory:
@@ -118,6 +128,7 @@ The runner writes:
 - `benchmark-results.jsonl`: one result object per profiled step.
 - `benchmark-manifest.json`: download records, checksums, command settings, and
   all step results.
+- `report/`: human-readable summaries and plots.
 
 Each result records:
 
@@ -127,6 +138,18 @@ Each result records:
 - sampled peak RSS in MiB
 - expected output sizes
 - parsed CLI JSON when stdout contains JSON
+
+The report directory contains:
+
+- `summary.md`: a Markdown table of wall time, sampled peak RSS, output size,
+  return status, and rows where available.
+- `summary.csv`: the same summary in a spreadsheet-friendly format.
+- `command-timings.csv`: nested timings emitted by CLI `--profile` when present.
+- `index.html`: a simple browser-readable report page.
+- `wall-time.svg`: per-step wall-time bar chart.
+- `peak-rss.svg`: per-step peak-memory bar chart.
+- `output-size.svg`: per-step output-size bar chart.
+- `command-timings.svg`: nested CLI timing chart when command timings exist.
 
 ## Notes
 

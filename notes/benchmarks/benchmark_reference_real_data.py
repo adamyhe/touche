@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -75,6 +76,9 @@ def main() -> int:
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--plot-only", action="store_true")
+    parser.add_argument("--no-report", action="store_true")
+    parser.add_argument("--report-dir", type=Path)
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--progress", action="store_true", help="Pass --progress to touche commands")
     parser.add_argument(
@@ -90,8 +94,15 @@ def main() -> int:
     logs_dir = work_dir / "logs"
     results_jsonl = work_dir / "benchmark-results.jsonl"
     manifest_json = work_dir / "benchmark-manifest.json"
+    report_dir = args.report_dir or work_dir / "report"
     for path in [data_dir, output_dir, logs_dir]:
         path.mkdir(parents=True, exist_ok=True)
+
+    if args.plot_only:
+        result_dicts = read_results_jsonl(results_jsonl)
+        if not args.no_report:
+            write_profile_report(result_dicts, report_dir=report_dir)
+        return 0
 
     downloads = reference_downloads(data_dir)
     steps = reference_steps(
@@ -147,6 +158,11 @@ def main() -> int:
                     results=results,
                     results_jsonl=results_jsonl,
                 )
+                if not args.no_report:
+                    write_profile_report(
+                        [result_to_record(item) for item in results],
+                        report_dir=report_dir,
+                    )
                 return result.returncode
 
     write_manifest(
@@ -156,6 +172,8 @@ def main() -> int:
         results=results,
         results_jsonl=results_jsonl,
     )
+    if not args.no_report:
+        write_profile_report([result_to_record(item) for item in results], report_dir=report_dir)
     return 0
 
 
@@ -684,6 +702,268 @@ def write_manifest(
         + "\n",
         encoding="utf-8",
     )
+
+
+def read_results_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise SystemExit(f"Benchmark results not found: {path}")
+    records: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                records.append(json.loads(stripped))
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"Malformed JSONL record in {path} line {line_number}") from exc
+    return records
+
+
+def result_to_record(result: BenchmarkResult) -> dict[str, Any]:
+    return asdict(result)
+
+
+def write_profile_report(records: list[dict[str, Any]], *, report_dir: Path) -> None:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    mpl_config_dir = report_dir / ".matplotlib-cache"
+    mpl_config_dir.mkdir(parents=True, exist_ok=True)
+    xdg_cache_dir = report_dir / ".cache"
+    xdg_cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
+    os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache_dir))
+    summary_rows = [summary_row(record) for record in records]
+    timing_rows = profile_timing_rows(records)
+
+    write_csv(report_dir / "summary.csv", summary_rows)
+    if timing_rows:
+        write_csv(report_dir / "command-timings.csv", timing_rows)
+    write_markdown_summary(report_dir / "summary.md", summary_rows, timing_rows)
+    write_html_index(report_dir / "index.html", timing_rows=bool(timing_rows))
+
+    plot_metric(
+        summary_rows,
+        metric="elapsed_seconds",
+        title="Wall Time by Benchmark Step",
+        xlabel="seconds",
+        out=report_dir / "wall-time.svg",
+    )
+    plot_metric(
+        [row for row in summary_rows if row["peak_rss_mb"] != ""],
+        metric="peak_rss_mb",
+        title="Peak RSS by Benchmark Step",
+        xlabel="MiB",
+        out=report_dir / "peak-rss.svg",
+    )
+    plot_metric(
+        [row for row in summary_rows if row["output_mb"] != ""],
+        metric="output_mb",
+        title="Output Size by Benchmark Step",
+        xlabel="MiB",
+        out=report_dir / "output-size.svg",
+    )
+    if timing_rows:
+        plot_profile_timings(timing_rows, out=report_dir / "command-timings.svg")
+
+
+def summary_row(record: dict[str, Any]) -> dict[str, Any]:
+    output_bytes = sum(
+        size for size in (record.get("outputs") or {}).values() if isinstance(size, int)
+    )
+    command_json = record.get("command_json") if isinstance(record.get("command_json"), dict) else {}
+    rows = command_json.get("rows")
+    return {
+        "name": record.get("name", ""),
+        "group": record.get("group", ""),
+        "returncode": record.get("returncode", ""),
+        "elapsed_seconds": record.get("elapsed_seconds", ""),
+        "peak_rss_mb": record.get("peak_rss_mb") or "",
+        "output_mb": round(output_bytes / (1024 * 1024), 3) if output_bytes else "",
+        "rows": rows if rows is not None else "",
+        "stdout_log": record.get("stdout_log", ""),
+        "stderr_log": record.get("stderr_log", ""),
+    }
+
+
+def profile_timing_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        command_json = record.get("command_json")
+        if not isinstance(command_json, dict):
+            continue
+        timings = command_json.get("timings")
+        if not isinstance(timings, list):
+            continue
+        for timing in timings:
+            if not isinstance(timing, dict):
+                continue
+            rows.append(
+                {
+                    "step": record.get("name", ""),
+                    "group": record.get("group", ""),
+                    "timing_step": timing.get("step", ""),
+                    "elapsed_seconds": timing.get("elapsed_seconds", ""),
+                }
+            )
+    return rows
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_markdown_summary(
+    path: Path, summary_rows: list[dict[str, Any]], timing_rows: list[dict[str, Any]]
+) -> None:
+    lines = [
+        "# Reference benchmark profile",
+        "",
+        "## Overview",
+        "",
+        "| Step | Group | Status | Wall time (s) | Peak RSS (MiB) | Output (MiB) | Rows |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in summary_rows:
+        lines.append(
+            "| {name} | {group} | {returncode} | {elapsed_seconds} | {peak_rss_mb} | {output_mb} | {rows} |".format(
+                **row
+            )
+        )
+
+    if timing_rows:
+        lines.extend(
+            [
+                "",
+                "## CLI Profile Timings",
+                "",
+                "| Step | Group | Internal step | Wall time (s) |",
+                "| --- | --- | --- | ---: |",
+            ]
+        )
+        for row in timing_rows:
+            lines.append(
+                "| {step} | {group} | {timing_step} | {elapsed_seconds} |".format(**row)
+            )
+
+    lines.extend(
+        [
+            "",
+            "## Figures",
+            "",
+            "- [Wall time](wall-time.svg)",
+            "- [Peak RSS](peak-rss.svg)",
+            "- [Output size](output-size.svg)",
+        ]
+    )
+    if timing_rows:
+        lines.append("- [CLI profile timings](command-timings.svg)")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_html_index(path: Path, *, timing_rows: bool) -> None:
+    timing_image = (
+        '<h2>CLI Profile Timings</h2><img src="command-timings.svg" alt="CLI profile timings">'
+        if timing_rows
+        else ""
+    )
+    path.write_text(
+        "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="en">',
+                "<head>",
+                '<meta charset="utf-8">',
+                "<title>touche reference benchmark profile</title>",
+                "<style>",
+                "body{font-family:system-ui,sans-serif;margin:2rem;max-width:1200px}",
+                "img{display:block;max-width:100%;margin:1rem 0 2rem}",
+                "a{color:#075985}",
+                "</style>",
+                "</head>",
+                "<body>",
+                "<h1>touche reference benchmark profile</h1>",
+                '<p><a href="summary.md">Markdown summary</a> | <a href="summary.csv">CSV summary</a></p>',
+                '<h2>Wall Time</h2><img src="wall-time.svg" alt="Wall time by benchmark step">',
+                '<h2>Peak RSS</h2><img src="peak-rss.svg" alt="Peak RSS by benchmark step">',
+                '<h2>Output Size</h2><img src="output-size.svg" alt="Output size by benchmark step">',
+                timing_image,
+                "</body>",
+                "</html>",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def plot_metric(
+    rows: list[dict[str, Any]],
+    *,
+    metric: str,
+    title: str,
+    xlabel: str,
+    out: Path,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        return
+    labels = [str(row["name"]) for row in rows]
+    values = [float(row[metric]) for row in rows]
+    colors = [group_color(str(row["group"])) for row in rows]
+    height = max(4.0, 0.36 * len(rows) + 1.2)
+    fig, ax = plt.subplots(figsize=(11, height))
+    positions = range(len(rows))
+    ax.barh(list(positions), values, color=colors)
+    ax.set_yticks(list(positions), labels)
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel)
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def plot_profile_timings(rows: list[dict[str, Any]], *, out: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    labels = [f"{row['step']}: {row['timing_step']}" for row in rows]
+    values = [float(row["elapsed_seconds"]) for row in rows]
+    colors = [group_color(str(row["group"])) for row in rows]
+    height = max(4.0, 0.32 * len(rows) + 1.2)
+    fig, ax = plt.subplots(figsize=(12, height))
+    positions = range(len(rows))
+    ax.barh(list(positions), values, color=colors)
+    ax.set_yticks(list(positions), labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("seconds")
+    ax.set_title("Nested CLI --profile Timings")
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def group_color(group: str) -> str:
+    return {
+        "preprocess": "#3b82f6",
+        "local-decay": "#ef4444",
+        "apa": "#22c55e",
+        "background": "#a855f7",
+    }.get(group, "#64748b")
 
 
 if __name__ == "__main__":
