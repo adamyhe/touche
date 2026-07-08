@@ -1,9 +1,8 @@
 # Reproducing reference plots
 
-This guide maps the figure-producing workflows in the E-P_contacts reference
-checkout to `touche` commands. It assumes you are working from the root of this
-repository and that the reference checkout is available at
-`_reference/E-P_contacts`.
+This guide maps the figure-producing workflows in
+[Danko-Lab/E-P_contacts](https://github.com/Danko-Lab/E-P_contacts) to
+`touche` commands.
 
 The commands below are documentation examples. They are intended to reproduce
 the same analysis shape and output files as the reference workflows after the
@@ -14,10 +13,20 @@ large Micro-C pairs files have been downloaded or generated.
 The reference workflows use two categories of inputs:
 
 - processed Micro-C pairs files, either downloaded from the Danko lab data
-  location described by the reference README or generated from FASTQ files with
-  `distiller-nf`
-- small anchor and annotation files stored in
-  `_reference/E-P_contacts/Input_files/`
+  location described by the
+  [E-P_contacts README](https://github.com/Danko-Lab/E-P_contacts#readme) or
+  generated from FASTQ files with
+  [distiller-nf](https://github.com/open2c/distiller-nf)
+- small anchor and annotation files stored in the upstream
+  [`Input_files/`](https://github.com/Danko-Lab/E-P_contacts/tree/main/Input_files)
+  directory
+
+For the examples below, set a shell variable pointing to the upstream
+`Input_files` directory:
+
+```bash
+EP_CONTACTS_INPUTS=/path/to/Input_files
+```
 
 For `touche`, first convert or filter each downloaded/generated pairs file into
 the canonical analysis-ready format:
@@ -55,11 +64,11 @@ With `touche`, the one-command pipeline is:
 
 ```bash
 uv run touche local-decay run \
-  --baits _reference/E-P_contacts/Input_files/Gasperini_dREG_based_TRE_baits_hg38.txt \
-  --preys _reference/E-P_contacts/Input_files/Gasperini_dREG_based_promoter_preys_hg38.txt \
+  --baits "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_TRE_baits_hg38.txt" \
+  --preys "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_promoter_preys_hg38.txt" \
   --pairs GSE206131_K562_cis_mapq30_pairs.txt.gz \
-  --functional _reference/E-P_contacts/Input_files/Gasperini_dREG_based_functional.csv \
-  --nonfunctional _reference/E-P_contacts/Input_files/Gasperini_dREG_based_nonfunctional.csv \
+  --functional "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_functional.csv" \
+  --nonfunctional "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_nonfunctional.csv" \
   --dist 1000000 \
   --cap 2000 \
   --plot-min-contacts 1 \
@@ -78,8 +87,8 @@ Equivalent lower-level commands are available when debugging:
 
 ```bash
 uv run touche local-decay call \
-  --baits _reference/E-P_contacts/Input_files/Gasperini_dREG_based_TRE_baits_hg38.txt \
-  --preys _reference/E-P_contacts/Input_files/Gasperini_dREG_based_promoter_preys_hg38.txt \
+  --baits "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_TRE_baits_hg38.txt" \
+  --preys "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_promoter_preys_hg38.txt" \
   --pairs GSE206131_K562_cis_mapq30_pairs.txt.gz \
   --dist 1000000 \
   --cap 2000 \
@@ -87,8 +96,8 @@ uv run touche local-decay call \
 
 uv run touche local-decay assign-pair-types \
   --contacts results/reference-plots/local-decay/ContactCaller_microC_output.tsv \
-  --functional _reference/E-P_contacts/Input_files/Gasperini_dREG_based_functional.csv \
-  --nonfunctional _reference/E-P_contacts/Input_files/Gasperini_dREG_based_nonfunctional.csv \
+  --functional "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_functional.csv" \
+  --nonfunctional "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_nonfunctional.csv" \
   --out results/reference-plots/local-decay/ContactCaller_microC_output_W_functional_nonfunctional_and_other_pair_assignments.tsv
 
 uv run touche local-decay plot \
@@ -123,8 +132,8 @@ Run the FLV comparison:
 uv run touche apa run \
   --control DMSO=mESCs_DMSO_30_intra.mm10.nodups.pairs.gz \
   --treatment FLV=mESCs_FLV_30_intra.mm10.nodups.pairs.gz \
-  --baits _reference/E-P_contacts/Input_files/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
-  --preys _reference/E-P_contacts/Input_files/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
+  --baits "$EP_CONTACTS_INPUTS/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
+  --preys "$EP_CONTACTS_INPUTS/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
   --min-distance 25000 \
   --max-distance 150000 \
   --window 10000 \
@@ -140,8 +149,8 @@ Run the TRP comparison:
 uv run touche apa run \
   --control DMSO=mESCs_DMSO_30_intra.mm10.nodups.pairs.gz \
   --treatment TRP=mESCs_TRP_30_intra.mm10.nodups.pairs.gz \
-  --baits _reference/E-P_contacts/Input_files/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
-  --preys _reference/E-P_contacts/Input_files/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
+  --baits "$EP_CONTACTS_INPUTS/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
+  --preys "$EP_CONTACTS_INPUTS/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
   --min-distance 25000 \
   --max-distance 150000 \
   --window 10000 \
@@ -171,8 +180,8 @@ treatment comparisons:
 ```bash
 uv run touche apa aggregate \
   --pairs mESCs_DMSO_30_intra.mm10.nodups.pairs.gz \
-  --baits _reference/E-P_contacts/Input_files/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
-  --preys _reference/E-P_contacts/Input_files/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
+  --baits "$EP_CONTACTS_INPUTS/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
+  --preys "$EP_CONTACTS_INPUTS/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
   --min-distance 25000 \
   --max-distance 150000 \
   --window 10000 \
@@ -181,8 +190,8 @@ uv run touche apa aggregate \
 
 uv run touche apa aggregate \
   --pairs mESCs_FLV_30_intra.mm10.nodups.pairs.gz \
-  --baits _reference/E-P_contacts/Input_files/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
-  --preys _reference/E-P_contacts/Input_files/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
+  --baits "$EP_CONTACTS_INPUTS/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
+  --preys "$EP_CONTACTS_INPUTS/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
   --min-distance 25000 \
   --max-distance 150000 \
   --window 10000 \
@@ -237,8 +246,8 @@ uv run touche background run \
   --control DMSO=mESCs_DMSO_30_intra.mm10.nodups.pairs.gz \
   --treatments FLV=mESCs_FLV_30_intra.mm10.nodups.pairs.gz TRP=mESCs_TRP_30_intra.mm10.nodups.pairs.gz \
   --depths DMSO=53226768 FLV=362862200 TRP=410040533 \
-  --baits _reference/E-P_contacts/Input_files/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
-  --preys _reference/E-P_contacts/Input_files/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
+  --baits "$EP_CONTACTS_INPUTS/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
+  --preys "$EP_CONTACTS_INPUTS/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
   --min-distance 25000 \
   --max-distance 150000 \
   --window 2500 \
@@ -268,8 +277,8 @@ Equivalent lower-level commands:
 ```bash
 uv run touche background count \
   --pairs mESCs_DMSO_30_intra.mm10.nodups.pairs.gz \
-  --baits _reference/E-P_contacts/Input_files/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
-  --preys _reference/E-P_contacts/Input_files/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed \
+  --baits "$EP_CONTACTS_INPUTS/dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
+  --preys "$EP_CONTACTS_INPUTS/dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed" \
   --min-distance 25000 \
   --max-distance 150000 \
   --window 2500 \

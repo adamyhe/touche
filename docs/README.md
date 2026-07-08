@@ -19,6 +19,7 @@ examples.
   converts, QC-summarizes, and caches pairs.
 - [Reproducing reference plots](reproducing-reference-plots.md): end-to-end
   commands for reproducing the local-decay, APA, and EP/background plots from
-  the E-P_contacts reference checkout.
+  the upstream [Danko-Lab/E-P_contacts](https://github.com/Danko-Lab/E-P_contacts)
+  workflows.
 - [Testing and publishing](testing-and-publishing.md): CI, local checks, PyPI
   trusted publishing, and release checklist for the `ep-touche` distribution.

@@ -1,13 +1,15 @@
 # Micro-C preprocessing
 
 `touche` does not run raw FASTQ alignment or cooler generation. Use an external
-workflow such as `distiller-nf` for raw Micro-C processing, then use
-`touche preprocess` to convert, filter, QC, and cache the resulting pairs files.
+workflow such as [distiller-nf](https://github.com/open2c/distiller-nf) for raw
+Micro-C processing, then use `touche preprocess` to convert, filter, QC, and
+cache the resulting pairs files.
 
 ## External distiller-nf step
 
-The reference E-P_contacts checkout stores example distiller-nf configuration
-files in `_reference/E-P_contacts/Micro-C_basic_processing/`.
+[Danko-Lab/E-P_contacts](https://github.com/Danko-Lab/E-P_contacts) stores
+example distiller-nf configuration files under
+[`Micro-C_basic_processing/`](https://github.com/Danko-Lab/E-P_contacts/tree/main/Micro-C_basic_processing).
 
 Those YAML files were used to map raw Micro-C data and generate `.cool`/`.mcool`
 files. For downstream `touche` analyses, the important output is a pairs file

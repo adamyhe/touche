@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -316,7 +316,7 @@ def _base_manifest(
         "schema_version": 1,
         "touche_version": __version__,
         "command": command,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": round(perf_counter() - started, 6),
         "inputs": inputs,
         "parameters": parameters,

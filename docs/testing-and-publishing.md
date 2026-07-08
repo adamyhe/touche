@@ -16,7 +16,7 @@ It runs on:
 The CI matrix runs on Python 3.10, 3.11, and 3.12. Each job:
 
 1. installs `uv`
-2. syncs development dependencies with `uv sync --dev`
+2. syncs development dependencies with `uv sync --dev --python <matrix-version>`
 3. runs `uv run ruff check src tests`
 4. runs `uv run pytest`
 5. builds the package with `uv build`
@@ -39,8 +39,9 @@ It runs on:
 - published GitHub releases
 - manual `workflow_dispatch`
 
-The workflow builds source and wheel distributions with `uv build`, validates
-them with `twine check`, and publishes to PyPI with trusted publishing.
+The package uses Hatchling as its build backend. The workflow builds source and
+wheel distributions with `uv build`, validates them with `twine check`, and
+publishes to PyPI with trusted publishing.
 
 ## PyPI trusted publishing setup
 
