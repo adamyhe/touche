@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -87,7 +88,14 @@ def main() -> int:
         help="Return a non-zero exit code when a successful step misses expected outputs.",
     )
     parser.add_argument("--keep-going", action="store_true")
-    parser.add_argument("--progress", action="store_true", help="Pass --progress to touche commands")
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help=(
+            "Pass --progress to profiled touche commands and stream their stderr "
+            "progress bars live while still writing log files."
+        ),
+    )
     parser.add_argument(
         "--steps",
         nargs="+",
@@ -149,12 +157,26 @@ def main() -> int:
 
     results: list[BenchmarkResult] = []
     with results_jsonl.open("w", encoding="utf-8") as handle:
-        for step in steps:
+        for index, step in enumerate(steps, start=1):
+            if args.progress:
+                print(
+                    f"[{index}/{len(steps)}] running {step.name}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             result = run_profiled_step(
                 step,
                 logs_dir=logs_dir,
                 poll_interval=args.poll_interval,
+                live_stderr=args.progress,
             )
+            if args.progress:
+                print(
+                    f"[{index}/{len(steps)}] finished {step.name} "
+                    f"returncode={result.returncode}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             results.append(result)
             handle.write(json.dumps(asdict(result), sort_keys=True) + "\n")
             handle.flush()
@@ -590,6 +612,7 @@ def run_profiled_step(
     *,
     logs_dir: Path,
     poll_interval: float,
+    live_stderr: bool = False,
 ) -> BenchmarkResult:
     logs_dir.mkdir(parents=True, exist_ok=True)
     stdout_log = logs_dir / f"{step.name}.stdout"
@@ -604,14 +627,23 @@ def run_profiled_step(
             process = subprocess.Popen(
                 step.command,
                 stdout=stdout_handle,
-                stderr=stderr_handle,
+                stderr=subprocess.PIPE,
                 text=True,
+                bufsize=1,
             )
+            stderr_thread = threading.Thread(
+                target=tee_stream,
+                args=(process.stderr, stderr_handle),
+                kwargs={"live": live_stderr},
+                daemon=True,
+            )
+            stderr_thread.start()
             while process.poll() is None:
                 rss_kb = process_tree_rss_kb(process.pid)
                 if rss_kb is not None:
                     peak_rss_kb = max(peak_rss_kb or 0, rss_kb)
                 time.sleep(poll_interval)
+            stderr_thread.join()
             final_rss_kb = process_tree_rss_kb(process.pid)
             if final_rss_kb is not None:
                 peak_rss_kb = max(peak_rss_kb or 0, final_rss_kb)
@@ -631,6 +663,20 @@ def run_profiled_step(
         outputs={str(output): path_size(output) for output in step.outputs},
         command_json=read_stdout_json(stdout_log),
     )
+
+
+def tee_stream(stream, log_handle, *, live: bool) -> None:
+    if stream is None:
+        return
+    while True:
+        chunk = stream.read(1)
+        if chunk == "":
+            break
+        log_handle.write(chunk)
+        log_handle.flush()
+        if live:
+            sys.stderr.write(chunk)
+            sys.stderr.flush()
 
 
 def return_signal_name(returncode: int) -> str | None:
@@ -663,7 +709,7 @@ def child_pids(pid: int) -> list[int]:
             capture_output=True,
             text=True,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         return []
     children = [int(value) for value in completed.stdout.split() if value.isdigit()]
     descendants: list[int] = []
@@ -680,7 +726,7 @@ def process_rss_kb(pid: int) -> int | None:
             capture_output=True,
             text=True,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         return None
     value = completed.stdout.strip()
     if not value:

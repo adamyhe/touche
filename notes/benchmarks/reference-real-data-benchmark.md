@@ -71,6 +71,7 @@ Run the full benchmark:
 ```bash
 uv run python notes/benchmarks/benchmark_reference_real_data.py \
   --skip-download \
+  --progress \
   --fail-on-missing-output
 ```
 
@@ -81,6 +82,7 @@ uv run --extra fast python notes/benchmarks/benchmark_reference_real_data.py \
   --skip-download \
   --backend numba \
   --lowess-backend numba \
+  --progress \
   --fail-on-missing-output
 ```
 
@@ -145,9 +147,10 @@ uv run python notes/benchmarks/benchmark_reference_real_data.py \
   --fail-on-missing-output
 ```
 
-Use `--keep-going` to continue after failed steps, `--progress` to pass
-`--progress` to profiled `touche` commands, `--report-dir` to change report
-location, and `--no-report` to skip report generation.
+Use `--keep-going` to continue after failed steps. Use `--progress` to pass
+`--progress` to profiled `touche` commands and stream their stderr progress bars
+live in the terminal while still saving per-step stderr logs. Use `--report-dir`
+to change report location, and `--no-report` to skip report generation.
 
 Peak RSS is sampled with `ps` while each subprocess runs. The default poll
 interval is `0.25` seconds.
