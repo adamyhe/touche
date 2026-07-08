@@ -30,9 +30,13 @@ The default run profiles these full-data steps:
 construction is measured only in `preprocess-cache-k562` and is not hidden
 inside the timed local-decay call.
 
-Each `preprocess-cache-*` step also writes the sample QC JSON with
-`build-cache --qc-out`, so preprocessing scans each compressed pairs file once
-instead of running separate QC and cache passes.
+Each `preprocess-cache-*` step also writes the default sample QC JSON beside the
+cache manifest, so preprocessing scans each compressed pairs file once instead
+of running separate QC and cache passes.
+
+The K562 cache is built with `--no-metadata` because the benchmark consumes it
+only through `local-decay-call`, which loads position arrays and ignores strand
+and MAPQ cache arrays.
 
 ## Inputs
 

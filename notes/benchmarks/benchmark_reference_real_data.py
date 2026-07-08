@@ -287,8 +287,8 @@ def reference_steps(
         ("flv", flv_pairs),
         ("trp", trp_pairs),
     ]:
-        qc_out = output_dir / "preprocess" / f"{label}.qc.json"
         cache_out = cache_dir / label
+        qc_out = cache_out / f"{label}.qc.json"
         steps.append(
             BenchmarkStep(
                 name=f"preprocess-cache-{label}",
@@ -305,8 +305,7 @@ def reference_steps(
                     cache_out,
                     "--prefix",
                     label,
-                    "--qc-out",
-                    qc_out,
+                    *(("--no-metadata",) if label == "k562" else ()),
                 ),
                 outputs=[cache_out, qc_out],
             )

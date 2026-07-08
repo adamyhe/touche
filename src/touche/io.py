@@ -4,11 +4,23 @@ import gzip
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TextIO
+from typing import NamedTuple, TextIO
 
 from touche.models import ContactPair
 
-PairRecord = tuple[str, int, str, int, str, str, int, int]
+
+class ParsedPairRecord(NamedTuple):
+    chrom_a: str
+    pos_a: int
+    chrom_b: str
+    pos_b: int
+    strand_a: str
+    strand_b: str
+    mapq_a: int
+    mapq_b: int
+
+
+PairRecord = ParsedPairRecord
 
 
 @contextmanager
@@ -82,15 +94,15 @@ def parse_pair_record(fields: list[str], *, source: str = "auto") -> PairRecord:
         raise ValueError(f"Expected 9 canonical or 10+ distiller columns, found {len(fields)}")
 
     try:
-        return (
-            fields[offset],
-            int(fields[offset + 1]),
-            fields[offset + 2],
-            int(fields[offset + 3]),
-            fields[offset + 4],
-            fields[offset + 5],
-            int(fields[offset + 7]),
-            int(fields[offset + 8]),
+        return ParsedPairRecord(
+            chrom_a=fields[offset],
+            pos_a=int(fields[offset + 1]),
+            chrom_b=fields[offset + 2],
+            pos_b=int(fields[offset + 3]),
+            strand_a=fields[offset + 4],
+            strand_b=fields[offset + 5],
+            mapq_a=int(fields[offset + 7]),
+            mapq_b=int(fields[offset + 8]),
         )
     except (IndexError, ValueError) as exc:
         raise ValueError(f"Malformed pair row with {len(fields)} columns") from exc

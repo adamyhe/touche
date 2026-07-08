@@ -120,8 +120,8 @@ The summary includes parsed rows, written rows where relevant, cis/trans counts,
 mapq pass/fail counts, per-chromosome counts, and a coarse cis-distance
 histogram.
 
-For large files that will also be cached, write QC during cache construction
-with `build-cache --qc-out` so the compressed pairs file is scanned once.
+For large files that will also be cached, use `build-cache`; it writes QC during
+cache construction by default so the compressed pairs file is scanned once.
 
 ### Build NPZ caches
 
@@ -132,16 +132,18 @@ uv run touche preprocess build-cache \
   --pairs sample.nodups_30_intra.pairs.gz \
   --source touche \
   --cache-dir .cache/touche/sample \
-  --prefix sample \
-  --qc-out sample.qc.json
+  --prefix sample
 ```
 
 Add `--compressed` to write compressed NPZ shards. The default is uncompressed
 NPZ, which is usually faster to load and avoids turning one cache into a large
 monolithic archive.
 
-The default cache builder emits chromosome-sharded NPZ files from one streaming
-pass over the input. The optional QC file is computed during that same pass.
+The default cache builder emits chromosome-sharded NPZ files and
+`.cache/touche/sample/sample.qc.json` from one streaming pass over the input. Use
+`--qc-out PATH` to choose another QC location, or `--no-qc` to suppress QC
+output. Use `--no-metadata` for faster, smaller position-only caches when the
+downstream command does not need strand or MAPQ arrays.
 
 ## Local Decay
 
@@ -239,7 +241,8 @@ uv run touche preprocess build-cache \
   --pairs sample.nodups_30_intra.pairs.gz \
   --source touche \
   --cache-dir .cache/touche/sample \
-  --prefix sample
+  --prefix sample \
+  --no-metadata
 
 uv run touche local-decay call \
   --baits baits.bed \
