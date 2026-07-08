@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -52,6 +53,7 @@ class BenchmarkResult:
     group: str
     command: list[str]
     returncode: int
+    signal_name: str | None
     elapsed_seconds: float
     peak_rss_mb: float | None
     stdout_log: str
@@ -79,6 +81,11 @@ def main() -> int:
     parser.add_argument("--plot-only", action="store_true")
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--report-dir", type=Path)
+    parser.add_argument(
+        "--fail-on-missing-output",
+        action="store_true",
+        help="Return a non-zero exit code when a successful step misses expected outputs.",
+    )
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--progress", action="store_true", help="Pass --progress to touche commands")
     parser.add_argument(
@@ -138,6 +145,7 @@ def main() -> int:
             results_jsonl=results_jsonl,
         )
         return 0
+    validate_benchmark_cache_requirements(steps, output_dir)
 
     results: list[BenchmarkResult] = []
     with results_jsonl.open("w", encoding="utf-8") as handle:
@@ -150,6 +158,16 @@ def main() -> int:
             results.append(result)
             handle.write(json.dumps(asdict(result), sort_keys=True) + "\n")
             handle.flush()
+            missing_outputs = missing_output_paths(result_to_record(result))
+            missing_output_failure = (
+                args.fail_on_missing_output and result.returncode == 0 and missing_outputs
+            )
+            if missing_output_failure:
+                print(
+                    f"{step.name} completed but missed expected outputs: "
+                    f"{', '.join(missing_outputs)}",
+                    file=sys.stderr,
+                )
             if result.returncode != 0 and not args.keep_going:
                 write_manifest(
                     manifest_json,
@@ -164,6 +182,20 @@ def main() -> int:
                         report_dir=report_dir,
                     )
                 return result.returncode
+            if missing_output_failure and not args.keep_going:
+                write_manifest(
+                    manifest_json,
+                    args=args,
+                    downloads=download_records,
+                    results=results,
+                    results_jsonl=results_jsonl,
+                )
+                if not args.no_report:
+                    write_profile_report(
+                        [result_to_record(item) for item in results],
+                        report_dir=report_dir,
+                    )
+                return 2
 
     write_manifest(
         manifest_json,
@@ -224,6 +256,7 @@ def reference_steps(
     apa_dir = output_dir / "apa"
     background_dir = output_dir / "background"
     cache_dir = output_dir / "caches"
+    k562_cache_dir = cache_dir / "k562"
 
     steps: list[BenchmarkStep] = []
     for label, pairs in [
@@ -292,6 +325,13 @@ def reference_steps(
                     "2000",
                     "--backend",
                     backend,
+                    "--index-strategy",
+                    "cache",
+                    "--cache-dir",
+                    k562_cache_dir,
+                    "--cache-prefix",
+                    "k562",
+                    "--require-cache",
                     "--lowess-backend",
                     lowess_backend,
                     "--lowess-iterations",
@@ -493,6 +533,20 @@ def reference_steps(
     return steps
 
 
+def validate_benchmark_cache_requirements(steps: list[BenchmarkStep], output_dir: Path) -> None:
+    step_names = {step.name for step in steps}
+    if "local-decay-call" not in step_names or "preprocess-cache-k562" in step_names:
+        return
+    manifest_path = output_dir / "caches" / "k562" / "k562.manifest.json"
+    if manifest_path.exists():
+        return
+    raise SystemExit(
+        "local-decay-call benchmarks require the K562 NPZ cache. "
+        "Run with `--steps preprocess-cache-k562 local-decay-call` first, "
+        "or run preprocess-cache-k562 in an earlier benchmark invocation."
+    )
+
+
 def touche_cmd(python: str, *args: object) -> list[str]:
     return [python, "-m", "touche", *[str(arg) for arg in args]]
 
@@ -569,6 +623,7 @@ def run_profiled_step(
         group=step.group,
         command=step.command,
         returncode=int(returncode),
+        signal_name=return_signal_name(returncode),
         elapsed_seconds=round(elapsed, 6),
         peak_rss_mb=round(peak_rss_kb / 1024, 3) if peak_rss_kb is not None else None,
         stdout_log=str(stdout_log),
@@ -576,6 +631,16 @@ def run_profiled_step(
         outputs={str(output): path_size(output) for output in step.outputs},
         command_json=read_stdout_json(stdout_log),
     )
+
+
+def return_signal_name(returncode: int) -> str | None:
+    if returncode >= 0:
+        return None
+    signal_number = -returncode
+    try:
+        return signal.Signals(signal_number).name
+    except ValueError:
+        return f"signal {signal_number}"
 
 
 def process_tree_rss_kb(pid: int) -> int | None:
@@ -771,24 +836,48 @@ def summary_row(record: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(outputs, dict):
         outputs = {}
     output_bytes = sum(size for size in outputs.values() if isinstance(size, int))
-    missing_outputs = [path for path, size in outputs.items() if size is None]
-    zero_byte_outputs = [path for path, size in outputs.items() if size == 0]
+    missing_outputs = missing_output_paths(record)
+    zero_byte_outputs = zero_byte_output_paths(record)
     command_json = record.get("command_json") if isinstance(record.get("command_json"), dict) else {}
     rows = command_json.get("rows")
     return {
         "name": record.get("name", ""),
         "group": record.get("group", ""),
         "returncode": record.get("returncode", ""),
+        "signal_name": record.get("signal_name") or signal_name_from_record(record) or "",
         "elapsed_seconds": record.get("elapsed_seconds", ""),
         "peak_rss_mb": record.get("peak_rss_mb") or "",
         "output_mb": round(output_bytes / (1024 * 1024), 3),
         "output_count": len(outputs),
         "missing_outputs": len(missing_outputs),
+        "missing_output_paths": "; ".join(missing_outputs),
         "zero_byte_outputs": len(zero_byte_outputs),
+        "zero_byte_output_paths": "; ".join(zero_byte_outputs),
         "rows": rows if rows is not None else "",
         "stdout_log": record.get("stdout_log", ""),
         "stderr_log": record.get("stderr_log", ""),
     }
+
+
+def missing_output_paths(record: dict[str, Any]) -> list[str]:
+    outputs = record.get("outputs") or {}
+    if not isinstance(outputs, dict):
+        return []
+    return [path for path, size in outputs.items() if size is None]
+
+
+def zero_byte_output_paths(record: dict[str, Any]) -> list[str]:
+    outputs = record.get("outputs") or {}
+    if not isinstance(outputs, dict):
+        return []
+    return [path for path, size in outputs.items() if size == 0]
+
+
+def signal_name_from_record(record: dict[str, Any]) -> str | None:
+    returncode = record.get("returncode")
+    if not isinstance(returncode, int):
+        return None
+    return return_signal_name(returncode)
 
 
 def profile_timing_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -832,12 +921,12 @@ def write_markdown_summary(
         "",
         "## Overview",
         "",
-        "| Step | Group | Status | Wall time (s) | Peak RSS (MiB) | Output (MiB) | Outputs | Missing | Empty | Rows |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Step | Group | Status | Signal | Wall time (s) | Peak RSS (MiB) | Output (MiB) | Outputs | Missing | Empty | Rows |",
+        "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in summary_rows:
         lines.append(
-            "| {name} | {group} | {returncode} | {elapsed_seconds} | {peak_rss_mb} | {output_mb} | {output_count} | {missing_outputs} | {zero_byte_outputs} | {rows} |".format(
+            "| {name} | {group} | {returncode} | {signal_name} | {elapsed_seconds} | {peak_rss_mb} | {output_mb} | {output_count} | {missing_outputs} | {zero_byte_outputs} | {rows} |".format(
                 **row
             )
         )
@@ -869,6 +958,22 @@ def write_markdown_summary(
     )
     if timing_rows:
         lines.append("- [CLI profile timings](command-timings.svg)")
+    missing_rows = [row for row in summary_rows if row["missing_outputs"]]
+    if missing_rows:
+        lines.extend(["", "## Missing Outputs", ""])
+        for row in missing_rows:
+            lines.append(f"- `{row['name']}`")
+            for output_path in str(row["missing_output_paths"]).split("; "):
+                if output_path:
+                    lines.append(f"  - `{output_path}`")
+    zero_rows = [row for row in summary_rows if row["zero_byte_outputs"]]
+    if zero_rows:
+        lines.extend(["", "## Zero-Byte Outputs", ""])
+        for row in zero_rows:
+            lines.append(f"- `{row['name']}`")
+            for output_path in str(row["zero_byte_output_paths"]).split("; "):
+                if output_path:
+                    lines.append(f"  - `{output_path}`")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

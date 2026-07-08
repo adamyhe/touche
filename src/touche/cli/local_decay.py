@@ -28,6 +28,10 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     call_parser.add_argument("--lowess-delta", default=16.0, type=float)
     call_parser.add_argument("--lowess-iterations", default=3, type=int)
     call_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    call_parser.add_argument("--index-strategy", choices=["cache", "all", "chromosome"], default="cache")
+    call_parser.add_argument("--cache-dir", type=Path)
+    call_parser.add_argument("--cache-prefix", default="contacts")
+    call_parser.add_argument("--require-cache", action="store_true")
     call_parser.add_argument(
         "--lowess-backend",
         choices=["statsmodels", "numba"],
@@ -54,6 +58,10 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--lowess-delta", default=16.0, type=float)
     run_parser.add_argument("--lowess-iterations", default=3, type=int)
     run_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    run_parser.add_argument("--index-strategy", choices=["cache", "all", "chromosome"], default="cache")
+    run_parser.add_argument("--cache-dir", type=Path)
+    run_parser.add_argument("--cache-prefix", default="contacts")
+    run_parser.add_argument("--require-cache", action="store_true")
     run_parser.add_argument(
         "--lowess-backend",
         choices=["statsmodels", "numba"],
@@ -112,6 +120,10 @@ def _call_local_decay(args: argparse.Namespace) -> None:
         backend=args.backend,
         lowess_backend=args.lowess_backend,
         lowess_iterations=args.lowess_iterations,
+        index_strategy=args.index_strategy,
+        cache_dir=args.cache_dir,
+        cache_prefix=args.cache_prefix,
+        require_cache=args.require_cache,
         progress=instrument,
     )
     print_json(
@@ -143,6 +155,10 @@ def _run_local_decay(args: argparse.Namespace) -> None:
         backend=args.backend,
         lowess_backend=args.lowess_backend,
         lowess_iterations=args.lowess_iterations,
+        index_strategy=args.index_strategy,
+        cache_dir=args.cache_dir,
+        cache_prefix=args.cache_prefix,
+        require_cache=args.require_cache,
         plot_min_contacts=args.plot_min_contacts,
         plot_min_distance=args.plot_min_distance,
         reference_style=args.reference_style,

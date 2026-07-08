@@ -487,10 +487,16 @@ def _read_signal(path: str | Path) -> pd.Series:
     return data["contacts"].astype(float)
 
 
-def _shifted_positions(index, *, shift: int) -> tuple[np.ndarray, np.ndarray]:
-    pos_a = np.where(index.strand_a == "+", index.pos_a + shift, index.pos_a - shift)
-    pos_b = np.where(index.strand_b == "+", index.pos_b + shift, index.pos_b - shift)
+def _shifted_positions(index: ContactIndex, *, shift: int) -> tuple[np.ndarray, np.ndarray]:
+    pos_a = np.where(_is_plus_strand(index.strand_a), index.pos_a + shift, index.pos_a - shift)
+    pos_b = np.where(_is_plus_strand(index.strand_b), index.pos_b + shift, index.pos_b - shift)
     return pos_a.astype(np.int64), pos_b.astype(np.int64)
+
+
+def _is_plus_strand(strands: np.ndarray) -> np.ndarray:
+    if np.issubdtype(strands.dtype, np.integer):
+        return strands > 0
+    return strands == "+"
 
 
 def _pixel_labels(window: int, pixels: int) -> list[int]:

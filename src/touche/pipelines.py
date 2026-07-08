@@ -35,6 +35,10 @@ def run_local_decay_pipeline(
     reference_style: bool = True,
     backend: str = "numpy",
     lowess_backend: str = "statsmodels",
+    index_strategy: str = "cache",
+    cache_dir: str | Path | None = None,
+    cache_prefix: str = "contacts",
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
@@ -66,6 +70,10 @@ def run_local_decay_pipeline(
             lowess_delta=lowess_delta,
             backend=backend,
             lowess_backend=lowess_backend,
+            index_strategy=index_strategy,
+            cache_dir=cache_dir,
+            cache_prefix=cache_prefix,
+            require_cache=require_cache,
             lowess_iterations=lowess_iterations,
             progress=instrument,
         )
@@ -106,6 +114,10 @@ def run_local_decay_pipeline(
             "reference_style": reference_style,
             "backend": backend,
             "lowess_backend": lowess_backend,
+            "index_strategy": index_strategy,
+            "cache_dir": str(cache_dir) if cache_dir is not None else None,
+            "cache_prefix": cache_prefix,
+            "require_cache": require_cache,
         },
         outputs={
             "contacts": str(contacts_out),

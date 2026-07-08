@@ -220,6 +220,38 @@ Matplotlib styling instead of the reference-style plot appearance.
 current acceleration only covers observed-count helpers. LOWESS fitting remains
 in Python and usually dominates runtime.
 
+`local-decay call` and `local-decay run` default to `--index-strategy cache`.
+The cache strategy builds or reuses chromosome-sharded NPZ contact indexes, then
+loads one chromosome shard at a time. If `--cache-dir` is omitted, the cache is
+created under `contact_index_cache/` next to the local-decay output table.
+
+For repeated local-decay runs, build the cache explicitly and reuse it:
+
+```bash
+uv run touche preprocess build-cache \
+  --pairs sample.nodups_30_intra.pairs.gz \
+  --source touche \
+  --cache-dir .cache/touche/sample \
+  --prefix sample
+
+uv run touche local-decay call \
+  --baits baits.bed \
+  --preys preys.bed \
+  --pairs sample.nodups_30_intra.pairs.gz \
+  --out results/local-decay/ContactCaller_microC_output.tsv \
+  --index-strategy cache \
+  --cache-dir .cache/touche/sample \
+  --cache-prefix sample
+```
+
+Alternative strategies are available for diagnostics:
+
+- `--index-strategy all`: read the pairs file once and hold every chromosome in
+  memory. This is fastest when enough memory is available.
+- `--index-strategy chromosome`: scan the pairs file once per bait chromosome
+  and keep only that chromosome in memory. This avoids persistent cache files,
+  but can be slow for gzipped pairs.
+
 They also expose `--lowess-backend numba` as an experimental smoother. This is
 faster on small synthetic benchmarks and matches the current chunked
 local-decay smoothing wrappers on regression fixtures, but keep the default

@@ -8,7 +8,12 @@ import pandas as pd
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from touche.backends import validate_backend
-from touche.contacts import build_contact_indexes
+from touche.contacts import (
+    build_contact_indexes,
+    build_npz_cache,
+    load_npz_cache,
+    load_npz_cache_manifest,
+)
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.io import open_text
 from touche.models import ContactIndex
@@ -60,6 +65,10 @@ def call_local_decay(
     backend: str = "numpy",
     lowess_backend: str = "statsmodels",
     lowess_iterations: int = 3,
+    index_strategy: str = "cache",
+    cache_dir: str | Path | None = None,
+    cache_prefix: str = "contacts",
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pd.DataFrame:
@@ -74,29 +83,228 @@ def call_local_decay(
         raise ValueError("dist must be positive")
     if cap < 0:
         raise ValueError("cap must be non-negative")
+    if index_strategy not in {"all", "chromosome", "cache"}:
+        raise ValueError("index_strategy must be one of: all, chromosome, cache")
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
         baits = read_center_anchors(baits_path)
         preys = read_center_anchors(preys_path)
-        indexes = build_contact_indexes(pairs_path, source=source, cis_only=True)
-    calls = compute_local_decay(
-        indexes,
-        baits,
-        preys,
-        dist=dist,
-        cap=cap,
-        min_distance=min_distance,
-        lowess_window=lowess_window,
-        lowess_delta=lowess_delta,
-        backend=backend,
-        lowess_backend=lowess_backend,
-        lowess_iterations=lowess_iterations,
-        progress=instrument,
-    )
+    if index_strategy == "cache":
+        cache_dir = _resolve_cache_dir(cache_dir, out_path)
+        with instrument.step("prepare contact cache"):
+            _ensure_local_decay_cache(
+                pairs_path,
+                cache_dir=cache_dir,
+                cache_prefix=cache_prefix,
+                source=source,
+                require_cache=require_cache,
+            )
+        calls = _call_local_decay_from_cache(
+            baits,
+            preys,
+            cache_dir=cache_dir,
+            cache_prefix=cache_prefix,
+            dist=dist,
+            cap=cap,
+            min_distance=min_distance,
+            lowess_window=lowess_window,
+            lowess_delta=lowess_delta,
+            backend=backend,
+            lowess_backend=lowess_backend,
+            lowess_iterations=lowess_iterations,
+            progress=instrument,
+        )
+    elif index_strategy == "chromosome":
+        calls = _call_local_decay_by_chromosome(
+            baits,
+            preys,
+            pairs_path,
+            dist=dist,
+            cap=cap,
+            min_distance=min_distance,
+            source=source,
+            lowess_window=lowess_window,
+            lowess_delta=lowess_delta,
+            backend=backend,
+            lowess_backend=lowess_backend,
+            lowess_iterations=lowess_iterations,
+            progress=instrument,
+        )
+    else:
+        with instrument.step("build contact indexes"):
+            indexes = build_contact_indexes(
+                pairs_path,
+                source=source,
+                cis_only=True,
+                include_metadata=False,
+            )
+        calls = compute_local_decay(
+            indexes,
+            baits,
+            preys,
+            dist=dist,
+            cap=cap,
+            min_distance=min_distance,
+            lowess_window=lowess_window,
+            lowess_delta=lowess_delta,
+            backend=backend,
+            lowess_backend=lowess_backend,
+            lowess_iterations=lowess_iterations,
+            progress=instrument,
+        )
     with instrument.step("write calls"):
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         calls.to_csv(out_path, sep="\t", header=False, index=False)
     return calls
+
+
+def _resolve_cache_dir(cache_dir: str | Path | None, out_path: str | Path) -> Path:
+    if cache_dir is not None:
+        return Path(cache_dir)
+    return Path(out_path).parent / "contact_index_cache"
+
+
+def _ensure_local_decay_cache(
+    pairs_path: str | Path,
+    *,
+    cache_dir: str | Path,
+    cache_prefix: str,
+    source: str,
+    require_cache: bool = False,
+) -> None:
+    manifest_path = Path(cache_dir) / f"{cache_prefix}.manifest.json"
+    if manifest_path.exists():
+        return
+    if require_cache:
+        raise FileNotFoundError(
+            f"Required local-decay cache manifest is missing: {manifest_path}. "
+            "Run `touche preprocess build-cache` first or disable require_cache."
+        )
+    build_npz_cache(
+        pairs_path,
+        cache_dir,
+        source=source,
+        prefix=cache_prefix,
+        cis_only=True,
+        include_metadata=False,
+        index_strategy="chromosome",
+    )
+
+
+def _call_local_decay_by_chromosome(
+    baits: pd.DataFrame,
+    preys: pd.DataFrame,
+    pairs_path: str | Path,
+    *,
+    dist: int,
+    cap: int,
+    min_distance: int,
+    source: str,
+    lowess_window: int,
+    lowess_delta: float,
+    backend: str,
+    lowess_backend: str,
+    lowess_iterations: int,
+    progress: Instrumentation,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    grouped_baits = list(baits.groupby("chr", sort=False))
+    chrom_iter = progress.iter(
+        grouped_baits,
+        total=len(grouped_baits),
+        desc="local-decay index chromosomes",
+        unit="chrom",
+    )
+    for chrom, chrom_baits in chrom_iter:
+        chrom_preys = preys.loc[preys["chr"] == chrom]
+        if chrom_preys.empty:
+            continue
+        with progress.step(f"build contact index {chrom}"):
+            indexes = build_contact_indexes(
+                pairs_path,
+                source=source,
+                cis_only=True,
+                include_metadata=False,
+                chromosomes={str(chrom)},
+            )
+        if chrom not in indexes:
+            continue
+        frames.append(
+            compute_local_decay(
+                indexes,
+                chrom_baits,
+                chrom_preys,
+                dist=dist,
+                cap=cap,
+                min_distance=min_distance,
+                lowess_window=lowess_window,
+                lowess_delta=lowess_delta,
+                backend=backend,
+                lowess_backend=lowess_backend,
+                lowess_iterations=lowess_iterations,
+                progress=progress,
+            )
+        )
+    if not frames:
+        return pd.DataFrame(columns=LOCAL_DECAY_OUTPUT_COLUMNS)
+    return pd.concat(frames, ignore_index=True)
+
+
+def _call_local_decay_from_cache(
+    baits: pd.DataFrame,
+    preys: pd.DataFrame,
+    *,
+    cache_dir: str | Path | None,
+    cache_prefix: str,
+    dist: int,
+    cap: int,
+    min_distance: int,
+    lowess_window: int,
+    lowess_delta: float,
+    backend: str,
+    lowess_backend: str,
+    lowess_iterations: int,
+    progress: Instrumentation,
+) -> pd.DataFrame:
+    if cache_dir is None:
+        raise ValueError("cache_dir is required when loading local-decay indexes from cache")
+    cache_paths = load_npz_cache_manifest(cache_dir, prefix=cache_prefix)
+    frames: list[pd.DataFrame] = []
+    grouped_baits = list(baits.groupby("chr", sort=False))
+    chrom_iter = progress.iter(
+        grouped_baits,
+        total=len(grouped_baits),
+        desc="local-decay cache chromosomes",
+        unit="chrom",
+    )
+    for chrom, chrom_baits in chrom_iter:
+        chrom_preys = preys.loc[preys["chr"] == chrom]
+        cache_path = cache_paths.get(str(chrom))
+        if chrom_preys.empty or cache_path is None:
+            continue
+        with progress.step(f"load contact cache {chrom}"):
+            index = load_npz_cache(cache_path, include_metadata=False)
+        frames.append(
+            compute_local_decay(
+                {str(chrom): index},
+                chrom_baits,
+                chrom_preys,
+                dist=dist,
+                cap=cap,
+                min_distance=min_distance,
+                lowess_window=lowess_window,
+                lowess_delta=lowess_delta,
+                backend=backend,
+                lowess_backend=lowess_backend,
+                lowess_iterations=lowess_iterations,
+                progress=progress,
+            )
+        )
+    if not frames:
+        return pd.DataFrame(columns=LOCAL_DECAY_OUTPUT_COLUMNS)
+    return pd.concat(frames, ignore_index=True)
 
 
 def compute_local_decay(

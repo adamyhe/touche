@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from touche.backends import has_numba
-from touche.contacts import build_contact_indexes
+from touche.contacts import build_contact_indexes, build_npz_cache
 from touche.local_decay import (
     assign_pair_types,
     call_local_decay,
@@ -59,8 +59,135 @@ class LocalDecayTests(unittest.TestCase):
             self.assertEqual(calls["observed"].tolist(), [1, 2])
             self.assertTrue((calls["expected"] >= 0).all())
             self.assertTrue(out.exists())
+            self.assertTrue((tmp_path / "contact_index_cache" / "contacts.manifest.json").exists())
             written = pd.read_csv(out, sep="\t", header=None)
             self.assertEqual(written.shape, (2, 9))
+
+    def test_call_local_decay_chromosome_index_strategy_matches_all(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baits = tmp_path / "baits.tsv"
+            preys = tmp_path / "preys.tsv"
+            pairs = tmp_path / "pairs.tsv"
+            all_out = tmp_path / "all.tsv"
+            chrom_out = tmp_path / "chromosome.tsv"
+            baits.write_text("chr1\t10000\nchr2\t20000\n", encoding="utf-8")
+            preys.write_text("chr1\t6000\nchr1\t14000\nchr2\t24000\n", encoding="utf-8")
+            pairs.write_text(
+                "\n".join(
+                    [
+                        "chr1\t9950\tchr1\t14020\t+\t-\tUU\t30\t30",
+                        "chr1\t9990\tchr1\t14080\t+\t-\tUU\t30\t30",
+                        "chr1\t6050\tchr1\t10020\t+\t-\tUU\t30\t30",
+                        "chr2\t19950\tchr2\t24020\t+\t-\tUU\t30\t30",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            all_calls = call_local_decay(
+                baits,
+                preys,
+                pairs,
+                all_out,
+                dist=10_000,
+                cap=100,
+                min_distance=1_000,
+                lowess_window=500,
+                index_strategy="all",
+            )
+            chrom_calls = call_local_decay(
+                baits,
+                preys,
+                pairs,
+                chrom_out,
+                dist=10_000,
+                cap=100,
+                min_distance=1_000,
+                lowess_window=500,
+                index_strategy="chromosome",
+            )
+
+            pd.testing.assert_frame_equal(chrom_calls, all_calls)
+
+    def test_call_local_decay_cache_index_strategy_matches_all(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baits = tmp_path / "baits.tsv"
+            preys = tmp_path / "preys.tsv"
+            pairs = tmp_path / "pairs.tsv"
+            cache_dir = tmp_path / "cache"
+            all_out = tmp_path / "all.tsv"
+            cache_out = tmp_path / "cache.tsv"
+            baits.write_text("chr1\t10000\nchr2\t20000\n", encoding="utf-8")
+            preys.write_text("chr1\t6000\nchr1\t14000\nchr2\t24000\n", encoding="utf-8")
+            pairs.write_text(
+                "\n".join(
+                    [
+                        "chr1\t9950\tchr1\t14020\t+\t-\tUU\t30\t30",
+                        "chr1\t9990\tchr1\t14080\t+\t-\tUU\t30\t30",
+                        "chr1\t6050\tchr1\t10020\t+\t-\tUU\t30\t30",
+                        "chr2\t19950\tchr2\t24020\t+\t-\tUU\t30\t30",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            build_npz_cache(pairs, cache_dir, source="touche", prefix="sample")
+
+            all_calls = call_local_decay(
+                baits,
+                preys,
+                pairs,
+                all_out,
+                dist=10_000,
+                cap=100,
+                min_distance=1_000,
+                lowess_window=500,
+                index_strategy="all",
+            )
+            cache_calls = call_local_decay(
+                baits,
+                preys,
+                pairs,
+                cache_out,
+                dist=10_000,
+                cap=100,
+                min_distance=1_000,
+                lowess_window=500,
+                index_strategy="cache",
+                cache_dir=cache_dir,
+                cache_prefix="sample",
+            )
+
+            pd.testing.assert_frame_equal(cache_calls, all_calls)
+
+    def test_call_local_decay_require_cache_rejects_missing_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baits = tmp_path / "baits.tsv"
+            preys = tmp_path / "preys.tsv"
+            pairs = tmp_path / "pairs.tsv"
+            out = tmp_path / "calls.tsv"
+            baits.write_text("chr1\t10000\n", encoding="utf-8")
+            preys.write_text("chr1\t14000\n", encoding="utf-8")
+            pairs.write_text("chr1\t9950\tchr1\t14020\t+\t-\tUU\t30\t30\n", encoding="utf-8")
+
+            with self.assertRaises(FileNotFoundError):
+                call_local_decay(
+                    baits,
+                    preys,
+                    pairs,
+                    out,
+                    dist=10_000,
+                    cap=100,
+                    min_distance=1_000,
+                    lowess_window=500,
+                    index_strategy="cache",
+                    cache_dir=tmp_path / "missing-cache",
+                    require_cache=True,
+                )
 
     def test_compute_local_decay_accepts_in_memory_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

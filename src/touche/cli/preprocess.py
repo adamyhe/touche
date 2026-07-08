@@ -46,6 +46,7 @@ def add_preprocess_parser(subparsers: argparse._SubParsersAction) -> None:
     cache_parser.add_argument("--prefix", default="contacts")
     cache_parser.add_argument("--compressed", action="store_true")
     cache_parser.add_argument("--cis-only", action=argparse.BooleanOptionalAction, default=True)
+    cache_parser.add_argument("--index-strategy", choices=["chromosome", "all"], default="chromosome")
     cache_parser.set_defaults(func=_build_cache)
 
 
@@ -84,5 +85,6 @@ def _build_cache(args: argparse.Namespace) -> None:
         prefix=args.prefix,
         compressed=args.compressed,
         cis_only=args.cis_only,
+        index_strategy=args.index_strategy,
     )
     print_json({"written": [str(path) for path in paths]})

@@ -95,6 +95,11 @@ uv run touche preprocess build-cache \
 The cache is intentionally sharded by chromosome so downstream commands do not
 need to unpack a monolithic whole-genome archive.
 
+`build-cache` uses chromosome-at-a-time construction by default to keep peak
+memory bounded while creating the shards. Use `--index-strategy all` only when
+you explicitly want a faster whole-genome in-memory cache build and have enough
+RAM.
+
 ## Boundary
 
 Use distiller-nf or an equivalent external workflow for:

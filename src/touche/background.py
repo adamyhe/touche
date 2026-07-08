@@ -41,7 +41,12 @@ def count_ep_and_background(
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
-        indexes = build_contact_indexes(pairs_path, source=source, cis_only=True)
+        indexes = build_contact_indexes(
+            pairs_path,
+            source=source,
+            cis_only=True,
+            include_metadata=False,
+        )
         baits = read_bed_anchors(baits_path)
         preys = read_bed_anchors(preys_path)
     result = compute_ep_and_background(
