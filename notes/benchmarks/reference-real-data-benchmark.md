@@ -136,13 +136,15 @@ Each result records:
 - return code
 - wall time
 - sampled peak RSS in MiB
-- expected output sizes
+- expected output sizes as `{"path": bytes}`; `null` means the expected output
+  was missing after the step
 - parsed CLI JSON when stdout contains JSON
 
 The report directory contains:
 
 - `summary.md`: a Markdown table of wall time, sampled peak RSS, output size,
-  return status, and rows where available.
+  expected output count, missing output count, zero-byte output count, return
+  status, and rows where available.
 - `summary.csv`: the same summary in a spreadsheet-friendly format.
 - `command-timings.csv`: nested timings emitted by CLI `--profile` when present.
 - `index.html`: a simple browser-readable report page.

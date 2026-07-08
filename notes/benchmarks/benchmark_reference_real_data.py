@@ -767,9 +767,12 @@ def write_profile_report(records: list[dict[str, Any]], *, report_dir: Path) -> 
 
 
 def summary_row(record: dict[str, Any]) -> dict[str, Any]:
-    output_bytes = sum(
-        size for size in (record.get("outputs") or {}).values() if isinstance(size, int)
-    )
+    outputs = record.get("outputs") or {}
+    if not isinstance(outputs, dict):
+        outputs = {}
+    output_bytes = sum(size for size in outputs.values() if isinstance(size, int))
+    missing_outputs = [path for path, size in outputs.items() if size is None]
+    zero_byte_outputs = [path for path, size in outputs.items() if size == 0]
     command_json = record.get("command_json") if isinstance(record.get("command_json"), dict) else {}
     rows = command_json.get("rows")
     return {
@@ -778,7 +781,10 @@ def summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "returncode": record.get("returncode", ""),
         "elapsed_seconds": record.get("elapsed_seconds", ""),
         "peak_rss_mb": record.get("peak_rss_mb") or "",
-        "output_mb": round(output_bytes / (1024 * 1024), 3) if output_bytes else "",
+        "output_mb": round(output_bytes / (1024 * 1024), 3),
+        "output_count": len(outputs),
+        "missing_outputs": len(missing_outputs),
+        "zero_byte_outputs": len(zero_byte_outputs),
         "rows": rows if rows is not None else "",
         "stdout_log": record.get("stdout_log", ""),
         "stderr_log": record.get("stderr_log", ""),
@@ -826,12 +832,12 @@ def write_markdown_summary(
         "",
         "## Overview",
         "",
-        "| Step | Group | Status | Wall time (s) | Peak RSS (MiB) | Output (MiB) | Rows |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Step | Group | Status | Wall time (s) | Peak RSS (MiB) | Output (MiB) | Outputs | Missing | Empty | Rows |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in summary_rows:
         lines.append(
-            "| {name} | {group} | {returncode} | {elapsed_seconds} | {peak_rss_mb} | {output_mb} | {rows} |".format(
+            "| {name} | {group} | {returncode} | {elapsed_seconds} | {peak_rss_mb} | {output_mb} | {output_count} | {missing_outputs} | {zero_byte_outputs} | {rows} |".format(
                 **row
             )
         )
