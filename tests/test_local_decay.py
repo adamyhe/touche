@@ -6,7 +6,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
+from touche.backends import has_numba
+from touche.contacts import build_contact_indexes
+from touche.local_decay import (
+    assign_pair_types,
+    call_local_decay,
+    compute_local_decay,
+    fit_distance_decay_model,
+    fit_zero_inflation_model,
+    plot_pair_type_distribution,
+    read_center_anchors,
+)
 
 
 class LocalDecayTests(unittest.TestCase):
@@ -51,6 +61,148 @@ class LocalDecayTests(unittest.TestCase):
             self.assertTrue(out.exists())
             written = pd.read_csv(out, sep="\t", header=None)
             self.assertEqual(written.shape, (2, 9))
+
+    def test_compute_local_decay_accepts_in_memory_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baits = tmp_path / "baits.tsv"
+            preys = tmp_path / "preys.tsv"
+            pairs = tmp_path / "pairs.tsv"
+            baits.write_text("chr1\t10000\n", encoding="utf-8")
+            preys.write_text("chr1\t14000\n", encoding="utf-8")
+            pairs.write_text(
+                "chr1\t9950\tchr1\t14020\t+\t-\tUU\t30\t30\n",
+                encoding="utf-8",
+            )
+
+            calls = compute_local_decay(
+                build_contact_indexes(pairs, source="touche"),
+                read_center_anchors(baits),
+                read_center_anchors(preys),
+                dist=10_000,
+                cap=100,
+                min_distance=1_000,
+                lowess_window=500,
+            )
+
+            self.assertEqual(calls.shape, (1, 9))
+            self.assertEqual(calls.iloc[0]["observed"], 1)
+
+    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    def test_numba_compute_local_decay_matches_numpy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baits = tmp_path / "baits.tsv"
+            preys = tmp_path / "preys.tsv"
+            pairs = tmp_path / "pairs.tsv"
+            baits.write_text("chr1\t10000\n", encoding="utf-8")
+            preys.write_text("chr1\t6000\nchr1\t14000\n", encoding="utf-8")
+            pairs.write_text(
+                "\n".join(
+                    [
+                        "chr1\t9950\tchr1\t14020\t+\t-\tUU\t30\t30",
+                        "chr1\t9990\tchr1\t14080\t+\t-\tUU\t30\t30",
+                        "chr1\t6050\tchr1\t10020\t+\t-\tUU\t30\t30",
+                        "chr1\t3000\tchr1\t7000\t+\t-\tUU\t30\t30",
+                        "chr1\t12000\tchr1\t17000\t+\t-\tUU\t30\t30",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            indexes = build_contact_indexes(pairs, source="touche")
+            bait_anchors = read_center_anchors(baits)
+            prey_anchors = read_center_anchors(preys)
+            kwargs = {
+                "dist": 10_000,
+                "cap": 100,
+                "min_distance": 1_000,
+                "lowess_window": 500,
+            }
+
+            numpy_calls = compute_local_decay(
+                indexes, bait_anchors, prey_anchors, backend="numpy", **kwargs
+            )
+            numba_calls = compute_local_decay(
+                indexes, bait_anchors, prey_anchors, backend="numba", **kwargs
+            )
+
+            pd.testing.assert_frame_equal(numba_calls, numpy_calls)
+
+    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    def test_numba_lowess_backend_returns_finite_values(self) -> None:
+        counts = pd.Series([0, 1, 0, 0, 2, 0, 1, 0, 0, 1] * 20, dtype=float).to_numpy()
+
+        smoothed = fit_zero_inflation_model(
+            counts,
+            dist=100,
+            winsize=50,
+            backend="numba",
+        )
+
+        self.assertEqual(smoothed.shape, (100,))
+        self.assertTrue(pd.Series(smoothed).notna().all())
+
+    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    def test_numba_lowess_backend_matches_statsmodels_wrappers(self) -> None:
+        counts = pd.Series([0, 1, 0, 0, 2, 0, 1, 0, 0, 1] * 200, dtype=float).to_numpy()
+        statsmodels_zero = fit_zero_inflation_model(
+            counts,
+            dist=1_000,
+            winsize=500,
+            delta=16,
+            backend="statsmodels",
+        )
+        numba_zero = fit_zero_inflation_model(
+            counts,
+            dist=1_000,
+            winsize=500,
+            delta=16,
+            backend="numba",
+        )
+        pd.testing.assert_series_equal(
+            pd.Series(numba_zero),
+            pd.Series(statsmodels_zero),
+            check_exact=False,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+        distances = pd.Series(range(len(counts)), dtype=float).to_numpy()
+        statsmodels_decay = fit_distance_decay_model(
+            counts,
+            statsmodels_zero,
+            distances,
+            dist=1_000,
+            winsize=500,
+            delta=16,
+            backend="statsmodels",
+        )
+        numba_decay = fit_distance_decay_model(
+            counts,
+            numba_zero,
+            distances,
+            dist=1_000,
+            winsize=500,
+            delta=16,
+            backend="numba",
+        )
+        pd.testing.assert_series_equal(
+            pd.Series(numba_decay),
+            pd.Series(statsmodels_decay),
+            check_exact=False,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_compute_local_decay_rejects_negative_lowess_iterations(self) -> None:
+        with self.assertRaisesRegex(ValueError, "lowess_iterations"):
+            compute_local_decay(
+                {},
+                pd.DataFrame(columns=["chr", "center"]),
+                pd.DataFrame(columns=["chr", "center"]),
+                lowess_iterations=-1,
+            )
 
     def test_assign_pair_types_uses_functional_and_nonfunctional_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -106,7 +258,7 @@ class LocalDecayTests(unittest.TestCase):
                 }
             ).to_csv(assignments, sep="\t")
 
-            plot_data = plot_pair_type_distribution(
+            plot_data, fig = plot_pair_type_distribution(
                 assignments,
                 figure,
                 min_contacts=1,
@@ -115,8 +267,12 @@ class LocalDecayTests(unittest.TestCase):
             )
 
             self.assertEqual(len(plot_data), 2)
+            self.assertTrue(hasattr(fig, "savefig"))
             self.assertTrue(figure.exists())
             self.assertTrue(table.exists())
+            import matplotlib.pyplot as plt
+
+            plt.close(fig)
 
 
 if __name__ == "__main__":

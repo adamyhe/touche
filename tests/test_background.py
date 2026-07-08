@@ -4,7 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from touche.background import compare_background_ratios, parse_named_depth, parse_named_path
+import pandas as pd
+
+from touche.background import (
+    compare_background_ratios,
+    parse_named_depth,
+    parse_named_path,
+    plot_background_scatter,
+)
 from touche.models import NamedPath
 
 
@@ -57,6 +64,21 @@ class BackgroundCompareTests(unittest.TestCase):
             self.assertTrue(table.exists())
             for path in plots.values():
                 self.assertTrue(path.exists())
+
+    def test_plot_background_scatter_returns_figure_without_writing(self) -> None:
+        data = pd.DataFrame(
+            {
+                "ratio_DMSO": [1.0, 2.0],
+                "ratio_FLV": [1.5, 2.5],
+            }
+        )
+
+        fig = plot_background_scatter(data, x_sample="DMSO", y_sample="FLV")
+
+        self.assertTrue(hasattr(fig, "savefig"))
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
 
 
 if __name__ == "__main__":

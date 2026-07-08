@@ -5,7 +5,7 @@ from pathlib import Path
 
 from touche.apa import aggregate_apa, compare_apa_change
 from touche.background import parse_named_path
-from touche.cli.utils import print_json
+from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.pipelines import run_apa_pipeline
 
 
@@ -27,6 +27,8 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
     apa_aggregate.add_argument("--out-dir", required=True, type=Path)
     apa_aggregate.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
     apa_aggregate.add_argument("--shift", default=75, type=int)
+    apa_aggregate.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    add_instrumentation_args(apa_aggregate)
     apa_aggregate.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
@@ -74,6 +76,8 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
     apa_run.add_argument("--shift", default=75, type=int)
     apa_run.add_argument("--bait-count", type=int)
     apa_run.add_argument("--prey-count", type=int)
+    apa_run.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    add_instrumentation_args(apa_run)
     apa_run.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
@@ -83,6 +87,7 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _aggregate_apa(args: argparse.Namespace) -> None:
+    instrument = make_cli_instrumentation(args)
     outputs = aggregate_apa(
         args.pairs,
         args.baits,
@@ -95,8 +100,10 @@ def _aggregate_apa(args: argparse.Namespace) -> None:
         source=args.source,
         shift=args.shift,
         reference_style=args.reference_style,
+        backend=args.backend,
+        progress=instrument,
     )
-    print_json({key: str(value) for key, value in outputs.items()})
+    print_json(add_timings({key: str(value) for key, value in outputs.items()}, instrument))
 
 
 def _compare_apa(args: argparse.Namespace) -> None:
@@ -126,6 +133,7 @@ def _compare_apa(args: argparse.Namespace) -> None:
 
 
 def _run_apa(args: argparse.Namespace) -> None:
+    instrument = make_cli_instrumentation(args)
     manifest = run_apa_pipeline(
         parse_named_path(args.control),
         parse_named_path(args.treatment),
@@ -141,5 +149,7 @@ def _run_apa(args: argparse.Namespace) -> None:
         bait_count=args.bait_count,
         prey_count=args.prey_count,
         reference_style=args.reference_style,
+        backend=args.backend,
+        progress=instrument,
     )
     print_json(manifest)

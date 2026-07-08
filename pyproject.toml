@@ -18,6 +18,7 @@ dependencies = [
   "statsmodels",
   "matplotlib",
   "seaborn",
+  "tqdm",
 ]
 
 [project.optional-dependencies]

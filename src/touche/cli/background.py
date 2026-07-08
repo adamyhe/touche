@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from touche.background import count_ep_and_background, compare_background_ratios, parse_named_depth, parse_named_path
-from touche.cli.utils import print_json
+from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.pipelines import run_background_pipeline
 
 
@@ -26,6 +26,8 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
     count_parser.add_argument("--min-bg-distance", required=True, type=int)
     count_parser.add_argument("--max-bg-distance", required=True, type=int)
     count_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
+    count_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    add_instrumentation_args(count_parser)
     count_parser.set_defaults(func=_count_background)
 
     compare_parser = background_sub.add_parser(
@@ -82,6 +84,8 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--max-bg-distance", required=True, type=int)
     run_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
     run_parser.add_argument("--min-ep-cpb", default=8.0, type=float)
+    run_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    add_instrumentation_args(run_parser)
     run_parser.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
@@ -91,6 +95,7 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _count_background(args: argparse.Namespace) -> None:
+    instrument = make_cli_instrumentation(args)
     result = count_ep_and_background(
         args.pairs,
         args.baits,
@@ -102,8 +107,10 @@ def _count_background(args: argparse.Namespace) -> None:
         min_bg_distance=args.min_bg_distance,
         max_bg_distance=args.max_bg_distance,
         source=args.source,
+        backend=args.backend,
+        progress=instrument,
     )
-    print_json({"rows": int(len(result)), "out": str(args.out)})
+    print_json(add_timings({"rows": int(len(result)), "out": str(args.out)}, instrument))
 
 
 def _compare_background(args: argparse.Namespace) -> None:
@@ -129,6 +136,7 @@ def _compare_background(args: argparse.Namespace) -> None:
 
 
 def _run_background(args: argparse.Namespace) -> None:
+    instrument = make_cli_instrumentation(args)
     control = parse_named_path(args.control)
     treatments = [parse_named_path(value) for value in args.treatments]
     depths = {named.name: named.depth for named in (parse_named_depth(value) for value in args.depths)}
@@ -147,5 +155,7 @@ def _run_background(args: argparse.Namespace) -> None:
         source=args.source,
         min_ep_cpb=args.min_ep_cpb,
         reference_style=args.reference_style,
+        backend=args.backend,
+        progress=instrument,
     )
     print_json(manifest)

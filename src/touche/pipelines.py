@@ -10,6 +10,7 @@ from touche import __version__
 from touche.anchors import read_bed_anchors
 from touche.apa import aggregate_apa, compare_apa_change
 from touche.background import compare_background_ratios, count_ep_and_background
+from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
 from touche.models import NamedPath
 
@@ -28,13 +29,19 @@ def run_local_decay_pipeline(
     source: str = "auto",
     lowess_window: int = 5_000,
     lowess_delta: float = 16.0,
+    lowess_iterations: int = 3,
     plot_min_contacts: int = 1,
     plot_min_distance: int = 15_000,
     reference_style: bool = True,
+    backend: str = "numpy",
+    lowess_backend: str = "statsmodels",
+    progress: bool | Instrumentation = False,
+    profile: bool = False,
 ) -> dict[str, Any]:
     """Run local-decay call, pair assignment, and violin plotting."""
 
     started = perf_counter()
+    instrument = make_instrumentation(progress, profile=profile)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     contacts_out = out_dir / "ContactCaller_microC_output.tsv"
@@ -45,29 +52,37 @@ def run_local_decay_pipeline(
     plot_table_out = out_dir / "Violinplot_for_normalized_contacts_by_pair_type.tsv"
     figure_out = out_dir / "Violinplot_for_normalized_contacts_by_pair_type.svg"
 
-    calls = call_local_decay(
-        baits_path,
-        preys_path,
-        pairs_path,
-        contacts_out,
-        dist=dist,
-        cap=cap,
-        min_distance=min_distance,
-        source=source,
-        lowess_window=lowess_window,
-        lowess_delta=lowess_delta,
-    )
-    assignments = assign_pair_types(
-        contacts_out, functional_path, nonfunctional_path, assignments_out
-    )
-    plot_data = plot_pair_type_distribution(
-        assignments_out,
-        figure_out,
-        min_contacts=plot_min_contacts,
-        min_distance=plot_min_distance,
-        plot_table_out=plot_table_out,
-        reference_style=reference_style,
-    )
+    with instrument.step("call local-decay"):
+        calls = call_local_decay(
+            baits_path,
+            preys_path,
+            pairs_path,
+            contacts_out,
+            dist=dist,
+            cap=cap,
+            min_distance=min_distance,
+            source=source,
+            lowess_window=lowess_window,
+            lowess_delta=lowess_delta,
+            backend=backend,
+            lowess_backend=lowess_backend,
+            lowess_iterations=lowess_iterations,
+            progress=instrument,
+        )
+    with instrument.step("assign pair types"):
+        assignments = assign_pair_types(
+            contacts_out, functional_path, nonfunctional_path, assignments_out
+        )
+    with instrument.step("plot pair type distribution"):
+        plot_data, fig = plot_pair_type_distribution(
+            assignments_out,
+            figure_out,
+            min_contacts=plot_min_contacts,
+            min_distance=plot_min_distance,
+            plot_table_out=plot_table_out,
+            reference_style=reference_style,
+        )
+        _close_figure(fig)
 
     manifest = _base_manifest(
         "local-decay run",
@@ -85,9 +100,12 @@ def run_local_decay_pipeline(
             "source": source,
             "lowess_window": lowess_window,
             "lowess_delta": lowess_delta,
+            "lowess_iterations": lowess_iterations,
             "plot_min_contacts": plot_min_contacts,
             "plot_min_distance": plot_min_distance,
             "reference_style": reference_style,
+            "backend": backend,
+            "lowess_backend": lowess_backend,
         },
         outputs={
             "contacts": str(contacts_out),
@@ -101,6 +119,7 @@ def run_local_decay_pipeline(
             "plotted_rows": int(len(plot_data)),
         },
         started=started,
+        timings=instrument.timings,
     )
     return _write_manifest(out_dir / "manifest.json", manifest)
 
@@ -121,10 +140,14 @@ def run_background_pipeline(
     source: str = "auto",
     min_ep_cpb: float = 8.0,
     reference_style: bool = True,
+    backend: str = "numpy",
+    progress: bool | Instrumentation = False,
+    profile: bool = False,
 ) -> dict[str, Any]:
     """Run per-sample EP/background counts and treatment comparisons."""
 
     started = perf_counter()
+    instrument = make_instrumentation(progress, profile=profile)
     out_dir = Path(out_dir)
     counts_dir = out_dir / "counts"
     plots_dir = out_dir / "plots"
@@ -132,33 +155,38 @@ def run_background_pipeline(
     samples = [control, *treatments]
     count_paths: dict[str, Path] = {}
     count_rows: dict[str, int] = {}
-    for sample in samples:
+    sample_iter = instrument.iter(samples, total=len(samples), desc="background samples", unit="sample")
+    for sample in sample_iter:
         sample_out = counts_dir / f"{sample.name}_EP_and_BG_contacts.tsv"
-        counts = count_ep_and_background(
-            sample.path,
-            baits_path,
-            preys_path,
-            sample_out,
-            min_distance=min_distance,
-            max_distance=max_distance,
-            window=window,
-            min_bg_distance=min_bg_distance,
-            max_bg_distance=max_bg_distance,
-            source=source,
-        )
+        with instrument.step(f"count background {sample.name}"):
+            counts = count_ep_and_background(
+                sample.path,
+                baits_path,
+                preys_path,
+                sample_out,
+                min_distance=min_distance,
+                max_distance=max_distance,
+                window=window,
+                min_bg_distance=min_bg_distance,
+                max_bg_distance=max_bg_distance,
+                source=source,
+                backend=backend,
+                progress=instrument,
+            )
         count_paths[sample.name] = sample_out
         count_rows[sample.name] = int(len(counts))
 
-    merged_table = out_dir / "background_comparison.tsv"
-    merged, plot_paths = compare_background_ratios(
-        NamedPath(control.name, count_paths[control.name]),
-        [NamedPath(sample.name, count_paths[sample.name]) for sample in treatments],
-        depths,
-        min_ep_cpb=min_ep_cpb,
-        out_dir=plots_dir,
-        table_out=merged_table,
-        reference_style=reference_style,
-    )
+    with instrument.step("compare background ratios"):
+        merged_table = out_dir / "background_comparison.tsv"
+        merged, plot_paths = compare_background_ratios(
+            NamedPath(control.name, count_paths[control.name]),
+            [NamedPath(sample.name, count_paths[sample.name]) for sample in treatments],
+            depths,
+            min_ep_cpb=min_ep_cpb,
+            out_dir=plots_dir,
+            table_out=merged_table,
+            reference_style=reference_style,
+        )
 
     manifest = _base_manifest(
         "background run",
@@ -178,6 +206,7 @@ def run_background_pipeline(
             "source": source,
             "min_ep_cpb": min_ep_cpb,
             "reference_style": reference_style,
+            "backend": backend,
         },
         outputs={
             "counts": {name: str(path) for name, path in count_paths.items()},
@@ -189,6 +218,7 @@ def run_background_pipeline(
             "comparison_rows": int(len(merged)),
         },
         started=started,
+        timings=instrument.timings,
     )
     return _write_manifest(out_dir / "manifest.json", manifest)
 
@@ -209,41 +239,51 @@ def run_apa_pipeline(
     bait_count: int | None = None,
     prey_count: int | None = None,
     reference_style: bool = True,
+    backend: str = "numpy",
+    progress: bool | Instrumentation = False,
+    profile: bool = False,
 ) -> dict[str, Any]:
     """Run aggregate APA for two samples and compare treatment to control."""
 
     started = perf_counter()
+    instrument = make_instrumentation(progress, profile=profile)
     out_dir = Path(out_dir)
     control_dir = out_dir / control.name
     treatment_dir = out_dir / treatment.name
     compare_dir = out_dir / f"{treatment.name}_vs_{control.name}"
 
-    control_outputs = aggregate_apa(
-        control.path,
-        baits_path,
-        preys_path,
-        control_dir,
-        min_distance=min_distance,
-        max_distance=max_distance,
-        window=window,
-        pixels=pixels,
-        source=source,
-        shift=shift,
-        reference_style=reference_style,
-    )
-    treatment_outputs = aggregate_apa(
-        treatment.path,
-        baits_path,
-        preys_path,
-        treatment_dir,
-        min_distance=min_distance,
-        max_distance=max_distance,
-        window=window,
-        pixels=pixels,
-        source=source,
-        shift=shift,
-        reference_style=reference_style,
-    )
+    with instrument.step(f"aggregate apa {control.name}"):
+        control_outputs = aggregate_apa(
+            control.path,
+            baits_path,
+            preys_path,
+            control_dir,
+            min_distance=min_distance,
+            max_distance=max_distance,
+            window=window,
+            pixels=pixels,
+            source=source,
+            shift=shift,
+            reference_style=reference_style,
+            backend=backend,
+            progress=instrument,
+        )
+    with instrument.step(f"aggregate apa {treatment.name}"):
+        treatment_outputs = aggregate_apa(
+            treatment.path,
+            baits_path,
+            preys_path,
+            treatment_dir,
+            min_distance=min_distance,
+            max_distance=max_distance,
+            window=window,
+            pixels=pixels,
+            source=source,
+            shift=shift,
+            reference_style=reference_style,
+            backend=backend,
+            progress=instrument,
+        )
     compare_dir.mkdir(parents=True, exist_ok=True)
     inferred_bait_count = (
         bait_count if bait_count is not None else int(len(read_bed_anchors(baits_path)))
@@ -253,21 +293,22 @@ def run_apa_pipeline(
     )
     matrix_out = compare_dir / "ObsOverExp.csv"
     heatmap_out = compare_dir / "ObsOverExp.svg"
-    comparison = compare_apa_change(
-        control_outputs["matrix"],
-        treatment_outputs["matrix"],
-        control_outputs["baits_signal"],
-        control_outputs["preys_signal"],
-        treatment_outputs["baits_signal"],
-        treatment_outputs["preys_signal"],
-        bait_count=inferred_bait_count,
-        prey_count=inferred_prey_count,
-        out=heatmap_out,
-        matrix_out=matrix_out,
-        window=window,
-        pixels=pixels,
-        reference_style=reference_style,
-    )
+    with instrument.step("compare apa change"):
+        comparison = compare_apa_change(
+            control_outputs["matrix"],
+            treatment_outputs["matrix"],
+            control_outputs["baits_signal"],
+            control_outputs["preys_signal"],
+            treatment_outputs["baits_signal"],
+            treatment_outputs["preys_signal"],
+            bait_count=inferred_bait_count,
+            prey_count=inferred_prey_count,
+            out=heatmap_out,
+            matrix_out=matrix_out,
+            window=window,
+            pixels=pixels,
+            reference_style=reference_style,
+        )
 
     manifest = _base_manifest(
         "apa run",
@@ -287,6 +328,7 @@ def run_apa_pipeline(
             "bait_count": inferred_bait_count,
             "prey_count": inferred_prey_count,
             "reference_style": reference_style,
+            "backend": backend,
         },
         outputs={
             "control": {key: str(value) for key, value in control_outputs.items()},
@@ -299,6 +341,7 @@ def run_apa_pipeline(
             "comparison_columns": int(comparison.shape[1]),
         },
         started=started,
+        timings=instrument.timings,
     )
     return _write_manifest(out_dir / "manifest.json", manifest)
 
@@ -311,8 +354,9 @@ def _base_manifest(
     outputs: dict[str, Any],
     metrics: dict[str, Any],
     started: float,
+    timings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return {
+    manifest = {
         "schema_version": 1,
         "touche_version": __version__,
         "command": command,
@@ -323,6 +367,9 @@ def _base_manifest(
         "outputs": outputs,
         "metrics": metrics,
     }
+    if timings:
+        manifest["timings"] = timings
+    return manifest
 
 
 def _write_manifest(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -330,3 +377,9 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     manifest["manifest"] = str(path)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
+
+
+def _close_figure(fig: Any) -> None:
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)

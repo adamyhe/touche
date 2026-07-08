@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from touche.cli.utils import print_json
+from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
 from touche.pipelines import run_local_decay_pipeline
 
@@ -26,6 +26,14 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     call_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
     call_parser.add_argument("--lowess-window", default=5_000, type=int)
     call_parser.add_argument("--lowess-delta", default=16.0, type=float)
+    call_parser.add_argument("--lowess-iterations", default=3, type=int)
+    call_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    call_parser.add_argument(
+        "--lowess-backend",
+        choices=["statsmodels", "numba"],
+        default="statsmodels",
+    )
+    add_instrumentation_args(call_parser)
     call_parser.set_defaults(func=_call_local_decay)
 
     run_parser = local_decay_sub.add_parser(
@@ -44,6 +52,14 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
     run_parser.add_argument("--lowess-window", default=5_000, type=int)
     run_parser.add_argument("--lowess-delta", default=16.0, type=float)
+    run_parser.add_argument("--lowess-iterations", default=3, type=int)
+    run_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    run_parser.add_argument(
+        "--lowess-backend",
+        choices=["statsmodels", "numba"],
+        default="statsmodels",
+    )
+    add_instrumentation_args(run_parser)
     run_parser.add_argument("--plot-min-contacts", default=1, type=int)
     run_parser.add_argument("--plot-min-distance", default=15_000, type=int)
     run_parser.add_argument(
@@ -81,6 +97,7 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _call_local_decay(args: argparse.Namespace) -> None:
+    instrument = make_cli_instrumentation(args)
     calls = call_local_decay(
         args.baits,
         args.preys,
@@ -92,16 +109,24 @@ def _call_local_decay(args: argparse.Namespace) -> None:
         source=args.source,
         lowess_window=args.lowess_window,
         lowess_delta=args.lowess_delta,
+        backend=args.backend,
+        lowess_backend=args.lowess_backend,
+        lowess_iterations=args.lowess_iterations,
+        progress=instrument,
     )
     print_json(
-        {
-            "rows": int(len(calls)),
-            "out": str(args.out),
-        }
+        add_timings(
+            {
+                "rows": int(len(calls)),
+                "out": str(args.out),
+            },
+            instrument,
+        )
     )
 
 
 def _run_local_decay(args: argparse.Namespace) -> None:
+    instrument = make_cli_instrumentation(args)
     manifest = run_local_decay_pipeline(
         args.baits,
         args.preys,
@@ -115,9 +140,13 @@ def _run_local_decay(args: argparse.Namespace) -> None:
         source=args.source,
         lowess_window=args.lowess_window,
         lowess_delta=args.lowess_delta,
+        backend=args.backend,
+        lowess_backend=args.lowess_backend,
+        lowess_iterations=args.lowess_iterations,
         plot_min_contacts=args.plot_min_contacts,
         plot_min_distance=args.plot_min_distance,
         reference_style=args.reference_style,
+        progress=instrument,
     )
     print_json(manifest)
 
@@ -139,7 +168,7 @@ def _assign_pair_types(args: argparse.Namespace) -> None:
 
 
 def _plot_pair_type_distribution(args: argparse.Namespace) -> None:
-    plot_data = plot_pair_type_distribution(
+    plot_data, fig = plot_pair_type_distribution(
         args.assignments,
         args.out,
         min_contacts=args.min_contacts,
@@ -147,6 +176,9 @@ def _plot_pair_type_distribution(args: argparse.Namespace) -> None:
         plot_table_out=args.plot_table_out,
         reference_style=args.reference_style,
     )
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
     print_json(
         {
             "rows": int(len(plot_data)),

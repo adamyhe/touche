@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from touche.apa import compare_apa_change
+from touche.apa import compare_apa_change, plot_apa_change
 
 
 class ApaCompareTests(unittest.TestCase):
@@ -50,6 +50,16 @@ class ApaCompareTests(unittest.TestCase):
             self.assertTrue((matrix == 1.0).all().all())
             self.assertTrue(out.exists())
             self.assertTrue(matrix_out.exists())
+
+    def test_plot_apa_change_returns_figure_without_writing(self) -> None:
+        matrix = pd.DataFrame([[1.0, 2.0], [2.0, 1.0]], index=[-1, 1], columns=[-1, 1])
+
+        fig = plot_apa_change(matrix, window=1_000, pixels=1)
+
+        self.assertTrue(hasattr(fig, "savefig"))
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
 
 
 if __name__ == "__main__":

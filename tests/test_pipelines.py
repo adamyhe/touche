@@ -105,10 +105,12 @@ class PipelineTests(unittest.TestCase):
                 min_bg_distance=50,
                 max_bg_distance=100,
                 min_ep_cpb=0,
+                profile=True,
             )
 
             self.assertEqual(manifest["command"], "background run")
             self.assertEqual(manifest["metrics"]["comparison_rows"], 1)
+            self.assertGreaterEqual(len(manifest["timings"]), 3)
             self.assertTrue(Path(manifest["outputs"]["counts"]["ctrl"]).exists())
             self.assertTrue(Path(manifest["outputs"]["counts"]["trt"]).exists())
             self.assertTrue(Path(manifest["outputs"]["comparison_table"]).exists())

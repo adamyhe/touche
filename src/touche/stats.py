@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scipy import stats as scipy_stats
+from scipy.stats import hypergeom
 
 
 def fisher_greater(a1: float, a2: float, b1: float, b2: float) -> float:
@@ -11,9 +11,14 @@ def fisher_greater(a1: float, a2: float, b1: float, b2: float) -> float:
     rounding here so this can replace rpy2 without changing expected behavior.
     """
 
-    table = [
-        [round(a1), round(a2)],
-        [round(b1), round(b2)],
-    ]
-    result = scipy_stats.fisher_exact(table, alternative="greater")
-    return float(result.pvalue)
+    a = round(a1)
+    b = round(a2)
+    c = round(b1)
+    d = round(b2)
+    if min(a, b, c, d) < 0:
+        raise ValueError("Fisher exact table entries must be non-negative")
+
+    total = a + b + c + d
+    row_1 = a + b
+    col_1 = a + c
+    return float(hypergeom.sf(a - 1, total, row_1, col_1))

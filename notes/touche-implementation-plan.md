@@ -113,11 +113,24 @@ Implemented so far:
 - `touche apa compare`.
 - shared dataclasses in `touche.models`.
 - tests for preprocessing, contact caches, local-decay utilities, background comparison, APA comparison, stats, and version metadata.
+- package metadata updated for PyPI distribution name `ep-touche`, with `touche` retained as the import package and CLI command.
+- Hatchling build backend, GitHub Actions CI/publishing workflows, and Python 3.10 compatibility fix for `touche.pipelines`.
+- first notebook-friendly API slice:
+  - `touche.api` provisional exports.
+  - in-memory `compute_apa`, `compute_ep_and_background`, and `compute_local_decay`.
+  - `ApaResult` with `plot()` and `write()`.
+  - plot functions return `Figure` and can run without output paths.
+  - `docs/notebook-api.md`.
 
 Still pending:
 
+- richer result objects for local decay, background counts, background comparisons, and APA comparisons
 - optional full-data reproduction scripts
-- optional Numba kernels
+- optional Numba kernels; detailed plan in `notes/numba-implementation-plan.md`
+  - first EP/background counting backend implemented and benchmarked.
+  - APA counting backend implemented and benchmarked.
+  - local-decay observed-count backend implemented, but initial benchmark shows
+    LOWESS dominates runtime.
 
 ## Phase 1: Establish compatibility targets
 
@@ -537,7 +550,137 @@ Add options for:
 
 Plotting commands should also be able to write the underlying merged/statistical table, not only images.
 
-## Phase 10: Reference figure reproduction
+## Phase 10: Notebook-friendly API
+
+Add a notebook-friendly API layer without weakening the CLI-oriented compatibility layer.
+
+Design goals:
+
+- Keep core compute functions usable from scripts, notebooks, and CLI wrappers.
+- Separate compute, plotting, and writing where practical.
+- Preserve current CLI behavior and filenames.
+- Avoid forcing users to write temporary files just to inspect intermediate objects.
+- Return ordinary Python objects: `pandas.DataFrame`, `pandas.Series`, `numpy.ndarray`, dataclasses, and `matplotlib.figure.Figure`.
+- Keep batch pipeline functions in `touche.pipelines` focused on orchestration, manifests, and output paths.
+
+Recommended API shape:
+
+```python
+from touche import api
+
+indexes = api.build_contact_indexes("sample.pairs.gz")
+calls = api.call_local_decay(...)
+fig = api.plot_pair_type_distribution(assignments)
+
+apa = api.compute_apa(...)
+fig = apa.plot()
+apa.write("out/")
+```
+
+Result-object pattern:
+
+```python
+@dataclass(slots=True)
+class ApaResult:
+    matrix: pd.DataFrame
+    bait_signal: pd.DataFrame
+    prey_signal: pd.DataFrame
+    metadata: dict[str, object]
+
+    def plot(self, *, reference_style: bool = True) -> Figure: ...
+    def write(self, out_dir: str | Path) -> dict[str, Path]: ...
+```
+
+Candidate result objects:
+
+- `LocalDecayResult`
+  - `calls: pd.DataFrame`
+  - optional `assignments: pd.DataFrame`
+  - `plot(...) -> Figure`
+  - `write(...)`
+- `ApaResult`
+  - `matrix: pd.DataFrame`
+  - `bait_signal: pd.DataFrame`
+  - `prey_signal: pd.DataFrame`
+  - `plot(...) -> Figure`
+  - `write(...)`
+- `ApaComparisonResult`
+  - `matrix: pd.DataFrame`
+  - `plot(...) -> Figure`
+  - `write(...)`
+- `BackgroundCountResult`
+  - `counts: pd.DataFrame`
+  - `write(...)`
+- `BackgroundComparisonResult`
+  - `table: pd.DataFrame`
+  - `plots(...) -> dict[str, Figure]`
+  - `write(...)`
+
+Plotting refactor:
+
+- Make plotting functions return `matplotlib.figure.Figure`.
+- Make `out`/`out_path` optional.
+- Save only when an output path is provided.
+- Avoid unconditional `plt.close(fig)` when returning figures for interactive use.
+- Keep CLI wrappers responsible for closing figures if needed after saving.
+- Move reusable plotting functions toward `touche.plots` once signatures are stable.
+
+Compute/write split:
+
+- Keep existing path-writing functions as compatibility wrappers for now.
+- Add in-memory compute helpers underneath them.
+- Prefer names like:
+  - `compute_apa(...)`
+  - `write_apa_result(...)`
+  - `plot_raw_apa_heatmap(...)`
+  - `compute_background_counts(...)`
+  - `plot_background_scatter(...)`
+- Existing CLI-facing functions can call these helpers and return the same current values until a major API cleanup.
+
+Index reuse:
+
+- Allow expensive workflows to accept prebuilt contact indexes in addition to pairs paths.
+- Avoid rereading pairs files when users want to compare multiple anchor sets or conditions interactively.
+- Keep file-path inputs as the CLI default.
+
+Top-level exports:
+
+- Create `touche.api` as the stable notebook-oriented import surface.
+- Re-export a small, curated set of helpers from `touche.api`.
+- Do not overload `touche.__init__` with many workflow functions yet.
+
+First implementation slice:
+
+1. Refactor plotting functions to return `Figure` and make output paths optional:
+   - `plot_pair_type_distribution`
+   - `plot_raw_apa_heatmap`
+   - `plot_apa_change`
+   - `plot_background_scatter`
+   Done.
+2. Update tests to assert figures are returned and files are written when paths are provided.
+   Done.
+3. Keep CLI behavior unchanged.
+   Done.
+4. Add `docs/notebook-api.md` with minimal examples after the first API slice lands.
+   Done.
+
+Second implementation slice:
+
+1. Add `LocalDecayResult`, `BackgroundCountResult`, `BackgroundComparisonResult`, and `ApaComparisonResult`.
+2. Add `.write()` helpers for each result object.
+3. Add `.plot()` or `.plots()` helpers where applicable.
+4. Keep existing dataframe-returning functions as compatibility wrappers until a deliberate API-breaking release.
+5. Expand `docs/notebook-api.md` with result-object examples once this lands.
+
+Acceptance criteria:
+
+- Existing CLI tests continue to pass.
+- Notebook users can generate plots without creating files.
+- Returned figures can be displayed or saved by the caller.
+- Plot-data tables remain accessible as dataframes.
+- The API surface is documented as provisional until result objects are added.
+
+## Phase 11: Reference figure reproduction
 
 Add an explicit reproduction track for the figures demonstrated in the reference checkout. This should be treated as a high-level acceptance test for the refactor: `touche` should be able to start from the same processed pairs and input anchor files, generate equivalent intermediate tables, and render equivalent figures.
 
@@ -578,7 +721,7 @@ Acceptance criteria:
 - For full data, maintain a manifest with command, input checksums where feasible, package version, wall time, peak memory, and output paths.
 - If visual styling intentionally diverges from the reference, require a non-default style option and keep `--reference-style` as the compatibility path.
 
-## Phase 11: Packaging and dependency policy
+## Phase 12: Packaging and dependency policy
 
 Initial `pyproject.toml`:
 
@@ -614,31 +757,38 @@ Development dependencies are managed as a uv dependency group:
 dev = ["pytest", "ruff", "mypy"]
 ```
 
-`__version__` should be read from package metadata with `importlib.metadata.version("touche")`, so `pyproject.toml` remains the single source of truth for package versioning.
+`__version__` should be read from package metadata with `importlib.metadata.version("ep-touche")`, so `pyproject.toml` remains the single source of truth for package versioning. The PyPI distribution name is `ep-touche`; the import package and CLI command remain `touche`.
 
 Keep the initial skeleton correct and NumPy-based, but plan to add Numba kernels soon after the main CLI/API surface is in place. Numba is a reasonable optional acceleration dependency because the hot paths are pure counting kernels over numeric arrays. Avoid adding `polars`, `pyarrow`, or workflow-engine dependencies until there is a measured bottleneck or operational need that justifies them. Do not add `pyyaml` unless `touche` later starts parsing or rendering workflow configs.
 
-## Phase 12: Post-skeleton Numba kernels
+Build backend:
 
-After the main package skeleton and reference-compatible workflows are implemented, add optional Numba implementations for the counting-heavy kernels.
+- Use Hatchling for packaging.
+- Keep `uv` as the development, lockfile, and build frontend.
+- Publish `ep-touche` to PyPI with trusted publishing.
+
+## Phase 13: Post-skeleton Numba kernels
+
+After the main package skeleton and reference-compatible workflows are implemented, add optional Numba implementations for the counting-heavy kernels. See `notes/numba-implementation-plan.md` for the detailed staged plan.
 
 Candidate kernels:
 
 - EP/background contact counting for many bait/prey pairs.
 - APA pileup matrix accumulation from contact arrays and oriented anchor pairs.
 - 1D anchor signal vector counting around baits and preys.
-- Local distance histograms if `fast_histogram` and vectorized NumPy are not sufficient.
+- Local-decay observed-count and distance-histogram pieces, while keeping LOWESS and Fisher exact tests in Python.
 
 Design:
 
 - Keep pure NumPy implementations as the default correctness path.
-- Add a backend switch where useful, for example `--backend numpy` and `--backend numba`.
+- Add a backend switch where useful, starting with `backend="numpy"` and `backend="numba"` in in-memory compute functions and matching CLI `--backend` options.
 - Put Numba-specific code behind optional imports so base installation remains simple.
 - Use the same tests for NumPy and Numba backends, requiring exact equality for integer counts.
 - Ensure accelerated kernels operate on compact arrays or bounded chunks rather than requiring whole-genome in-memory materialization.
 - Benchmark on chromosome-scale data before changing defaults.
+- Start with EP/background counts because the integer counting surface is the smallest and easiest to validate exactly, then add APA matrix/signal kernels, then local-decay count helpers.
 
-## Phase 13: Validation and benchmarking
+## Phase 14: Validation and benchmarking
 
 Validation levels:
 
@@ -652,11 +802,23 @@ Track:
 
 - wall time
 - peak RSS memory
+- per-step CLI profile timings from `--profile`
 - temporary disk usage
 - number, size, and reusability of intermediate files
 - output equality or numerical tolerance
 - number of contacts processed per second
 - preprocessing throughput and gzip compression ratio
+
+Current benchmark artifacts:
+
+- `notes/benchmarks/benchmark_numba_kernels.py`: synthetic microbenchmarks for
+  counting kernels, LOWESS variants, and Fisher-test implementations.
+- `notes/benchmarks/benchmark_reference_real_data.py`: real reference-data
+  benchmark pipeline that downloads the upstream example pairs and input files,
+  then profiles preprocessing, local-decay, APA, and EP/background CLI steps with
+  wall time and sampled peak RSS. Added but not run locally yet.
+- `notes/benchmarks/reference-real-data-benchmark.md`: agent-facing usage notes
+  for the real-data benchmark runner.
 
 Suggested tolerance policy:
 
@@ -685,8 +847,13 @@ Suggested tolerance policy:
 14. Implement `touche apa aggregate`. Done.
 15. Add full pipeline `run` wrappers. Done.
 16. Add reference plot reproduction documentation. Done.
-17. Add post-skeleton Numba kernels for the hottest counting paths.
-18. Add plotting polish, docs, and benchmark notes.
+17. Refactor plotting/results APIs for notebook-friendly use. First slice done.
+18. Add provisional `touche.api` exports and notebook API docs. Done.
+19. Add richer notebook result objects for remaining workflows.
+20. Add post-skeleton Numba kernels for the hottest counting paths.
+21. Add plotting polish, docs, and benchmark notes. In progress.
+22. Run the real-data benchmark pipeline after explicitly approving the large
+    downloads and expected runtime.
 
 The best first working slice is:
 
