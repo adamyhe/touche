@@ -80,6 +80,10 @@ uv run touche preprocess qc \
 The QC summary includes total parsed rows, cis/trans counts, mapq-pass/fail
 counts, per-chromosome counts, and a coarse cis-distance histogram.
 
+For large pairs files that will also be cached, prefer writing QC during cache
+construction with `build-cache --qc-out` to avoid a second full pass over the
+same compressed input.
+
 ## NPZ cache
 
 For repeated downstream analyses, build chromosome-sharded NPZ caches:
@@ -89,16 +93,16 @@ uv run touche preprocess build-cache \
   --pairs prefix.nodups_30_intra.pairs.gz \
   --source touche \
   --cache-dir .cache/touche/prefix \
-  --prefix prefix
+  --prefix prefix \
+  --qc-out prefix.qc.json
 ```
 
 The cache is intentionally sharded by chromosome so downstream commands do not
 need to unpack a monolithic whole-genome archive.
 
-`build-cache` uses chromosome-at-a-time construction by default to keep peak
-memory bounded while creating the shards. Use `--index-strategy all` only when
-you explicitly want a faster whole-genome in-memory cache build and have enough
-RAM.
+`build-cache` scans the pairs file once by default, builds compact numeric
+buffers, and writes one NPZ shard per chromosome. Use `--index-strategy all`
+only when you explicitly want the legacy whole-genome in-memory cache path.
 
 ## Boundary
 

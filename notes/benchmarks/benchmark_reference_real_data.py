@@ -291,14 +291,6 @@ def reference_steps(
         cache_out = cache_dir / label
         steps.append(
             BenchmarkStep(
-                name=f"preprocess-qc-{label}",
-                group="preprocess",
-                command=touche_cmd(python, "preprocess", "qc", "--pairs", pairs, "--source", "auto", "--out", qc_out),
-                outputs=[qc_out],
-            )
-        )
-        steps.append(
-            BenchmarkStep(
                 name=f"preprocess-cache-{label}",
                 group="preprocess",
                 command=touche_cmd(
@@ -313,8 +305,10 @@ def reference_steps(
                     cache_out,
                     "--prefix",
                     label,
+                    "--qc-out",
+                    qc_out,
                 ),
-                outputs=[cache_out],
+                outputs=[cache_out, qc_out],
             )
         )
 

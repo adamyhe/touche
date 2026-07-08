@@ -8,6 +8,8 @@ from typing import TextIO
 
 from touche.models import ContactPair
 
+PairRecord = tuple[str, int, str, int, str, str, int, int]
+
 
 @contextmanager
 def open_text(path: str | Path, mode: str = "rt") -> Iterator[TextIO]:
@@ -66,6 +68,34 @@ def parse_pair_fields(fields: list[str], *, source: str = "auto") -> ContactPair
         raise ValueError(f"Malformed pair row with {len(fields)} columns") from exc
 
 
+def parse_pair_record(fields: list[str], *, source: str = "auto") -> PairRecord:
+    """Parse only the columns needed for QC and numeric contact indexes."""
+
+    if source not in {"auto", "distiller", "touche"}:
+        raise ValueError(f"Unsupported pair source: {source}")
+
+    if source == "touche" or (source == "auto" and len(fields) == 9):
+        offset = 0
+    elif source == "distiller" or (source == "auto" and len(fields) >= 10):
+        offset = 1
+    else:
+        raise ValueError(f"Expected 9 canonical or 10+ distiller columns, found {len(fields)}")
+
+    try:
+        return (
+            fields[offset],
+            int(fields[offset + 1]),
+            fields[offset + 2],
+            int(fields[offset + 3]),
+            fields[offset + 4],
+            fields[offset + 5],
+            int(fields[offset + 7]),
+            int(fields[offset + 8]),
+        )
+    except (IndexError, ValueError) as exc:
+        raise ValueError(f"Malformed pair row with {len(fields)} columns") from exc
+
+
 def iter_pairs(
     path: str | Path, *, source: str = "auto"
 ) -> Iterator[tuple[int, ContactPair, list[str]]]:
@@ -75,3 +105,12 @@ def iter_pairs(
         for line_number, line in iter_noncomment_lines(handle):
             fields = line.split("\t")
             yield line_number, parse_pair_fields(fields, source=source), fields
+
+
+def iter_pair_records(path: str | Path, *, source: str = "auto") -> Iterator[tuple[int, PairRecord]]:
+    """Yield lightweight parsed pair records without constructing ContactPair objects."""
+
+    with open_text(path, "rt") as handle:
+        for line_number, line in iter_noncomment_lines(handle):
+            fields = line.split("\t", 10)
+            yield line_number, parse_pair_record(fields, source=source)

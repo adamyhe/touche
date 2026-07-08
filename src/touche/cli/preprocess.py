@@ -47,6 +47,11 @@ def add_preprocess_parser(subparsers: argparse._SubParsersAction) -> None:
     cache_parser.add_argument("--compressed", action="store_true")
     cache_parser.add_argument("--cis-only", action=argparse.BooleanOptionalAction, default=True)
     cache_parser.add_argument("--index-strategy", choices=["chromosome", "all"], default="chromosome")
+    cache_parser.add_argument(
+        "--qc-out",
+        type=Path,
+        help="Write pair QC JSON while building the cache, avoiding a separate QC pass.",
+    )
     cache_parser.set_defaults(func=_build_cache)
 
 
@@ -86,5 +91,6 @@ def _build_cache(args: argparse.Namespace) -> None:
         compressed=args.compressed,
         cis_only=args.cis_only,
         index_strategy=args.index_strategy,
+        qc_out=args.qc_out,
     )
     print_json({"written": [str(path) for path in paths]})

@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from touche import __version__
-from touche.io import iter_pairs, open_text
+from touche.io import PairRecord, iter_pair_records, iter_pairs, open_text
 from touche.models import ContactPair, FilterSettings, PairStats
 
 
@@ -88,8 +88,8 @@ def convert_pairs(
 
 def summarize_pairs(pairs_path: str | Path, *, source: str = "auto") -> PairStats:
     stats = _new_stats()
-    for _, pair, _ in iter_pairs(pairs_path, source=source):
-        _observe_pair(stats, pair)
+    for _, record in iter_pair_records(pairs_path, source=source):
+        _observe_record(stats, record)
     return _freeze_stats(stats)
 
 
@@ -100,16 +100,25 @@ def write_qc(
     source: str = "auto",
 ) -> PairStats:
     stats = summarize_pairs(pairs_path, source=source)
+    write_qc_payload(out_path, stats=stats, source=pairs_path)
+    return stats
+
+
+def write_qc_payload(
+    out_path: str | Path,
+    *,
+    stats: PairStats,
+    source: str | Path,
+) -> None:
     payload = {
         "schema_version": 1,
         "touche_version": __version__,
-        "source": str(pairs_path),
+        "source": str(source),
         "stats": asdict(stats),
     }
-    Path(out_path).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return stats
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _new_stats() -> dict[str, object]:
@@ -136,6 +145,22 @@ def _observe_pair(stats: dict[str, object], pair: ContactPair, *, min_mapq: int 
     else:
         stats["trans_rows"] += 1
     if pair.mapq_a >= min_mapq and pair.mapq_b >= min_mapq:
+        stats["mapq_pass_rows"] += 1
+    else:
+        stats["mapq_fail_rows"] += 1
+
+
+def _observe_record(stats: dict[str, object], record: PairRecord, *, min_mapq: int = 30) -> None:
+    chrom_a, pos_a, chrom_b, pos_b, _strand_a, _strand_b, mapq_a, mapq_b = record
+    stats["total_rows"] += 1
+    stats["parsed_rows"] += 1
+    if chrom_a == chrom_b:
+        stats["cis_rows"] += 1
+        stats["per_chromosome"][chrom_a] += 1
+        stats["distance_histogram"][_distance_bin(abs(pos_b - pos_a))] += 1
+    else:
+        stats["trans_rows"] += 1
+    if mapq_a >= min_mapq and mapq_b >= min_mapq:
         stats["mapq_pass_rows"] += 1
     else:
         stats["mapq_fail_rows"] += 1

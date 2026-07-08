@@ -35,6 +35,37 @@ class ContactCacheTests(unittest.TestCase):
             self.assertEqual(chr1.chrom, "chr1")
             self.assertEqual(chr1.pos_a.tolist(), [10, 20])
 
+    def test_build_cache_can_write_qc_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pairs = tmp_path / "sample.pairs"
+            cache_dir = tmp_path / "cache"
+            qc_out = tmp_path / "sample.qc.json"
+            pairs.write_text(
+                "\n".join(
+                    [
+                        "chr1\t10\tchr1\t30\t+\t-\tUU\t30\t31",
+                        "chr1\t10\tchr2\t30\t+\t-\tUU\t30\t31",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            written = build_npz_cache(
+                pairs,
+                cache_dir,
+                source="touche",
+                prefix="sample",
+                qc_out=qc_out,
+            )
+
+            self.assertIn(qc_out, written)
+            payload = json.loads(qc_out.read_text(encoding="utf-8"))
+            self.assertEqual(payload["stats"]["parsed_rows"], 2)
+            self.assertEqual(payload["stats"]["cis_rows"], 1)
+            self.assertEqual(payload["stats"]["trans_rows"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

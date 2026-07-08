@@ -8,13 +8,9 @@ profiles the full `touche` workflow on those inputs.
 
 The default run profiles these full-data steps:
 
-- `preprocess-qc-k562`
 - `preprocess-cache-k562`
-- `preprocess-qc-dmso`
 - `preprocess-cache-dmso`
-- `preprocess-qc-flv`
 - `preprocess-cache-flv`
-- `preprocess-qc-trp`
 - `preprocess-cache-trp`
 - `local-decay-call`
 - `local-decay-assign-pair-types`
@@ -33,6 +29,10 @@ The default run profiles these full-data steps:
 `preprocess-cache-k562`. The benchmark passes `--require-cache`, so cache
 construction is measured only in `preprocess-cache-k562` and is not hidden
 inside the timed local-decay call.
+
+Each `preprocess-cache-*` step also writes the sample QC JSON with
+`build-cache --qc-out`, so preprocessing scans each compressed pairs file once
+instead of running separate QC and cache passes.
 
 ## Inputs
 

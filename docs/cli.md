@@ -120,6 +120,9 @@ The summary includes parsed rows, written rows where relevant, cis/trans counts,
 mapq pass/fail counts, per-chromosome counts, and a coarse cis-distance
 histogram.
 
+For large files that will also be cached, write QC during cache construction
+with `build-cache --qc-out` so the compressed pairs file is scanned once.
+
 ### Build NPZ caches
 
 Build chromosome-sharded NPZ caches for repeated analysis:
@@ -129,12 +132,16 @@ uv run touche preprocess build-cache \
   --pairs sample.nodups_30_intra.pairs.gz \
   --source touche \
   --cache-dir .cache/touche/sample \
-  --prefix sample
+  --prefix sample \
+  --qc-out sample.qc.json
 ```
 
 Add `--compressed` to write compressed NPZ shards. The default is uncompressed
 NPZ, which is usually faster to load and avoids turning one cache into a large
 monolithic archive.
+
+The default cache builder emits chromosome-sharded NPZ files from one streaming
+pass over the input. The optional QC file is computed during that same pass.
 
 ## Local Decay
 
