@@ -1,7 +1,8 @@
-# Notebook API
+# API documentation
 
 The command line remains the best entrypoint for reproducible batch runs, but
-the core APIs can also be used interactively from Python notebooks.
+the core APIs can also be used interactively from Python notebooks or folded
+into custom analysis scripts.
 
 The notebook-friendly pattern is:
 

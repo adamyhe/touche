@@ -137,6 +137,18 @@ parsed CLI JSON when stdout contains JSON.
 Return code `-9` is `SIGKILL`. On local machines and schedulers this usually
 means the subprocess exceeded available memory or a job limit.
 
+Downloads retry automatically on HTTP 429/500/502/503/504 and on connection
+errors, with exponential backoff (honoring a `Retry-After` response header
+when present). This is common on shared HPC egress IPs hitting GitHub's or
+NCBI's per-IP rate limits. Retries are logged to stderr as `[download] ...
+retrying in Ns (attempt X/Y)`. Tune with `--download-retries` (default 6,
+use `0` to disable) and `--download-retry-backoff` (default 2.0s base
+delay). If you still see a persistent `HTTP Error 429` after retries are
+exhausted, wait a bit and re-run — already-downloaded files are skipped via
+the existing-file check, so re-running only fetches what's missing — or pass
+a higher `--download-retries`/`--download-retry-backoff` if run alongside
+other jobs contending for the same node's egress IP.
+
 If `local-decay-call` fails before running, check that `preprocess-cache-k562`
 completed and wrote:
 

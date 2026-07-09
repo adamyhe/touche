@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import email.utils
 import hashlib
+import http.client
 import json
+import random
 import sys
 import time
+import urllib.error
 import urllib.request
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +74,19 @@ def main() -> int:
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--download-only", action="store_true")
+    parser.add_argument(
+        "--download-retries",
+        type=int,
+        default=6,
+        help="Retries per download on HTTP 429/5xx or connection errors before giving up. "
+        "Set to 0 to disable retrying.",
+    )
+    parser.add_argument(
+        "--download-retry-backoff",
+        type=float,
+        default=2.0,
+        help="Base delay in seconds for exponential backoff between download retries.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--plot-only", action="store_true")
     parser.add_argument("--no-report", action="store_true")
@@ -152,7 +170,11 @@ def main() -> int:
 
     download_records: list[dict[str, Any]] = []
     if not args.skip_download:
-        download_records = download_reference_inputs(downloads)
+        download_records = download_reference_inputs(
+            downloads,
+            max_retries=args.download_retries,
+            retry_backoff=args.download_retry_backoff,
+        )
     if args.download_only:
         write_manifest(
             manifest_json,
@@ -632,14 +654,23 @@ def touche_cmd(python: str, *args: object) -> list[str]:
     return [python, "-m", "touche", *[str(arg) for arg in args]]
 
 
-def download_reference_inputs(downloads: list[Download]) -> list[dict[str, Any]]:
+_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
+
+
+def download_reference_inputs(
+    downloads: list[Download],
+    *,
+    max_retries: int = 6,
+    retry_backoff: float = 2.0,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for item in downloads:
         item.path.parent.mkdir(parents=True, exist_ok=True)
         started_present = item.path.exists()
         started = time.perf_counter()
         if not started_present:
-            download_file(item.url, item.path)
+            download_file(item.url, item.path, max_retries=max_retries, retry_backoff=retry_backoff)
+            time.sleep(1.0)
         elapsed = time.perf_counter() - started
         records.append(
             {
@@ -655,16 +686,62 @@ def download_reference_inputs(downloads: list[Download]) -> list[dict[str, Any]]
     return records
 
 
-def download_file(url: str, path: Path) -> None:
+def _retry_after_seconds(exc: urllib.error.HTTPError) -> float | None:
+    header = exc.headers.get("Retry-After") if exc.headers is not None else None
+    if not header:
+        return None
+    header = header.strip()
+    if header.isdigit():
+        return float(header)
+    try:
+        retry_at = email.utils.parsedate_to_datetime(header)
+    except (TypeError, ValueError):
+        return None
+    if retry_at is None:
+        return None
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+
+
+def download_file(url: str, path: Path, *, max_retries: int = 6, retry_backoff: float = 2.0) -> None:
     tmp_path = path.with_suffix(path.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=60) as response:
-        with tmp_path.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-    tmp_path.replace(path)
+    attempt = 0
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                with tmp_path.open("wb") as handle:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+            tmp_path.replace(path)
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _RETRYABLE_HTTP_STATUSES or attempt >= max_retries:
+                raise
+            delay = _retry_after_seconds(exc)
+            reason = f"HTTP {exc.code}"
+        except urllib.error.URLError as exc:
+            if attempt >= max_retries:
+                raise
+            delay = None
+            reason = str(exc.reason)
+        except (TimeoutError, ConnectionError, http.client.IncompleteRead) as exc:
+            if attempt >= max_retries:
+                raise
+            delay = None
+            reason = str(exc) or type(exc).__name__
+
+        if delay is None:
+            delay = min(60.0, retry_backoff * (2**attempt)) + random.uniform(0, retry_backoff)
+        attempt += 1
+        print(
+            f"[download] {url} failed ({reason}); retrying in {delay:.1f}s "
+            f"(attempt {attempt}/{max_retries})",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(delay)
 
 
 def missing_output_paths_local(record: dict[str, Any]) -> list[str]:
