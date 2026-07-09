@@ -14,8 +14,9 @@ use `uv run touche` as shown in the examples.
 
 For routine analyses, start with the [CLI reference](cli.md)'s main workflow
 section. It shows when to preprocess pairs, when local-decay caches are useful,
-which `run` wrappers to use, and how to set `NUMBA_NUM_THREADS` for long
-counting jobs.
+which `run` wrappers to use, and how to set `NUMBA_NUM_THREADS` for long jobs.
+The same guide also documents the `polars-lts-cpu` install workaround for older
+CPUs and x86-64 Python on Apple Silicon under Rosetta.
 
 ## Guides
 

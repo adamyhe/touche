@@ -17,6 +17,20 @@ uv run touche --help
 The examples below use `uv run touche` so they work from a checkout. If the
 package is installed with `pip`, drop the `uv run` prefix.
 
+### Older CPUs and Rosetta
+
+If the standard Polars wheel does not run on your CPU, use Polars' LTS CPU
+build. It provides the same `import polars` module, but it is distributed as
+`polars-lts-cpu`, so install `ep-touche` first and then replace the default
+Polars wheel in that environment:
+
+```bash
+pip install ep-touche
+pip uninstall polars
+pip install "polars-lts-cpu>=1.0"
+touche --help
+```
+
 ## Command groups
 
 ```bash

@@ -47,6 +47,21 @@ pip install ep-touche[legacy]
 # or: uv sync --extra legacy
 ```
 
+### Older CPUs and Rosetta
+
+Polars publishes an `lts-cpu` wheel for older CPUs and for x86-64 Python on
+Apple Silicon under Rosetta. Because `polars-lts-cpu` provides the same
+`import polars` module but is a different Python distribution, it does not
+automatically satisfy `ep-touche`'s normal `polars>=1.0` dependency. If the
+standard Polars wheel does not run on your machine, install `ep-touche`, then
+replace Polars in that environment:
+
+```bash
+pip install ep-touche
+pip uninstall polars
+pip install "polars-lts-cpu>=1.0"
+```
+
 ## CLI Overview
 
 ```bash
