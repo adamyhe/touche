@@ -12,11 +12,11 @@ such as `distiller-nf`.
 
 ## Status
 
-The current implementation includes:
+The current implementation includes CLI tools+API for:
 
 - Micro-C pairs conversion, filtering, QC, and chromosome-sharded NPZ caches
 - local-decay contact calling, pair-type assignment, and plotting
-- APA aggregation and inter-sample APA comparison
+- Aggregated peak analysis (APA) aggregation and inter-sample APA comparison
 - enhancer/promoter local-background counting and treatment comparison
 - pipeline `run` wrappers that preserve intermediate outputs and write JSON
   manifests
