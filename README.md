@@ -4,8 +4,7 @@
 [![Tests](https://github.com/adamyhe/touche/actions/workflows/ci.yml/badge.svg)](https://github.com/adamyhe/touche/actions/workflows/ci.yml)
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/ep-touche?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/ep-touche)
 
-Python package and CLI tools for high-resolution chromatin contact analyses,
-refactored from the Danko Lab E-P_contacts reference workflows.
+Python API and CLI tools for analyzing enhancer-promoter contacts (touches) from high-resolution chromatin contact data, refactored from the [Danko Lab E-P_contacts reference workflows](https://github.com/Danko-Lab/E-P_contacts).
 
 `touche` starts from processed pairs files. Raw FASTQ processing, alignment,
 deduplication, and cooler generation should be handled by an external workflow
