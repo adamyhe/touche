@@ -506,7 +506,6 @@ def plot_pair_type_distribution(
         x=filtered["PosNeg"].to_numpy(),
         y=filtered["Obs/Exp"].to_numpy(),
         hue=filtered["PosNeg"].to_numpy(),
-        showfliers=False,
         palette=palette,
         order=order,
         hue_order=order,
