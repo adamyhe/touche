@@ -9,7 +9,7 @@ import polars as pl
 from scipy.stats import gaussian_kde
 
 from touche.anchors import read_bed_anchors
-from touche.backends import validate_backend
+from touche.backends import DEFAULT_BACKEND, validate_backend
 from touche.contacts import build_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex, NamedDepth, NamedPath
@@ -40,7 +40,7 @@ def count_ep_and_background(
     min_bg_distance: int,
     max_bg_distance: int,
     source: str = "auto",
-    backend: str = "numpy",
+    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
@@ -86,7 +86,7 @@ def compute_ep_and_background(
     window: int,
     min_bg_distance: int,
     max_bg_distance: int,
-    backend: str = "numpy",
+    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:

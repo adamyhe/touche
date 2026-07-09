@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 
 from touche.anchors import read_bed_anchors
-from touche.backends import validate_backend
+from touche.backends import DEFAULT_BACKEND, validate_backend
 from touche.contacts import build_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex
@@ -52,7 +52,7 @@ def aggregate_apa(
     source: str = "auto",
     shift: int = 75,
     reference_style: bool = True,
-    backend: str = "numpy",
+    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Path]:
@@ -89,7 +89,7 @@ def compute_apa(
     window: int,
     pixels: int,
     shift: int = 75,
-    backend: str = "numpy",
+    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> ApaResult:

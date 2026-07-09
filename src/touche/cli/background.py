@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from touche.backends import DEFAULT_BACKEND
 from touche.background import count_ep_and_background, compare_background_ratios, parse_named_depth, parse_named_path
 from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.pipelines import run_background_pipeline
@@ -26,7 +27,7 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
     count_parser.add_argument("--min-bg-distance", required=True, type=int)
     count_parser.add_argument("--max-bg-distance", required=True, type=int)
     count_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
-    count_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    count_parser.add_argument("--backend", choices=["numpy", "numba"], default=DEFAULT_BACKEND)
     add_instrumentation_args(count_parser)
     count_parser.set_defaults(func=_count_background)
 
@@ -84,7 +85,7 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--max-bg-distance", required=True, type=int)
     run_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
     run_parser.add_argument("--min-ep-cpb", default=8.0, type=float)
-    run_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    run_parser.add_argument("--backend", choices=["numpy", "numba"], default=DEFAULT_BACKEND)
     add_instrumentation_args(run_parser)
     run_parser.add_argument(
         "--reference-style",

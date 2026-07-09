@@ -9,6 +9,7 @@ from typing import Any
 from touche import __version__
 from touche.anchors import read_bed_anchors
 from touche.apa import aggregate_apa, compare_apa_change
+from touche.backends import DEFAULT_BACKEND, DEFAULT_LOWESS_BACKEND
 from touche.background import compare_background_ratios, count_ep_and_background
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
@@ -33,8 +34,8 @@ def run_local_decay_pipeline(
     plot_min_contacts: int = 1,
     plot_min_distance: int = 15_000,
     reference_style: bool = True,
-    backend: str = "numpy",
-    lowess_backend: str = "statsmodels",
+    backend: str = DEFAULT_BACKEND,
+    lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,
     cache_prefix: str = "contacts",
@@ -152,7 +153,7 @@ def run_background_pipeline(
     source: str = "auto",
     min_ep_cpb: float = 8.0,
     reference_style: bool = True,
-    backend: str = "numpy",
+    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
@@ -251,7 +252,7 @@ def run_apa_pipeline(
     bait_count: int | None = None,
     prey_count: int | None = None,
     reference_style: bool = True,
-    backend: str = "numpy",
+    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:

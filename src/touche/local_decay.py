@@ -7,7 +7,12 @@ import numpy as np
 import polars as pl
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
-from touche.backends import validate_backend
+from touche.backends import (
+    DEFAULT_BACKEND,
+    DEFAULT_LOWESS_BACKEND,
+    validate_backend,
+    validate_lowess_backend,
+)
 from touche.contacts import (
     build_contact_indexes,
     build_npz_cache,
@@ -74,8 +79,8 @@ def call_local_decay(
     source: str = "auto",
     lowess_window: int = 5_000,
     lowess_delta: float = 16.0,
-    backend: str = "numpy",
-    lowess_backend: str = "statsmodels",
+    backend: str = DEFAULT_BACKEND,
+    lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     lowess_iterations: int = 3,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,
@@ -331,8 +336,8 @@ def compute_local_decay(
     min_distance: int = 5_000,
     lowess_window: int = 5_000,
     lowess_delta: float = 16.0,
-    backend: str = "numpy",
-    lowess_backend: str = "statsmodels",
+    backend: str = DEFAULT_BACKEND,
+    lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     lowess_iterations: int = 3,
     progress: bool | Instrumentation = False,
     profile: bool = False,
@@ -344,10 +349,7 @@ def compute_local_decay(
     if cap < 0:
         raise ValueError("cap must be non-negative")
     backend = validate_backend(backend)
-    if lowess_backend not in {"statsmodels", "numba"}:
-        raise ValueError("lowess_backend must be one of: statsmodels, numba")
-    if lowess_backend == "numba":
-        validate_backend("numba")
+    lowess_backend = validate_lowess_backend(lowess_backend)
     if lowess_iterations < 0:
         raise ValueError("lowess_iterations must be non-negative")
 
@@ -703,7 +705,7 @@ def fit_zero_inflation_model(
     dist: int = 1_000_000,
     winsize: int = 5_000,
     delta: float = 16.0,
-    backend: str = "statsmodels",
+    backend: str = DEFAULT_LOWESS_BACKEND,
     iterations: int = 3,
 ) -> np.ndarray:
     """Fit the reference zero-inflation LOWESS model."""
@@ -741,7 +743,7 @@ def fit_distance_decay_model(
     dist: int = 1_000_000,
     winsize: int = 5_000,
     delta: float = 16.0,
-    backend: str = "statsmodels",
+    backend: str = DEFAULT_LOWESS_BACKEND,
     iterations: int = 3,
 ) -> np.ndarray:
     """Fit the reference distance-decay LOWESS model."""
@@ -804,7 +806,7 @@ def _safe_lowess(
     frac: float,
     it: int,
     delta: float,
-    backend: str = "statsmodels",
+    backend: str = DEFAULT_LOWESS_BACKEND,
 ) -> np.ndarray:
     if len(endog) <= 2:
         return np.asarray(endog, dtype=float)

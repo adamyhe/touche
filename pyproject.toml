@@ -19,10 +19,8 @@ dependencies = [
   "matplotlib",
   "seaborn",
   "tqdm",
+  "numba",
 ]
-
-[project.optional-dependencies]
-fast = ["numba"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "mypy"]

@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from touche.apa import aggregate_apa, compare_apa_change
+from touche.backends import DEFAULT_BACKEND
 from touche.background import parse_named_path
 from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.pipelines import run_apa_pipeline
@@ -27,7 +28,7 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
     apa_aggregate.add_argument("--out-dir", required=True, type=Path)
     apa_aggregate.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
     apa_aggregate.add_argument("--shift", default=75, type=int)
-    apa_aggregate.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    apa_aggregate.add_argument("--backend", choices=["numpy", "numba"], default=DEFAULT_BACKEND)
     add_instrumentation_args(apa_aggregate)
     apa_aggregate.add_argument(
         "--reference-style",
@@ -76,7 +77,7 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
     apa_run.add_argument("--shift", default=75, type=int)
     apa_run.add_argument("--bait-count", type=int)
     apa_run.add_argument("--prey-count", type=int)
-    apa_run.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    apa_run.add_argument("--backend", choices=["numpy", "numba"], default=DEFAULT_BACKEND)
     add_instrumentation_args(apa_run)
     apa_run.add_argument(
         "--reference-style",

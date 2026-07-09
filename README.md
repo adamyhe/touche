@@ -37,12 +37,6 @@ uv add ep-touche
 uv run touche --help
 ```
 
-Optional accelerated kernels are available with:
-
-```bash
-pip install "ep-touche[fast]"
-```
-
 ## CLI Overview
 
 ```bash
@@ -79,10 +73,10 @@ indexes = tt.build_contact_indexes("sample.nodups_30_intra.pairs.gz", source="to
 The API is organized around reading pairs and anchors once, running in-memory
 compute functions such as `compute_apa`, `compute_local_decay`, and
 `compute_ep_and_background`, then displaying or saving returned Matplotlib
-figures as needed. Some counting functions support optional accelerated
-backends, such as `compute_apa(..., backend="numba")` and
-`compute_ep_and_background(..., backend="numba")`. Long-running CLI and API
-calls also support optional progress bars and lightweight profiling. See the
+figures as needed. Counting functions default to an accelerated Numba
+backend (`backend="numba"`), with `backend="numpy"` available as the plain
+NumPy reference implementation. Long-running CLI and API calls also support
+optional progress bars and lightweight profiling. See the
 [API guide](docs/api.md) for examples.
 
 ## Documentation

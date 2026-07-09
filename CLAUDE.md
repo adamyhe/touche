@@ -39,8 +39,8 @@ uv build                            # build sdist/wheel
 `mypy` is listed as a dev dependency but is not run in CI (`ci.yml` only runs
 `ruff check` and `pytest`).
 
-Install the optional Numba acceleration extra with `pip install "ep-touche[fast]"`
-or `uv sync --extra fast` — needed to exercise `backend="numba"` code paths.
+Numba is a core dependency (installed by `uv sync --dev`), so `backend="numba"`
+code paths are always exercisable without an extra install step.
 
 CI (`.github/workflows/ci.yml`) runs on Python 3.10/3.11/3.12: `uv sync --dev`,
 `ruff check src tests`, `pytest`, `uv build`. See `docs/testing-and-publishing.md`
@@ -88,11 +88,10 @@ for the release/publish process (trusted PyPI publishing via `publish.yml`).
   `local_decay.py`, `background.py`, `apa.py`), wired together in `main.py`.
   Each subcommand's `func` callback maps CLI args to the corresponding
   domain/pipeline function and prints a JSON summary via `cli/utils.py`.
-- `touche.backends` / `touche.numba_kernels` — optional Numba acceleration.
-  Domain compute functions accept `backend="numpy"` (default) or
-  `backend="numba"`; `validate_backend` raises a clear error if Numba isn't
-  installed. Numba is never imported at package import time — only when a
-  numba backend is actually requested. The pure NumPy/polars path is the
+- `touche.backends` / `touche.numba_kernels` — Numba acceleration, a core
+  dependency. Domain compute functions accept `backend="numba"` (default) or
+  `backend="numpy"`. Numba is never imported at package import time — only
+  when a numba backend is actually requested. The pure NumPy/polars path is the
   canonical correctness path; Numba kernels must match it (see
   `notes/numba-implementation-plan.md`).
 - `touche.instrumentation` — the shared `Instrumentation` dataclass

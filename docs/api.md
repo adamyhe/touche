@@ -80,8 +80,8 @@ apa = tt.compute_apa(
 fig = apa.plot()
 ```
 
-Use `backend="numba"` for optional accelerated APA counting when
-`ep-touche[fast]` is installed.
+APA counting defaults to `backend="numba"`. Pass `backend="numpy"` for the
+plain NumPy reference implementation instead.
 
 Write reference-style outputs only when needed:
 
@@ -104,8 +104,10 @@ calls = tt.compute_local_decay(
 )
 ```
 
-`compute_local_decay(..., backend="numba")` accelerates only the observed-count
-helper. LOWESS fitting remains in Python and often dominates runtime.
+`compute_local_decay` defaults to `backend="numba"`, which accelerates only
+the observed-count helper. LOWESS fitting (`lowess_backend`, default
+`"statsmodels"`) is separate and often dominates runtime -- pass
+`backend="numpy"` for the plain NumPy reference implementation instead.
 
 `compute_local_decay(..., lowess_backend="numba")` enables an experimental
 Numba LOWESS implementation for evenly spaced local-decay smoothing arrays. Use
@@ -136,14 +138,13 @@ counts = tt.compute_ep_and_background(
 )
 ```
 
-EP/background counting can also use the optional Numba backend:
+EP/background counting defaults to the Numba backend:
 
 ```python
-counts = tt.compute_ep_and_background(..., backend="numba")
+counts = tt.compute_ep_and_background(..., backend="numba")  # the default
 ```
 
-Install `ep-touche[fast]` before requesting the Numba backend. The default is
-`backend="numpy"`.
+Pass `backend="numpy"` for the plain NumPy reference implementation instead.
 
 ## Saving Figures
 

@@ -173,8 +173,7 @@ uv run touche local-decay run \
   --functional functional_pairs.tsv \
   --nonfunctional nonfunctional_pairs.tsv \
   --out-dir results/local-decay \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 The run wrapper writes:
@@ -199,8 +198,7 @@ uv run touche local-decay call \
   --preys preys.bed \
   --pairs sample.nodups_30_intra.pairs.gz \
   --out results/local-decay/ContactCaller_microC_output.tsv \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Assign pair types:
@@ -225,9 +223,10 @@ uv run touche local-decay plot \
 Use `--no-reference-style` on `run` or `plot` to use the package's standard
 Matplotlib styling instead of the reference-style plot appearance.
 
-`local-decay call` and `local-decay run` accept `--backend numba`, but the
-current acceleration only covers observed-count helpers. LOWESS fitting remains
-in Python and usually dominates runtime.
+`local-decay call` and `local-decay run` default to `--backend numba`, which
+only accelerates the observed-count helpers. LOWESS fitting (`--lowess-backend`,
+default `statsmodels`) is separate and usually dominates runtime. Pass
+`--backend numpy` for the plain NumPy reference implementation instead.
 
 `local-decay call` and `local-decay run` default to `--index-strategy cache`.
 The cache strategy builds or reuses chromosome-sharded NPZ contact indexes, then
@@ -300,8 +299,7 @@ uv run touche background run \
   --min-bg-distance 10000 \
   --max-bg-distance 150000 \
   --out-dir results/background \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 The run wrapper writes per-sample counts under `counts/`, comparison plots under
@@ -322,8 +320,7 @@ uv run touche background count \
   --min-bg-distance 10000 \
   --max-bg-distance 150000 \
   --out results/background/counts/DMSO_EP_and_BG_contacts.tsv \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Run `background count` for each treatment, then compare the count tables:
@@ -341,14 +338,9 @@ uv run touche background compare \
 The `--min-ep-cpb` threshold filters pairs by control EP contacts per billion
 contacts before plotting comparisons.
 
-`background count` and `background run` support `--backend numba` for optional
-accelerated EP/background counting. Install the speed extra first:
-
-```bash
-pip install "ep-touche[fast]"
-```
-
-The default remains `--backend numpy`.
+`background count` and `background run` default to `--backend numba` for
+accelerated EP/background counting. Pass `--backend numpy` for the plain
+NumPy reference implementation instead.
 
 ## APA
 
@@ -378,8 +370,7 @@ uv run touche apa run \
   --window 10000 \
   --pixels 50 \
   --out-dir results/apa/FLV_vs_DMSO \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Each sample directory contains:
@@ -406,8 +397,7 @@ uv run touche apa aggregate \
   --window 10000 \
   --pixels 50 \
   --out-dir results/apa/DMSO \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Aggregate the treatment sample the same way, then compare:
@@ -430,8 +420,9 @@ uv run touche apa compare \
 standalone `apa compare` command requires them because it only receives the
 already aggregated APA and signal files.
 
-`apa aggregate` and `apa run` support `--backend numba` for optional accelerated
-APA matrix and 1D signal counting.
+`apa aggregate` and `apa run` default to `--backend numba` for accelerated APA
+matrix and 1D signal counting. Pass `--backend numpy` for the plain NumPy
+reference implementation instead.
 
 ## Output and manifests
 

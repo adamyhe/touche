@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Literal
 
 Backend = Literal["numpy", "numba"]
+LowessBackend = Literal["statsmodels", "numba"]
+
+DEFAULT_BACKEND: Backend = "numba"
+DEFAULT_LOWESS_BACKEND: LowessBackend = "statsmodels"
 
 
 def validate_backend(backend: str) -> Backend:
@@ -11,6 +15,14 @@ def validate_backend(backend: str) -> Backend:
     if backend == "numba":
         require_numba()
     return backend  # type: ignore[return-value]
+
+
+def validate_lowess_backend(lowess_backend: str) -> LowessBackend:
+    if lowess_backend not in {"statsmodels", "numba"}:
+        raise ValueError("lowess_backend must be one of: statsmodels, numba")
+    if lowess_backend == "numba":
+        require_numba()
+    return lowess_backend  # type: ignore[return-value]
 
 
 def has_numba() -> bool:
@@ -24,7 +36,8 @@ def has_numba() -> bool:
 def require_numba() -> None:
     if not has_numba():
         raise RuntimeError(
-            "Numba backend requested, but numba is not installed. "
-            "Install the optional speed extra with `pip install 'ep-touche[fast]'` "
-            "or `uv sync --extra fast`."
+            "Numba backend requested, but numba is not installed. Numba is a "
+            "core dependency of ep-touche; if this error occurs, your "
+            "installation may be incomplete -- try `uv sync --dev` or "
+            "reinstalling `ep-touche`."
         )

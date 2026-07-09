@@ -249,6 +249,7 @@ source = { editable = "." }
 dependencies = [
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "matplotlib", version = "3.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numba" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "polars" },
@@ -258,11 +259,6 @@ dependencies = [
     { name = "seaborn" },
     { name = "statsmodels" },
     { name = "tqdm" },
-]
-
-[package.optional-dependencies]
-fast = [
-    { name = "numba" },
 ]
 
 [package.dev-dependencies]
@@ -275,7 +271,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "matplotlib" },
-    { name = "numba", marker = "extra == 'fast'" },
+    { name = "numba" },
     { name = "numpy" },
     { name = "polars" },
     { name = "scipy" },
@@ -283,7 +279,6 @@ requires-dist = [
     { name = "statsmodels" },
     { name = "tqdm" },
 ]
-provides-extras = ["fast"]
 
 [package.metadata.requires-dev]
 dev = [
