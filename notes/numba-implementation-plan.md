@@ -509,3 +509,52 @@ scipy_fisher_exact: min=1.7876s median=1.8119s mean=1.8708s repeats=3
 direct_hypergeom_sf: min=1.3367s median=1.4653s mean=1.4361s repeats=3
 median_speedup=1.24x
 ```
+
+## Future work: parallelizing across baits/chromosomes (tabled)
+
+Per-chromosome/per-bait work is embarrassingly parallel in both `compute_apa`
+(`src/touche/apa.py`) and `compute_local_decay` (`src/touche/local_decay.py`),
+but the two have very different payoffs today:
+
+- APA already gets ~400x from the numba backend on real data (sub-second), so
+  parallelizing it further has little upside.
+- Local-decay's bottleneck is the per-bait LOWESS fit in `_call_bait_contacts`
+  (`src/touche/local_decay.py:553`), not the counting kernels — the numba
+  backend only gets ~1.008x there (see the local-decay benchmark above)
+  because it doesn't touch the LOWESS step. Baits are independent (no shared
+  mutable state, just appended records), making cross-bait parallelism the
+  natural next lever if local-decay speed becomes a priority.
+
+Two ways to get that parallelism, with a real tradeoff:
+
+1. **Process-based (`ProcessPoolExecutor`/`multiprocessing`), across baits or
+   chromosomes.** Works regardless of `lowess_backend` (`statsmodels` or
+   `numba`), since it sidesteps the GIL entirely rather than relying on
+   Numba's threading. Lower implementation cost — the per-bait work in
+   `_call_bait_contacts` already returns plain record lists with no shared
+   state, so this is close to a straight `pool.map`. Overhead: process
+   startup and pickling indexes/baits per worker; pairs naturally with the
+   NPZ cache's per-chromosome shards (`index_strategy="cache"`) as an
+   existing sharding unit.
+2. **A nopython (Numba) port with `prange` across baits.** Confirmed via
+   direct inspection that `lowess_evenly_spaced_numba`
+   (`src/touche/numba_kernels.py:309`) is already `@njit(parallel=True)` with
+   its own internal `prange` over LOWESS anchor points. Numba does not
+   support nested parallel regions — calling this kernel from inside a *new*
+   outer `prange` over baits would silently serialize the inner loop rather
+   than adding real cross-bait parallelism. To actually parallelize across
+   baits this way requires: (a) a non-parallel variant of the LOWESS kernel
+   (plain `range`, no inner `prange`) for use inside the outer loop, and (b)
+   porting `_call_bait_contacts`'s histogramming plus
+   `fit_zero_inflation_model`/`fit_distance_decay_model`
+   (`src/touche/local_decay.py:694`, `:730`) into nopython code, since an
+   `@njit(parallel=True)` function can't call back into regular Python. This
+   is a real rewrite of the local-decay per-bait pipeline, not a kernel
+   tweak, and it only benefits `lowess_backend="numba"` users — the default
+   `lowess_backend` is `statsmodels`, which `prange` can't touch at all.
+
+Decision to make before picking either path: whether `lowess_backend="numba"`
+(and the numba compute backend generally) becomes the default/required path,
+since the nopython-port route (option 2) is only worth its cost if numba is
+no longer optional. Tabled until that's decided; process-based parallelism
+(option 1) remains available as a backend-agnostic fallback either way.

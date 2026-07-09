@@ -354,33 +354,39 @@ def compute_local_decay(
     instrument = make_instrumentation(progress, profile=profile)
     records: list[dict[str, float | int | str]] = []
     chrom_list = baits["chr"].unique(maintain_order=True).to_list() if baits.height else []
-    total_baits = baits.height
-    bait_progress = instrument.iter(
-        range(total_baits),
-        total=total_baits,
-        desc="local-decay baits",
-        unit="bait",
-    )
-    bait_progress_iter = iter(bait_progress)
 
-    chrom_iter = instrument.iter(
-        chrom_list,
-        total=len(chrom_list),
-        desc="local-decay chromosomes",
-        unit="chrom",
-    )
-    for chrom in chrom_iter:
+    # Only show a chromosome-level bar when there's more than one chromosome to
+    # show progress across -- callers that already iterate chromosomes
+    # themselves (e.g. _call_local_decay_from_cache) invoke this once per
+    # chromosome, where a single-item bar would be redundant. The per-chromosome
+    # bait bar below is created fresh (and closed) each iteration so it nests
+    # cleanly under this one instead of fighting it for the same terminal line.
+    chrom_source = chrom_list
+    if len(chrom_list) > 1:
+        chrom_source = instrument.iter(
+            chrom_list,
+            total=len(chrom_list),
+            desc="local-decay chromosomes",
+            unit="chrom",
+        )
+
+    for chrom in chrom_source:
         chrom_baits = baits.filter(pl.col("chr") == chrom)
         chrom_preys = preys.filter(pl.col("chr") == chrom).sort("center")
         index = indexes.get(chrom)
         if index is None or chrom_preys.is_empty():
-            for _ in range(chrom_baits.height):
-                next(bait_progress_iter, None)
             continue
         normalized = _ordered_cis_index(index)
         prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
-        for bait_center in chrom_baits["center"].to_numpy().astype(np.int64):
-            next(bait_progress_iter, None)
+        bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
+        bait_iter = instrument.iter(
+            bait_centers,
+            total=len(bait_centers),
+            desc=f"local-decay baits ({chrom})",
+            unit="bait",
+            leave=False,
+        )
+        for bait_center in bait_iter:
             start = int(max(0, bait_center - dist))
             stop = int(bait_center + dist)
             left = np.searchsorted(prey_centers, start, side="left")
