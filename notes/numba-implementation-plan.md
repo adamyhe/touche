@@ -621,9 +621,10 @@ approaches the core count:
   bounded by baits/preys active in that chromosome (APA's anchor kernel) or
   candidate pairs after distance filtering (background) -- both shrink a lot
   for smaller/sparser chromosomes, leaving cores idle that a concurrent
-  second chromosome could otherwise use. This is where item 3's outer
-  chromosome-level threading is the more promising target, conditional on
-  capping each worker's numba thread budget (see item 3).
+  second chromosome could otherwise use. Item 3 below designs outer
+  chromosome-level threading for this case, but it's deferred for now in
+  favor of staying sequential and letting `NUMBA_NUM_THREADS` control core
+  usage -- see item 3's "Status: deferred" note for why.
 
 1. **Vectorize local-decay's per-prey Fisher-exact loop** (lowest risk, ready
    to implement first). `_call_bait_contacts`'s tail loop
@@ -641,33 +642,51 @@ approaches the core count:
    O(preys x window) loop into O(preys) vectorized ops. Verify via exact
    equality against the current scalar loop's output on existing fixtures.
 
-2. **Parallelize `apa_matrix_numba`** (profile-gated -- confirm value before
-   implementing). `apa_matrix_numba` (`src/touche/numba_kernels.py:206`) is
+2. **Parallelize `apa_matrix_numba`.** **Status: done.**
+   `apa_matrix_numba` (`src/touche/numba_kernels.py:207`) previously ran
    `@njit(cache=True)` only -- no `parallel=True`/`prange`, unlike its sibling
    `apa_anchor_signal_numba` (`:168`, `parallel=True` with `prange` over
-   `center_index`). Before implementing, profile the two kernels' relative
-   share of APA-numba's total runtime (extend
-   `notes/benchmarks/benchmark_numba_kernels.py --compare-kernels`, or a quick
-   manual timing) -- APA already gets 80-400x overall, so this is only worth
-   the added complexity if `apa_matrix_numba` is a meaningful fraction of
-   what's left. If it is: naively adding `prange` to the current outer
+   `center_index`). Naively adding `prange` to the outer
    `for pair_index in range(...)` loop would introduce a real data race --
    multiple pairs write `matrix[prey_bin, bait_bin] += count` into the *same*
    shared cell (unlike `apa_anchor_signal_numba`, where each `prange`
    iteration owns an exclusive output row indexed by the loop variable
-   itself). The safe restructuring is to make the *output cells* the
-   parallel axis instead: `prange` over a flattened `bait_bin x prey_bin`
-   index, each parallel branch owning one exclusive matrix cell and looping
-   over pairs/contacts internally -- mirroring `apa_anchor_signal_numba`'s
-   "parallelize over the axis that owns exclusive output" pattern rather than
-   introducing thread-local scratch buffers. Verify via exact integer
-   equality against the current single-threaded kernel's output, per the
-   "Require exact equality for integer count outputs before trusting
-   speedups" guardrail below.
+   itself), so `matrix` is now `thread_matrices` of shape
+   `(n_threads, bins, bins)`: each thread accumulates into its own exclusive
+   slice via `get_thread_id()`, and the caller sums over `axis=0` after the
+   parallel loop -- the standard thread-local-buffer pattern for
+   scatter-add reductions numba can't auto-parallelize. `n_threads` is
+   computed via `numba.get_num_threads()` in the Python wrapper
+   (`apa.py`'s `_apa_matrix_numba`) and passed in as a plain argument rather
+   than called inside the kernel -- calling `get_num_threads()` from inside
+   an `@njit(cache=True)` function makes numba treat it as a dynamic global
+   and silently disables on-disk caching (confirmed via
+   `NumbaWarning: Cannot cache compiled function ... as it uses dynamic
+   globals`); `get_thread_id()` alone does not have this problem and stays
+   inside the kernel. Verified via the existing exact-equality test
+   (`tests/test_apa_aggregate.py::test_numba_compute_apa_matches_numpy`) and
+   an ad hoc synthetic benchmark (100k contacts, 300 baits/preys, 20 Mb
+   chromosome, matching the scale used elsewhere in this file) showing
+   ~4.3x speedup over the old sequential kernel with bit-identical output.
 
 3. **Opt-in cross-chromosome thread-pool parallelism for APA/background only**
    (biggest lift, needs its own review before implementing; per the framing
    above, deliberately scoped to exclude `compute_local_decay`).
+   **Status: deferred.** For the sake of simplicity, `compute_apa` and
+   `compute_ep_and_background`'s outer per-chromosome loops stay strictly
+   sequential for now; core usage for a whole run is controlled via the
+   `NUMBA_NUM_THREADS` environment variable (or `numba.set_num_threads()` in
+   a notebook) instead of adding a second, outer-level parallelism knob.
+   Given item 2 already gives every numba kernel in the codebase
+   kernel-level `prange` parallelism, the added API surface and complexity
+   below (new `n_jobs`/`--jobs` parameter, worker-thread error propagation,
+   progress-bar interaction, work-stealing scheduler) isn't worth it
+   right now. The design is kept below in case per-chromosome kernel
+   parallelism is later shown (via profiling on real multi-core hardware)
+   to leave cores idle for long stretches -- e.g. many small chromosomes
+   trailing behind one large one -- at which point this becomes worth
+   revisiting rather than re-deriving from scratch.
+
    `compute_apa` and `compute_ep_and_background`'s outer per-chromosome loops
    (`apa.py:116`, `background.py:106`) are strictly sequential today, but
    each chromosome's `ContactIndex` and bait/prey subset is fully independent

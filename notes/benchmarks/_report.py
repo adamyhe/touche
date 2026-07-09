@@ -9,6 +9,7 @@ consistent as they evolve.
 
 from __future__ import annotations
 
+import codecs
 import csv
 import json
 import os
@@ -71,12 +72,16 @@ def run_profiled_step(
     peak_rss_kb: int | None = None
     with stdout_log.open("w", encoding="utf-8") as stdout_handle:
         with stderr_log.open("w", encoding="utf-8") as stderr_handle:
+            # stderr is read in binary mode (not text=True) so tqdm's `\r`
+            # redraws survive the pipe intact -- Python's text-mode universal
+            # newlines translation would otherwise silently rewrite every
+            # `\r` as `\n`, turning each in-place progress-bar update into a
+            # permanent new line in the log.
             process = subprocess.Popen(
                 step.command,
                 stdout=stdout_handle,
                 stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
+                bufsize=0,
             )
             stderr_thread = threading.Thread(
                 target=tee_stream,
@@ -124,14 +129,18 @@ def run_profiled_step(
 def tee_stream(stream, log_handle, *, live: bool) -> None:
     if stream is None:
         return
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     while True:
-        chunk = stream.read(1)
-        if chunk == "":
+        chunk = stream.read(4096)
+        if not chunk:
             break
-        log_handle.write(chunk)
+        text = decoder.decode(chunk)
+        if not text:
+            continue
+        log_handle.write(text)
         log_handle.flush()
         if live:
-            sys.stderr.write(chunk)
+            sys.stderr.write(text)
             sys.stderr.flush()
 
 

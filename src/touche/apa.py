@@ -315,6 +315,8 @@ def _apa_matrix_numba(
     window: int,
     pixels: int,
 ) -> np.ndarray:
+    from numba import get_num_threads
+
     from touche.numba_kernels import apa_matrix_numba
 
     return apa_matrix_numba(
@@ -329,6 +331,7 @@ def _apa_matrix_numba(
         long_range.astype(np.bool_, copy=False),
         int(window),
         int(pixels),
+        get_num_threads(),
     )
 
 

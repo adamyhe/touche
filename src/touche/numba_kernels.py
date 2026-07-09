@@ -3,11 +3,12 @@ from __future__ import annotations
 import numpy as np
 
 try:
-    from numba import njit, prange
+    from numba import get_thread_id, njit, prange
 except ImportError as exc:  # pragma: no cover - exercised through backend helper
     raise RuntimeError(
-        "Numba kernels require the optional speed extra. "
-        "Install with `pip install 'ep-touche[fast]'` or `uv sync --extra fast`."
+        "Numba kernels require numba, which is a core dependency of ep-touche. "
+        "If this error occurs, your installation may be incomplete -- try "
+        "`uv sync --dev` or reinstalling `ep-touche`."
     ) from exc
 
 
@@ -203,7 +204,7 @@ def apa_anchor_signal_numba(
     return signals
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def apa_matrix_numba(
     pos_a: np.ndarray,
     pos_b: np.ndarray,
@@ -216,12 +217,20 @@ def apa_matrix_numba(
     long_range: np.ndarray,
     window: int,
     pixels: int,
+    n_threads: int,
 ) -> np.ndarray:
     bins = pixels * 2
     step = window // pixels
-    matrix = np.zeros((bins, bins), dtype=np.int64)
+    # Different pairs can land in the same (prey_bin, bait_bin) cell, so a
+    # plain prange over pair_index would race on `matrix[...] +=`. Give each
+    # thread its own exclusive matrix slice and reduce after the loop.
+    # n_threads is passed in (rather than read via get_num_threads() here)
+    # because calling get_num_threads() inside the kernel makes numba treat
+    # it as a dynamic global and silently disables on-disk caching.
+    thread_matrices = np.zeros((n_threads, bins, bins), dtype=np.int64)
 
-    for pair_index in range(pair_bait_index.shape[0]):
+    for pair_index in prange(pair_bait_index.shape[0]):
+        tid = get_thread_id()
         bait_center = bait_centers[pair_bait_index[pair_index]]
         bait_strand = bait_strands[pair_bait_index[pair_index]]
         prey_center = prey_centers[pair_prey_index[pair_index]]
@@ -262,9 +271,9 @@ def apa_matrix_numba(
                     a_in_prey = prey_start <= a <= prey_end
                     b_in_prey = prey_start <= b <= prey_end
                     if (a_in_bait and b_in_prey) or (b_in_bait and a_in_prey):
-                        matrix[prey_bin, bait_bin] += 1
+                        thread_matrices[tid, prey_bin, bait_bin] += 1
 
-    return matrix
+    return thread_matrices.sum(axis=0)
 
 
 @njit(cache=True, parallel=True)
