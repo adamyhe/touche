@@ -88,12 +88,20 @@ for the release/publish process (trusted PyPI publishing via `publish.yml`).
   `local_decay.py`, `background.py`, `apa.py`), wired together in `main.py`.
   Each subcommand's `func` callback maps CLI args to the corresponding
   domain/pipeline function and prints a JSON summary via `cli/utils.py`.
-- `touche.backends` / `touche.numba_kernels` — Numba acceleration, a core
-  dependency. Domain compute functions accept `backend="numba"` (default) or
-  `backend="numpy"`. Numba is never imported at package import time — only
-  when a numba backend is actually requested. The pure NumPy/polars path is the
-  canonical correctness path; Numba kernels must match it (see
-  `notes/numba-implementation-plan.md`).
+- `touche.backends` / `touche.numba/` — Numba acceleration, a core
+  dependency. `touche.numba` is a subpackage split by the domain that uses
+  each kernel (`touche.numba.apa`, `.background`, `.local_decay`, `.stats`);
+  numba is never imported at package import time — only when a
+  numba-accelerated function is actually called, so every `from
+  touche.numba.<domain> import ...` happens inside a function body, never at
+  a domain module's own top level. Counting (APA matrix/1D signal,
+  EP/background pairs, local-decay's observed-count helper) always uses its
+  Numba kernel — each was verified exact-equivalent to the plain NumPy
+  implementation it replaced (see `notes/numba-implementation-plan.md`), so
+  there's no `backend` choice exposed for it. `lowess_backend`
+  (`"numba"`/`"statsmodels"`) and `fisher_backend` (`"numba"`/`"scipy"`) are
+  different: each numba path is a validated but inexact approximation of its
+  alternative, so both choices remain exposed, defaulting to `"numba"`.
 - `touche.instrumentation` — the shared `Instrumentation` dataclass
   (`progress`, `profile`) threaded through compute/pipeline functions as the
   `progress=` argument. `instrument.iter(...)` wraps iterables with `tqdm`
@@ -132,6 +140,10 @@ canonical 9-column layout this package writes (`preprocess filter-pairs`/
 - `notes/` — agent-facing implementation plans, benchmark logs, and design
   sketches. Do not put user-facing documentation here, and don't move scratch
   planning into `docs/` unless it's rewritten for users.
+- `scripts/` — standalone, runnable tools promoted out of `notes/` once
+  they're more than a one-off benchmark log (e.g. `reference_replication.py`,
+  which downloads the upstream E-P_contacts example data and replicates its
+  reference workflows end to end). Not part of the `touche` package build.
 - `_reference/E-P_contacts/` — the original reference workflows being ported;
   treat as read-only prior art, not something to modify.
 - Manifests, cache directories, and other generated outputs (`.cache/`,

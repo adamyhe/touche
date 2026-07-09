@@ -1,10 +1,10 @@
 """Shared subprocess-profiling and report-writing helpers for the benchmark scripts.
 
-Both `benchmark_reference_real_data.py` and `benchmark_numba_kernels.py` run a
-list of steps as subprocesses, measure wall time / peak RSS / CPU time for
-each, and write the same CSV/Markdown/HTML/plot report shape. This module is
-the single source of truth for that plumbing so the two scripts stay
-consistent as they evolve.
+Both `scripts/reference_replication.py` and
+`notes/benchmarks/benchmark_numba_kernels.py` run a list of steps as
+subprocesses, measure wall time / peak RSS / CPU time for each, and write the
+same CSV/Markdown/HTML/plot report shape. This module is the single source of
+truth for that plumbing so the two scripts stay consistent as they evolve.
 """
 
 from __future__ import annotations
@@ -305,39 +305,6 @@ def profile_timing_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def speedup_table(
-    pairs: list[tuple[str, dict[str, Any], dict[str, Any]]],
-) -> list[dict[str, Any]]:
-    """Build speedup rows from (name, baseline_record, accelerated_record) triples."""
-
-    rows: list[dict[str, Any]] = []
-    for name, baseline, accelerated in pairs:
-        baseline_seconds = baseline.get("elapsed_seconds")
-        accelerated_seconds = accelerated.get("elapsed_seconds")
-        speedup = None
-        if isinstance(baseline_seconds, (int, float)) and isinstance(
-            accelerated_seconds, (int, float)
-        ) and accelerated_seconds > 0:
-            speedup = baseline_seconds / accelerated_seconds
-        baseline_rss = baseline.get("peak_rss_mb")
-        accelerated_rss = accelerated.get("peak_rss_mb")
-        rss_delta = None
-        if isinstance(baseline_rss, (int, float)) and isinstance(accelerated_rss, (int, float)):
-            rss_delta = accelerated_rss - baseline_rss
-        rows.append(
-            {
-                "name": name,
-                "baseline_seconds": baseline_seconds or "",
-                "accelerated_seconds": accelerated_seconds or "",
-                "speedup": round(speedup, 3) if speedup is not None else "",
-                "baseline_peak_rss_mb": baseline_rss or "",
-                "accelerated_peak_rss_mb": accelerated_rss or "",
-                "peak_rss_delta_mb": round(rss_delta, 3) if rss_delta is not None else "",
-            }
-        )
-    return rows
-
-
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
@@ -353,7 +320,6 @@ def write_markdown_summary(
     summary_rows: list[dict[str, Any]],
     timing_rows: list[dict[str, Any]],
     *,
-    speedup_rows: list[dict[str, Any]] | None = None,
     extra_figures: list[str] | None = None,
 ) -> None:
     lines = [
@@ -370,24 +336,6 @@ def write_markdown_summary(
             "{peak_rss_mb} | {cpu_seconds} | {cpu_percent} | {output_mb} | {output_count} | "
             "{missing_outputs} | {zero_byte_outputs} | {rows} |".format(**row)
         )
-
-    if speedup_rows:
-        lines.extend(
-            [
-                "",
-                "## Speedup (baseline / accelerated)",
-                "",
-                "| Step | Baseline (s) | Accelerated (s) | Speedup | Baseline RSS (MiB) | Accelerated RSS (MiB) | RSS delta (MiB) |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-            ]
-        )
-        for row in speedup_rows:
-            lines.append(
-                "| {name} | {baseline_seconds} | {accelerated_seconds} | {speedup} | "
-                "{baseline_peak_rss_mb} | {accelerated_peak_rss_mb} | {peak_rss_delta_mb} |".format(
-                    **row
-                )
-            )
 
     if timing_rows:
         lines.extend(
@@ -415,8 +363,6 @@ def write_markdown_summary(
             "- [Output size](output-size.svg)",
         ]
     )
-    if speedup_rows:
-        lines.append("- [Speedup](speedup.svg)")
     if timing_rows:
         lines.append("- [CLI profile timings](command-timings.svg)")
     for figure in extra_figures or []:
@@ -445,17 +391,11 @@ def write_html_index(
     path: Path,
     *,
     timing_rows: bool,
-    speedup_rows: bool = False,
     plot_gallery: list[dict[str, str]] | None = None,
 ) -> None:
     timing_image = (
         '<h2>CLI Profile Timings</h2><img src="command-timings.svg" alt="CLI profile timings">'
         if timing_rows
-        else ""
-    )
-    speedup_image = (
-        '<h2>Speedup</h2><img src="speedup.svg" alt="Speedup by benchmark step">'
-        if speedup_rows
         else ""
     )
     gallery_html = ""
@@ -500,7 +440,6 @@ def write_html_index(
                 '<h2>Wall Time</h2><img src="wall-time.svg" alt="Wall time by benchmark step">',
                 '<h2>Peak RSS</h2><img src="peak-rss.svg" alt="Peak RSS by benchmark step">',
                 '<h2>CPU Utilization</h2><img src="cpu-percent.svg" alt="CPU percent by benchmark step">',
-                speedup_image,
                 '<h2>Output Size</h2><img src="output-size.svg" alt="Output size by benchmark step">',
                 timing_image,
                 gallery_html,
@@ -545,32 +484,6 @@ def plot_metric(
     plt.close(fig)
 
 
-def plot_speedup(rows: list[dict[str, Any]], *, out: Path) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plottable = [row for row in rows if row["speedup"] != ""]
-    if not plottable:
-        return
-    labels = [str(row["name"]) for row in plottable]
-    values = [float(row["speedup"]) for row in plottable]
-    height = max(4.0, 0.36 * len(plottable) + 1.2)
-    fig, ax = plt.subplots(figsize=(11, height))
-    positions = range(len(plottable))
-    ax.barh(list(positions), values, color="#f59e0b")
-    ax.axvline(1.0, color="#334155", linestyle="--", linewidth=1)
-    ax.set_yticks(list(positions), labels)
-    ax.invert_yaxis()
-    ax.set_xlabel("speedup (baseline seconds / accelerated seconds)")
-    ax.set_title("Numba Speedup Over Numpy")
-    ax.grid(axis="x", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(out)
-    plt.close(fig)
-
-
 def plot_profile_timings(rows: list[dict[str, Any]], *, out: Path) -> None:
     import matplotlib
 
@@ -608,7 +521,6 @@ def write_profile_report(
     records: list[dict[str, Any]],
     *,
     report_dir: Path,
-    speedup_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] | None = None,
     plot_gallery: list[dict[str, str]] | None = None,
 ) -> None:
     """Write the shared CSV/Markdown/HTML/plot report for a list of step records."""
@@ -623,16 +535,11 @@ def write_profile_report(
 
     summary_rows = [summary_row(record) for record in records]
     timing_rows = profile_timing_rows(records)
-    speedup_rows = speedup_table(speedup_pairs) if speedup_pairs else []
 
     write_csv(report_dir / "summary.csv", summary_rows)
     if timing_rows:
         write_csv(report_dir / "command-timings.csv", timing_rows)
-    if speedup_rows:
-        write_csv(report_dir / "speedup.csv", speedup_rows)
-    write_markdown_summary(
-        report_dir / "summary.md", summary_rows, timing_rows, speedup_rows=speedup_rows
-    )
+    write_markdown_summary(report_dir / "summary.md", summary_rows, timing_rows)
 
     resolved_gallery: list[dict[str, str]] = []
     if plot_gallery:
@@ -652,7 +559,6 @@ def write_profile_report(
     write_html_index(
         report_dir / "index.html",
         timing_rows=bool(timing_rows),
-        speedup_rows=bool(speedup_rows),
         plot_gallery=resolved_gallery,
     )
 
@@ -686,5 +592,3 @@ def write_profile_report(
     )
     if timing_rows:
         plot_profile_timings(timing_rows, out=report_dir / "command-timings.svg")
-    if speedup_rows:
-        plot_speedup(speedup_rows, out=report_dir / "speedup.svg")

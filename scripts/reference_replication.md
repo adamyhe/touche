@@ -2,35 +2,32 @@
 
 This benchmark is agent-facing and is not run by normal tests. It downloads the
 real example data named by the upstream `Danko-Lab/E-P_contacts` README and
-profiles the full `touche` workflow on those inputs.
+profiles the full `touche` workflow on those inputs, generating the same
+reference-comparable plots along the way.
 
 ## What It Measures
 
-The default run (`--backend both`) profiles the four backend-independent
-`preprocess-cache-*` steps once, then every downstream step **twice** — once
-with `--backend numpy` and once with `--backend numba` (suffixed
-`-numpy`/`-numba`) — so the report can show a numba-vs-numpy speedup per step.
-If the `fast` extra isn't installed, it automatically falls back to a
-numpy-only run with unsuffixed step names (pass `--backend numpy` or
-`--backend numba` explicitly to force a single-backend run instead, e.g. for
-fast debugging).
+The benchmark profiles the `preprocess-cache-*` steps once, then every
+downstream step once (counting always uses an accelerated Numba kernel, so
+there's no backend choice to profile side by side there). `--lowess-backend`
+and `--fisher-backend` remain real choices for `local-decay-call` (default
+`numba` for both; pass `statsmodels`/`scipy` for the exact reference-parity
+path).
 
-Full step list with `--backend both`:
+Full step list:
 
 - `preprocess-cache-k562`, `preprocess-cache-dmso`, `preprocess-cache-flv`,
-  `preprocess-cache-trp` (backend-independent, run once)
+  `preprocess-cache-trp`
 - `local-decay-call`, `local-decay-assign-pair-types`, `local-decay-plot`
 - `apa-aggregate-dmso`, `apa-aggregate-flv`, `apa-aggregate-trp`
 - `apa-compare-flv-vs-dmso`, `apa-compare-trp-vs-dmso`
 - `background-count-dmso`, `background-count-flv`, `background-count-trp`
 - `background-compare`
 
-each with a `-numpy` and `-numba` suffix (except the cache steps).
-
 `local-decay-call` uses the K562 chromosome-sharded NPZ cache created by
-`preprocess-cache-k562`, shared by both backend runs. The benchmark passes
-`--require-cache`, so cache construction is measured only in
-`preprocess-cache-k562` and is not hidden inside the timed local-decay call.
+`preprocess-cache-k562`. The benchmark passes `--require-cache`, so cache
+construction is measured only in `preprocess-cache-k562` and is not hidden
+inside the timed local-decay call.
 
 Each `preprocess-cache-*` step also writes the default sample QC JSON beside the
 cache manifest, so preprocessing scans each compressed pairs file once instead
@@ -63,30 +60,32 @@ Small input files are downloaded from GitHub raw URLs:
 Preview the full benchmark without downloading or running anything:
 
 ```bash
-uv run python notes/benchmarks/benchmark_reference_real_data.py --dry-run
+uv run python scripts/reference_replication.py --dry-run
 ```
 
 Download inputs only:
 
 ```bash
-uv run python notes/benchmarks/benchmark_reference_real_data.py --download-only
+uv run python scripts/reference_replication.py --download-only
 ```
 
-Run the full benchmark (numpy vs. numba side by side, if `fast` is installed):
+Run the full benchmark:
 
 ```bash
-uv run --extra fast python notes/benchmarks/benchmark_reference_real_data.py \
+uv run python scripts/reference_replication.py \
   --skip-download \
   --progress \
   --fail-on-missing-output
 ```
 
-Run only one backend (faster, useful for debugging a single path):
+Run the exact, statsmodels/scipy-backed reference-parity path instead (requires
+the optional `legacy` extra -- `uv sync --extra legacy`):
 
 ```bash
-uv run python notes/benchmarks/benchmark_reference_real_data.py \
+uv run python scripts/reference_replication.py \
   --skip-download \
-  --backend numpy \
+  --lowess-backend statsmodels \
+  --fisher-backend scipy \
   --progress \
   --fail-on-missing-output
 ```
@@ -94,7 +93,7 @@ uv run python notes/benchmarks/benchmark_reference_real_data.py \
 Regenerate plots and tables from an existing result file:
 
 ```bash
-uv run python notes/benchmarks/benchmark_reference_real_data.py --plot-only
+uv run python scripts/reference_replication.py --plot-only
 ```
 
 ## Outputs
@@ -108,23 +107,20 @@ benchmark/reference-real-data/
 The runner writes:
 
 - `data/`: downloaded input files.
-- `outputs/`: command outputs and NPZ caches. With `--backend both`,
-  backend-specific outputs live under `outputs/numpy/` and `outputs/numba/`;
-  the shared caches stay at `outputs/caches/`.
+- `outputs/`: command outputs and NPZ caches, including the shared caches
+  under `outputs/caches/`.
 - `logs/*.stdout` and `logs/*.stderr`: per-step subprocess output.
 - `benchmark-results.jsonl`: one profiled result per step.
 - `benchmark-manifest.json`: downloads, checksums, settings, and all step results.
-- `report/summary.md`: human-readable result table, plus a speedup table when
-  both backends ran.
-- `report/summary.csv`, `report/speedup.csv`: spreadsheet-friendly tables.
+- `report/summary.md`: human-readable result table.
+- `report/summary.csv`: spreadsheet-friendly table.
 - `report/index.html`: browser-readable report page, including a **Generated
   Plots** gallery embedding every SVG a step produced (APA heatmaps, the
-  local-decay violin plot, background scatter plots) grouped by workflow —
+  local-decay violin plot, background scatter plots) grouped by workflow --
   open this to visually compare touche's output against the published
   Danko-lab reference figures.
 - `report/wall-time.svg`, `report/peak-rss.svg`, `report/cpu-percent.svg`,
   `report/output-size.svg`: per-step charts.
-- `report/speedup.svg`: numba-vs-numpy speedup per step, when both ran.
 - `report/command-timings.*`: nested CLI `--profile` timings when available.
 
 Each result records command arguments, return code, signal name for negative
@@ -144,8 +140,8 @@ NCBI's per-IP rate limits. Retries are logged to stderr as `[download] ...
 retrying in Ns (attempt X/Y)`. Tune with `--download-retries` (default 6,
 use `0` to disable) and `--download-retry-backoff` (default 2.0s base
 delay). If you still see a persistent `HTTP Error 429` after retries are
-exhausted, wait a bit and re-run — already-downloaded files are skipped via
-the existing-file check, so re-running only fetches what's missing — or pass
+exhausted, wait a bit and re-run -- already-downloaded files are skipped via
+the existing-file check, so re-running only fetches what's missing -- or pass
 a higher `--download-retries`/`--download-retry-backoff` if run alongside
 other jobs contending for the same node's egress IP.
 
@@ -166,15 +162,11 @@ defining the main benchmark. For example, to rerun just cache construction and
 cache-backed local-decay after inputs are already downloaded:
 
 ```bash
-uv run python notes/benchmarks/benchmark_reference_real_data.py \
+uv run python scripts/reference_replication.py \
   --skip-download \
-  --backend numpy \
   --steps preprocess-cache-k562 local-decay-call \
   --fail-on-missing-output
 ```
-
-With `--backend both` (the default), step names are suffixed — use
-`local-decay-call-numpy`/`local-decay-call-numba` with `--steps` instead.
 
 Use `--keep-going` to continue after failed steps. Use `--progress` to pass
 `--progress` to profiled `touche` commands and stream their stderr progress bars

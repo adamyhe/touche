@@ -9,7 +9,6 @@ import polars as pl
 from scipy.stats import gaussian_kde
 
 from touche.anchors import read_bed_anchors
-from touche.backends import DEFAULT_BACKEND, validate_backend
 from touche.contacts import build_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex, NamedDepth, NamedPath
@@ -40,7 +39,6 @@ def count_ep_and_background(
     min_bg_distance: int,
     max_bg_distance: int,
     source: str = "auto",
-    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
@@ -65,7 +63,6 @@ def count_ep_and_background(
         window=window,
         min_bg_distance=min_bg_distance,
         max_bg_distance=max_bg_distance,
-        backend=backend,
         progress=instrument,
     )
 
@@ -86,13 +83,11 @@ def compute_ep_and_background(
     window: int,
     min_bg_distance: int,
     max_bg_distance: int,
-    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
     """Count EP and local-background contacts from in-memory indexes and anchors."""
 
-    backend = validate_backend(backend)
     instrument = make_instrumentation(progress, profile=profile)
     rows: list[dict[str, object]] = []
     chrom_list = baits["chr"].unique(maintain_order=True).to_list()
@@ -125,68 +120,27 @@ def compute_ep_and_background(
         if not pair_bait_indexes:
             continue
 
-        if backend == "numba":
-            ep_counts, bg_counts = _count_ep_background_pairs_numba(
-                index.pos_a,
-                index.pos_b,
-                bait_centers,
-                prey_centers,
-                np.asarray(pair_bait_indexes, dtype=np.int64),
-                np.asarray(pair_prey_indexes, dtype=np.int64),
-                window=window,
-                min_bg_distance=min_bg_distance,
-                max_bg_distance=max_bg_distance,
-            )
-            for pair_index, (bait_index, prey_index) in enumerate(
-                zip(pair_bait_indexes, pair_prey_indexes, strict=True)
-            ):
-                rows.append(
-                    {
-                        "chr": chrom,
-                        "promoter": int(bait_centers[bait_index]),
-                        "enhancer": int(prey_centers[prey_index]),
-                        "EP_contacts": int(ep_counts[pair_index]),
-                        "BG_contacts": int(bg_counts[pair_index]),
-                    }
-                )
-            continue
-
-        for bait_index, prey_index in zip(pair_bait_indexes, pair_prey_indexes, strict=True):
-            bait_center = int(bait_centers[bait_index])
-            prey_center = int(prey_centers[prey_index])
-            ep_contacts = _count_between_windows(
-                index.pos_a,
-                index.pos_b,
-                bait_center - window,
-                bait_center + window,
-                prey_center - window,
-                prey_center + window,
-            )
-            bait_to_prey_bg = _count_anchor_to_background(
-                index.pos_a,
-                index.pos_b,
-                bait_center,
-                prey_center,
-                window=window,
-                min_bg_distance=min_bg_distance,
-                max_bg_distance=max_bg_distance,
-            )
-            prey_to_bait_bg = _count_anchor_to_background(
-                index.pos_a,
-                index.pos_b,
-                prey_center,
-                bait_center,
-                window=window,
-                min_bg_distance=min_bg_distance,
-                max_bg_distance=max_bg_distance,
-            )
+        ep_counts, bg_counts = _count_ep_background_pairs_numba(
+            index.pos_a,
+            index.pos_b,
+            bait_centers,
+            prey_centers,
+            np.asarray(pair_bait_indexes, dtype=np.int64),
+            np.asarray(pair_prey_indexes, dtype=np.int64),
+            window=window,
+            min_bg_distance=min_bg_distance,
+            max_bg_distance=max_bg_distance,
+        )
+        for pair_index, (bait_index, prey_index) in enumerate(
+            zip(pair_bait_indexes, pair_prey_indexes, strict=True)
+        ):
             rows.append(
                 {
                     "chr": chrom,
-                    "promoter": bait_center,
-                    "enhancer": prey_center,
-                    "EP_contacts": ep_contacts,
-                    "BG_contacts": bait_to_prey_bg + prey_to_bait_bg,
+                    "promoter": int(bait_centers[bait_index]),
+                    "enhancer": int(prey_centers[prey_index]),
+                    "EP_contacts": int(ep_counts[pair_index]),
+                    "BG_contacts": int(bg_counts[pair_index]),
                 }
             )
 
@@ -205,7 +159,7 @@ def _count_ep_background_pairs_numba(
     min_bg_distance: int,
     max_bg_distance: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    from touche.numba_kernels import count_ep_background_pairs_numba
+    from touche.numba.background import count_ep_background_pairs_numba
 
     return count_ep_background_pairs_numba(
         pos_a.astype(np.int64, copy=False),
@@ -283,51 +237,6 @@ def compare_background_ratios(
             plot_paths[f"{right}_vs_{left}"] = path
     return merged, plot_paths
 
-
-def _in_window(values: np.ndarray, start: int, end: int) -> np.ndarray:
-    return (values >= start) & (values <= end)
-
-
-def _in_background(
-    values: np.ndarray, center: int, min_distance: int, max_distance: int
-) -> np.ndarray:
-    left = _in_window(values, center - max_distance, center - min_distance)
-    right = _in_window(values, center + min_distance, center + max_distance)
-    return left | right
-
-
-def _count_between_windows(
-    pos_a: np.ndarray,
-    pos_b: np.ndarray,
-    start_1: int,
-    end_1: int,
-    start_2: int,
-    end_2: int,
-) -> int:
-    side_a_in_1 = _in_window(pos_a, start_1, end_1)
-    side_b_in_1 = _in_window(pos_b, start_1, end_1)
-    side_a_in_2 = _in_window(pos_a, start_2, end_2)
-    side_b_in_2 = _in_window(pos_b, start_2, end_2)
-    return int(np.count_nonzero((side_a_in_1 & side_b_in_2) | (side_b_in_1 & side_a_in_2)))
-
-
-def _count_anchor_to_background(
-    pos_a: np.ndarray,
-    pos_b: np.ndarray,
-    anchor_center: int,
-    background_center: int,
-    *,
-    window: int,
-    min_bg_distance: int,
-    max_bg_distance: int,
-) -> int:
-    side_a_in_anchor = _in_window(pos_a, anchor_center - window, anchor_center + window)
-    side_b_in_anchor = _in_window(pos_b, anchor_center - window, anchor_center + window)
-    side_a_in_bg = _in_background(pos_a, background_center, min_bg_distance, max_bg_distance)
-    side_b_in_bg = _in_background(pos_b, background_center, min_bg_distance, max_bg_distance)
-    return int(
-        np.count_nonzero((side_a_in_anchor & side_b_in_bg) | (side_b_in_anchor & side_a_in_bg))
-    )
 
 
 def plot_background_scatter(

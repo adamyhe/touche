@@ -1,10 +1,9 @@
-"""Synthetic-data numpy vs. numba speedup benchmark.
+"""Synthetic-data profiling for touche's numba-accelerated counting kernels.
 
-Orchestrates itself as a subprocess per (workflow, backend) combination via
-the hidden `_run-single` mode, reusing `_report.py`'s profiling/report
-infrastructure so this produces the same CSV/Markdown/HTML/plot report shape
-(wall time, peak RSS, CPU utilization, and a numba-vs-numpy speedup chart) as
-`benchmark_reference_real_data.py`.
+Orchestrates itself as a subprocess per workflow via the hidden `_run-single`
+mode, reusing `scripts/_report.py`'s profiling/report infrastructure so this
+produces the same CSV/Markdown/HTML/plot report shape (wall time, peak RSS,
+CPU utilization) as `scripts/reference_replication.py`.
 """
 
 from __future__ import annotations
@@ -20,9 +19,10 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-from scipy.stats import fisher_exact
 
-from _report import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+
+from _report import (  # noqa: E402
     BenchmarkStep,
     result_to_record,
     run_profiled_step,
@@ -30,11 +30,9 @@ from _report import (
 )
 
 from touche.apa import compute_apa
-from touche.backends import has_numba
 from touche.background import compute_ep_and_background
 from touche.local_decay import compute_local_decay
 from touche.models import ContactIndex
-from touche.stats import fisher_greater
 
 WORKFLOWS = ["background", "apa", "local-decay"]
 
@@ -46,14 +44,14 @@ def main() -> int:
 
 
 # --------------------------------------------------------------------------
-# Orchestrator: builds one subprocess step per (workflow, backend), profiles
-# each with _report.run_profiled_step, and writes the shared report.
+# Orchestrator: builds one subprocess step per workflow, profiles each with
+# _report.run_profiled_step, and writes the shared report.
 # --------------------------------------------------------------------------
 
 
 def main_orchestrate(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="Benchmark touche's numpy vs. numba backends on synthetic data."
+        description="Profile touche's numba-accelerated counting kernels on synthetic data."
     )
     parser.add_argument("--work-dir", type=Path, default=Path("benchmark/numba-kernels"))
     parser.add_argument("--python", default=sys.executable)
@@ -63,8 +61,8 @@ def main_orchestrate(argv: list[str]) -> int:
     parser.add_argument("--genome-size", type=int, default=20_000_000)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--compare-kernels", action="store_true")
-    parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="statsmodels")
-    parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="scipy")
+    parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="numba")
+    parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="numba")
     parser.add_argument(
         "--jobs",
         "-j",
@@ -86,17 +84,8 @@ def main_orchestrate(argv: list[str]) -> int:
     results_jsonl = work_dir / "benchmark-results.jsonl"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    backends = ["numpy", "numba"] if has_numba() else ["numpy"]
-    if not has_numba():
-        print(
-            "numba is not installed; falling back to numpy-only "
-            "(install with `uv sync --extra fast` to get a speedup comparison)",
-            file=sys.stderr,
-        )
-
     steps = build_steps(
         python=args.python,
-        backends=backends,
         contacts=args.contacts,
         baits=args.baits,
         preys=args.preys,
@@ -106,18 +95,13 @@ def main_orchestrate(argv: list[str]) -> int:
         fisher_backend=args.fisher_backend,
         jobs=args.jobs,
         lowess_iterations=args.lowess_iterations,
-        compare_kernels=args.compare_kernels and "numba" in backends,
+        compare_kernels=args.compare_kernels,
     )
 
     if args.dry_run:
         print(
             json.dumps(
-                {
-                    "backends": backends,
-                    "steps": [
-                        {"name": s.name, "group": s.group, "command": s.command} for s in steps
-                    ],
-                },
+                {"steps": [{"name": s.name, "group": s.group, "command": s.command} for s in steps]},
                 indent=2,
             )
         )
@@ -140,11 +124,9 @@ def main_orchestrate(argv: list[str]) -> int:
                 )
 
     records = [result_to_record(item) for item in results]
-    warn_on_result_mismatch(records, backends)
 
     if not args.no_report:
-        speedup_pairs = build_speedup_pairs(records, backends)
-        write_profile_report(records, report_dir=report_dir, speedup_pairs=speedup_pairs)
+        write_profile_report(records, report_dir=report_dir)
 
     return 0 if all(result.returncode == 0 for result in results) else 1
 
@@ -152,7 +134,6 @@ def main_orchestrate(argv: list[str]) -> int:
 def build_steps(
     *,
     python: str,
-    backends: list[str],
     contacts: int,
     baits: int,
     preys: int,
@@ -179,46 +160,27 @@ def build_steps(
     ]
     steps: list[BenchmarkStep] = []
     for workflow in WORKFLOWS:
-        for backend in backends:
-            extra = (
-                [
-                    "--lowess-backend",
-                    lowess_backend,
-                    "--fisher-backend",
-                    fisher_backend,
-                    "--jobs",
-                    str(jobs),
-                    "--lowess-iterations",
-                    str(lowess_iterations),
-                ]
-                if workflow == "local-decay"
-                else []
-            )
-            suffix = f"-{backend}" if len(backends) > 1 else ""
-            steps.append(
-                BenchmarkStep(
-                    name=f"{workflow}{suffix}",
-                    group=workflow,
-                    command=[
-                        python,
-                        script,
-                        "_run-single",
-                        "--workflow",
-                        workflow,
-                        "--backend",
-                        backend,
-                        *common,
-                        *extra,
-                    ],
-                )
-            )
-    steps.append(
-        BenchmarkStep(
-            name="fisher",
-            group="fisher",
-            command=[python, script, "_run-single", "--workflow", "fisher", "--repeats", str(repeats)],
+        extra = (
+            [
+                "--lowess-backend",
+                lowess_backend,
+                "--fisher-backend",
+                fisher_backend,
+                "--jobs",
+                str(jobs),
+                "--lowess-iterations",
+                str(lowess_iterations),
+            ]
+            if workflow == "local-decay"
+            else []
         )
-    )
+        steps.append(
+            BenchmarkStep(
+                name=workflow,
+                group=workflow,
+                command=[python, script, "_run-single", "--workflow", workflow, *common, *extra],
+            )
+        )
     if compare_kernels:
         steps.append(
             BenchmarkStep(
@@ -237,57 +199,9 @@ def build_steps(
     return steps
 
 
-def build_speedup_pairs(
-    records: list[dict[str, Any]], backends: list[str]
-) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
-    if "numpy" not in backends or "numba" not in backends:
-        return []
-    by_name = {record.get("name"): record for record in records}
-    pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
-    for workflow in WORKFLOWS:
-        numpy_record = by_name.get(f"{workflow}-numpy")
-        numba_record = by_name.get(f"{workflow}-numba")
-        if numpy_record is not None and numba_record is not None:
-            pairs.append(
-                (workflow, _with_median_elapsed(numpy_record), _with_median_elapsed(numba_record))
-            )
-    return pairs
-
-
-def _with_median_elapsed(record: dict[str, Any]) -> dict[str, Any]:
-    """Use the in-process warm median (excludes subprocess/import/JIT startup) for speedup math."""
-
-    command_json = record.get("command_json")
-    median_seconds = command_json.get("median_seconds") if isinstance(command_json, dict) else None
-    patched = dict(record)
-    if isinstance(median_seconds, (int, float)):
-        patched["elapsed_seconds"] = median_seconds
-    return patched
-
-
-def warn_on_result_mismatch(records: list[dict[str, Any]], backends: list[str]) -> None:
-    if "numpy" not in backends or "numba" not in backends:
-        return
-    by_name = {record.get("name"): record for record in records}
-    for workflow in WORKFLOWS:
-        numpy_record = by_name.get(f"{workflow}-numpy")
-        numba_record = by_name.get(f"{workflow}-numba")
-        if numpy_record is None or numba_record is None:
-            continue
-        numpy_json = numpy_record.get("command_json") or {}
-        numba_json = numba_record.get("command_json") or {}
-        for key in ("rows", "matrix_sum"):
-            if key in numpy_json and numpy_json.get(key) != numba_json.get(key):
-                print(
-                    f"WARNING: {workflow} {key} mismatch between backends: "
-                    f"numpy={numpy_json.get(key)!r} numba={numba_json.get(key)!r}",
-                    file=sys.stderr,
-                )
-
-
 # --------------------------------------------------------------------------
-# _run-single: runs one (workflow, backend) combination in-process, prints a
-# JSON summary to stdout. Invoked as a subprocess by the orchestrator above.
+# _run-single: runs one workflow in-process, prints a JSON summary to
+# stdout. Invoked as a subprocess by the orchestrator above.
 # --------------------------------------------------------------------------
 
 
@@ -296,23 +210,20 @@ def main_run_single(argv: list[str]) -> int:
     parser.add_argument(
         "--workflow",
         required=True,
-        choices=["background", "apa", "local-decay", "fisher", "kernel-variants"],
+        choices=["background", "apa", "local-decay", "kernel-variants"],
     )
-    parser.add_argument("--backend", default="numpy", choices=["numpy", "numba"])
     parser.add_argument("--contacts", type=int, default=100_000)
     parser.add_argument("--baits", type=int, default=300)
     parser.add_argument("--preys", type=int, default=300)
     parser.add_argument("--genome-size", type=int, default=20_000_000)
     parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--lowess-backend", default="statsmodels", choices=["statsmodels", "numba"])
-    parser.add_argument("--fisher-backend", default="scipy", choices=["scipy", "numba"])
+    parser.add_argument("--lowess-backend", default="numba", choices=["statsmodels", "numba"])
+    parser.add_argument("--fisher-backend", default="numba", choices=["scipy", "numba"])
     parser.add_argument("--jobs", "-j", type=int, default=1)
     parser.add_argument("--lowess-iterations", type=int, default=3)
     args = parser.parse_args(argv)
 
-    if args.workflow == "fisher":
-        summary = run_fisher_single(repeats=args.repeats)
-    elif args.workflow == "kernel-variants":
+    if args.workflow == "kernel-variants":
         summary = run_kernel_variants_single(
             contacts=args.contacts,
             baits=args.baits,
@@ -325,15 +236,14 @@ def main_run_single(argv: list[str]) -> int:
             contacts=args.contacts, baits=args.baits, preys=args.preys, genome_size=args.genome_size
         )
         if args.workflow == "background":
-            summary = run_background_single(indexes, baits, preys, backend=args.backend, repeats=args.repeats)
+            summary = run_background_single(indexes, baits, preys, repeats=args.repeats)
         elif args.workflow == "apa":
-            summary = run_apa_single(indexes, baits, preys, backend=args.backend, repeats=args.repeats)
+            summary = run_apa_single(indexes, baits, preys, repeats=args.repeats)
         else:
             summary = run_local_decay_single(
                 indexes,
                 baits,
                 preys,
-                backend=args.backend,
                 repeats=args.repeats,
                 lowess_backend=args.lowess_backend,
                 fisher_backend=args.fisher_backend,
@@ -346,7 +256,7 @@ def main_run_single(argv: list[str]) -> int:
 
 
 def run_background_single(
-    indexes: dict[str, ContactIndex], baits: pl.DataFrame, preys: pl.DataFrame, *, backend: str, repeats: int
+    indexes: dict[str, ContactIndex], baits: pl.DataFrame, preys: pl.DataFrame, *, repeats: int
 ) -> dict[str, Any]:
     kwargs = {
         "min_distance": 25_000,
@@ -355,15 +265,13 @@ def run_background_single(
         "min_bg_distance": 10_000,
         "max_bg_distance": 150_000,
     }
-    result = compute_ep_and_background(indexes, baits, preys, backend=backend, **kwargs)  # warm up
-    times = timed_repeats(
-        lambda: compute_ep_and_background(indexes, baits, preys, backend=backend, **kwargs), repeats
-    )
+    result = compute_ep_and_background(indexes, baits, preys, **kwargs)  # warm up
+    times = timed_repeats(lambda: compute_ep_and_background(indexes, baits, preys, **kwargs), repeats)
     return {"rows": len(result), **timing_summary(times)}
 
 
 def run_apa_single(
-    indexes: dict[str, ContactIndex], baits: pl.DataFrame, preys: pl.DataFrame, *, backend: str, repeats: int
+    indexes: dict[str, ContactIndex], baits: pl.DataFrame, preys: pl.DataFrame, *, repeats: int
 ) -> dict[str, Any]:
     kwargs = {
         "min_distance": 25_000,
@@ -372,8 +280,8 @@ def run_apa_single(
         "pixels": 50,
         "shift": 0,
     }
-    result = compute_apa(indexes, baits, preys, backend=backend, **kwargs)  # warm up
-    times = timed_repeats(lambda: compute_apa(indexes, baits, preys, backend=backend, **kwargs), repeats)
+    result = compute_apa(indexes, baits, preys, **kwargs)  # warm up
+    times = timed_repeats(lambda: compute_apa(indexes, baits, preys, **kwargs), repeats)
     matrix_sum = int(result.matrix.drop("bin_label").to_numpy().sum())
     return {"matrix_sum": matrix_sum, **timing_summary(times)}
 
@@ -383,7 +291,6 @@ def run_local_decay_single(
     baits: pl.DataFrame,
     preys: pl.DataFrame,
     *,
-    backend: str,
     repeats: int,
     lowess_backend: str,
     fisher_backend: str,
@@ -406,53 +313,19 @@ def run_local_decay_single(
         "n_jobs": n_jobs,
         "lowess_iterations": lowess_iterations,
     }
-    result = compute_local_decay(
-        indexes, local_baits, local_preys, backend=backend, **kwargs
-    )  # warm up
+    result = compute_local_decay(indexes, local_baits, local_preys, **kwargs)  # warm up
     times = timed_repeats(
-        lambda: compute_local_decay(indexes, local_baits, local_preys, backend=backend, **kwargs),
-        repeats,
+        lambda: compute_local_decay(indexes, local_baits, local_preys, **kwargs), repeats
     )
     return {"rows": len(result), **timing_summary(times)}
-
-
-def run_fisher_single(*, repeats: int) -> dict[str, Any]:
-    rng = np.random.default_rng(20260708)
-    tables = rng.integers(0, 500, size=(50_000, 4))
-    tables[:, 3] += 1
-
-    scipy_times: list[float] = []
-    direct_times: list[float] = []
-    scipy_values: list[float] = []
-    direct_values: list[float] = []
-    for _ in range(repeats):
-        started = time.perf_counter()
-        scipy_values = [
-            fisher_exact([[a, b], [c, d]], alternative="greater").pvalue for a, b, c, d in tables
-        ]
-        scipy_times.append(time.perf_counter() - started)
-
-        started = time.perf_counter()
-        direct_values = [fisher_greater(a, b, c, d) for a, b, c, d in tables]
-        direct_times.append(time.perf_counter() - started)
-
-    np.testing.assert_allclose(direct_values, scipy_values)
-    return {
-        "rows": len(tables),
-        "median_seconds": median(direct_times),
-        "min_seconds": min(direct_times),
-        "mean_seconds": statistics.fmean(direct_times),
-        "timings": [
-            {"step": "scipy_fisher_exact", "elapsed_seconds": median(scipy_times)},
-            {"step": "direct_hypergeom_sf", "elapsed_seconds": median(direct_times)},
-        ],
-    }
 
 
 def run_kernel_variants_single(
     *, contacts: int, baits: int, preys: int, genome_size: int, repeats: int
 ) -> dict[str, Any]:
-    from touche.numba_kernels import (
+    """Compare the current binary-search kernel against the naive linear-scan one it replaced."""
+
+    from touche.numba.background import (
         count_ep_background_pairs_eager_numba,
         count_ep_background_pairs_numba,
     )

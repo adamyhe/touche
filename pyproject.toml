@@ -15,12 +15,14 @@ dependencies = [
   "numpy",
   "polars",
   "scipy",
-  "statsmodels",
   "matplotlib",
   "seaborn",
   "tqdm",
   "numba",
 ]
+
+[project.optional-dependencies]
+legacy = ["statsmodels"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "mypy"]

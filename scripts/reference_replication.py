@@ -1,3 +1,11 @@
+"""Download the real Danko-Lab E-P_contacts example inputs and reproduce its
+reference workflows with touche: local-decay, APA, and EP/background, each
+profiled (wall time, peak RSS, CPU) and rendered into the same
+reference-comparable plots as the upstream README.
+
+See `reference_replication.md` for usage and expected outputs.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -22,8 +30,6 @@ from _report import (
     run_profiled_step,
     write_profile_report,
 )
-
-from touche.backends import has_numba
 
 REFERENCE_RAW_BASE = "https://raw.githubusercontent.com/Danko-Lab/E-P_contacts/main/Input_files"
 GEO_BASE = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE206nnn/GSE206131/suppl"
@@ -55,22 +61,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Download the real E-P_contacts example inputs and profile touche "
-            "preprocessing, local-decay, APA, and background steps."
+            "preprocessing, local-decay, APA, and background steps, generating the "
+            "reference-comparable plots along the way."
         )
     )
     parser.add_argument("--work-dir", type=Path, default=Path("benchmark/reference-real-data"))
     parser.add_argument("--python", default=sys.executable, help="Python executable for -m touche")
-    parser.add_argument(
-        "--backend",
-        choices=["numpy", "numba", "both"],
-        default="both",
-        help=(
-            "Which backend(s) to benchmark. 'both' (default) runs numpy and numba side by "
-            "side and adds a speedup report; falls back to numpy-only if numba isn't installed."
-        ),
-    )
-    parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="statsmodels")
-    parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="scipy")
+    parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="numba")
+    parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="numba")
     parser.add_argument(
         "--jobs",
         "-j",
@@ -138,19 +136,11 @@ def main() -> int:
     for path in [data_dir, output_dir, logs_dir]:
         path.mkdir(parents=True, exist_ok=True)
 
-    backends = resolve_backends(args.backend)
-
     if args.plot_only:
         result_dicts = read_results_jsonl(results_jsonl)
         if not args.no_report:
-            speedup_pairs = speedup_pairs_from_records(result_dicts, backends)
             plot_gallery = plot_gallery_from_records(result_dicts)
-            write_profile_report(
-                result_dicts,
-                report_dir=report_dir,
-                speedup_pairs=speedup_pairs,
-                plot_gallery=plot_gallery,
-            )
+            write_profile_report(result_dicts, report_dir=report_dir, plot_gallery=plot_gallery)
         return 0
 
     downloads = reference_downloads(data_dir)
@@ -160,24 +150,20 @@ def main() -> int:
         output_dir=output_dir,
         skip_existing=args.skip_existing_cache,
     )
-    backend_step_lists: dict[str, list[BenchmarkStep]] = {}
-    for backend in backends:
-        backend_step_lists[backend] = build_backend_steps(
+    steps = list(cache_steps)
+    steps.extend(
+        build_steps(
             python=args.python,
             data_dir=data_dir,
-            output_dir=output_dir / backend if len(backends) > 1 else output_dir,
-            backend=backend,
+            output_dir=output_dir,
             k562_cache_dir=cache_paths["k562"],
             lowess_backend=args.lowess_backend,
             fisher_backend=args.fisher_backend,
             jobs=args.jobs,
             lowess_iterations=args.lowess_iterations,
             progress=args.progress,
-            name_suffix=f"-{backend}" if len(backends) > 1 else "",
         )
-    steps = list(cache_steps)
-    for backend in backends:
-        steps.extend(backend_step_lists[backend])
+    )
 
     if args.steps:
         requested = set(args.steps)
@@ -188,7 +174,7 @@ def main() -> int:
         steps = [step for step in steps if step.name in requested]
 
     if args.dry_run:
-        print_plan(downloads, steps, backends)
+        print_plan(downloads, steps)
         return 0
 
     download_records: list[dict[str, Any]] = []
@@ -253,7 +239,7 @@ def main() -> int:
                     results_jsonl=results_jsonl,
                 )
                 if not args.no_report:
-                    write_final_report(results, backends, report_dir=report_dir, no_report=False)
+                    write_final_report(results, report_dir=report_dir, no_report=False)
                 return result.returncode if result.returncode != 0 else 2
 
     write_manifest(
@@ -263,51 +249,16 @@ def main() -> int:
         results=results,
         results_jsonl=results_jsonl,
     )
-    write_final_report(results, backends, report_dir=report_dir, no_report=args.no_report)
+    write_final_report(results, report_dir=report_dir, no_report=args.no_report)
     return 0
 
 
-def resolve_backends(requested: str) -> list[str]:
-    if requested in {"numpy", "numba"}:
-        return [requested]
-    if not has_numba():
-        print(
-            "numba is not installed; falling back to numpy-only "
-            "(install with `uv sync --extra fast` to get a numpy vs. numba comparison)",
-            file=sys.stderr,
-        )
-        return ["numpy"]
-    return ["numpy", "numba"]
-
-
-def write_final_report(
-    results: list[BenchmarkResult], backends: list[str], *, report_dir: Path, no_report: bool
-) -> None:
+def write_final_report(results: list[BenchmarkResult], *, report_dir: Path, no_report: bool) -> None:
     if no_report:
         return
     records = [result_to_record(item) for item in results]
-    speedup_pairs = speedup_pairs_from_records(records, backends)
     plot_gallery = plot_gallery_from_records(records)
-    write_profile_report(
-        records, report_dir=report_dir, speedup_pairs=speedup_pairs, plot_gallery=plot_gallery
-    )
-
-
-def speedup_pairs_from_records(
-    records: list[dict[str, Any]], backends: list[str]
-) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
-    if "numpy" not in backends or "numba" not in backends:
-        return []
-    by_name = {record.get("name"): record for record in records}
-    pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
-    for name, record in by_name.items():
-        if not isinstance(name, str) or not name.endswith("-numpy"):
-            continue
-        base = name[: -len("-numpy")]
-        numba_record = by_name.get(f"{base}-numba")
-        if numba_record is not None:
-            pairs.append((base, record, numba_record))
-    return pairs
+    write_profile_report(records, report_dir=report_dir, plot_gallery=plot_gallery)
 
 
 def plot_gallery_from_records(records: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -351,7 +302,7 @@ def reference_downloads(data_dir: Path) -> list[Download]:
 def build_cache_steps(
     *, python: str, data_dir: Path, output_dir: Path, skip_existing: bool = False
 ) -> tuple[list[BenchmarkStep], dict[str, Path]]:
-    """Steps that don't depend on backend: build NPZ caches shared by every backend run."""
+    """NPZ caches shared by every downstream step."""
 
     cache_dir = output_dir / "caches"
     steps: list[BenchmarkStep] = []
@@ -392,19 +343,17 @@ def build_cache_steps(
     return steps, cache_paths
 
 
-def build_backend_steps(
+def build_steps(
     *,
     python: str,
     data_dir: Path,
     output_dir: Path,
-    backend: str,
     k562_cache_dir: Path,
     lowess_backend: str,
     fisher_backend: str,
     jobs: int,
     lowess_iterations: int,
     progress: bool,
-    name_suffix: str,
 ) -> list[BenchmarkStep]:
     input_dir = data_dir / "Input_files"
     dmso_pairs = data_dir / DMSO_PAIRS
@@ -434,7 +383,7 @@ def build_backend_steps(
     steps.extend(
         [
             BenchmarkStep(
-                name=f"local-decay-call{name_suffix}",
+                name="local-decay-call",
                 group="local-decay",
                 command=touche_cmd(
                     python,
@@ -452,8 +401,6 @@ def build_backend_steps(
                     "1000000",
                     "--cap",
                     "2000",
-                    "--backend",
-                    backend,
                     "--index-strategy",
                     "cache",
                     "--cache-dir",
@@ -474,7 +421,7 @@ def build_backend_steps(
                 outputs=[local_calls],
             ),
             BenchmarkStep(
-                name=f"local-decay-assign-pair-types{name_suffix}",
+                name="local-decay-assign-pair-types",
                 group="local-decay",
                 command=touche_cmd(
                     python,
@@ -492,7 +439,7 @@ def build_backend_steps(
                 outputs=[local_assignments],
             ),
             BenchmarkStep(
-                name=f"local-decay-plot{name_suffix}",
+                name="local-decay-plot",
                 group="local-decay",
                 command=touche_cmd(
                     python,
@@ -523,7 +470,7 @@ def build_backend_steps(
         sample_dir = apa_outputs[label]
         steps.append(
             BenchmarkStep(
-                name=f"apa-aggregate-{label}{name_suffix}",
+                name=f"apa-aggregate-{label}",
                 group="apa",
                 command=touche_cmd(
                     python,
@@ -545,8 +492,6 @@ def build_backend_steps(
                     "50",
                     "--out-dir",
                     sample_dir,
-                    "--backend",
-                    backend,
                     *common_profile,
                 ),
                 outputs=[
@@ -562,7 +507,7 @@ def build_backend_steps(
         compare_dir = apa_dir / f"{label.upper()}_vs_DMSO"
         steps.append(
             BenchmarkStep(
-                name=f"apa-compare-{label}-vs-dmso{name_suffix}",
+                name=f"apa-compare-{label}-vs-dmso",
                 group="apa",
                 command=touche_cmd(
                     python,
@@ -605,7 +550,7 @@ def build_backend_steps(
     for label, pairs in [("dmso", dmso_pairs), ("flv", flv_pairs), ("trp", trp_pairs)]:
         steps.append(
             BenchmarkStep(
-                name=f"background-count-{label}{name_suffix}",
+                name=f"background-count-{label}",
                 group="background",
                 command=touche_cmd(
                     python,
@@ -629,8 +574,6 @@ def build_backend_steps(
                     "150000",
                     "--out",
                     background_counts[label],
-                    "--backend",
-                    backend,
                     *common_profile,
                 ),
                 outputs=[background_counts[label]],
@@ -638,7 +581,7 @@ def build_backend_steps(
         )
     steps.append(
         BenchmarkStep(
-            name=f"background-compare{name_suffix}",
+            name="background-compare",
             group="background",
             command=touche_cmd(
                 python,
@@ -791,9 +734,8 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def print_plan(downloads: list[Download], steps: list[BenchmarkStep], backends: list[str]) -> None:
+def print_plan(downloads: list[Download], steps: list[BenchmarkStep]) -> None:
     payload = {
-        "backends": backends,
         "downloads": [
             {"name": item.name, "url": item.url, "path": str(item.path)} for item in downloads
         ],
@@ -824,7 +766,6 @@ def write_manifest(
                 "schema_version": 2,
                 "argv": sys.argv,
                 "work_dir": str(args.work_dir),
-                "backend": args.backend,
                 "lowess_backend": args.lowess_backend,
                 "fisher_backend": args.fisher_backend,
                 "jobs": args.jobs,

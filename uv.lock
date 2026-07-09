@@ -257,8 +257,12 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "seaborn" },
-    { name = "statsmodels" },
     { name = "tqdm" },
+]
+
+[package.optional-dependencies]
+legacy = [
+    { name = "statsmodels" },
 ]
 
 [package.dev-dependencies]
@@ -276,9 +280,10 @@ requires-dist = [
     { name = "polars" },
     { name = "scipy" },
     { name = "seaborn" },
-    { name = "statsmodels" },
+    { name = "statsmodels", marker = "extra == 'legacy'" },
     { name = "tqdm" },
 ]
+provides-extras = ["legacy"]
 
 [package.metadata.requires-dev]
 dev = [

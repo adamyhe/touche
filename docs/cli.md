@@ -223,10 +223,9 @@ uv run touche local-decay plot \
 Use `--no-reference-style` on `run` or `plot` to use the package's standard
 Matplotlib styling instead of the reference-style plot appearance.
 
-`local-decay call` and `local-decay run` default to `--backend numba`, which
-only accelerates the observed-count helpers. LOWESS fitting (`--lowess-backend`,
-default `statsmodels`) is separate and usually dominates runtime. Pass
-`--backend numpy` for the plain NumPy reference implementation instead.
+`local-decay call` and `local-decay run`'s observed-count helper always uses
+an accelerated Numba kernel. `--lowess-backend` and `--fisher-backend` are
+separate, still selectable flags (default `numba`) -- see below.
 
 `local-decay call` and `local-decay run` default to `--index-strategy cache`.
 The cache strategy builds or reuses chromosome-sharded NPZ contact indexes, then
@@ -261,21 +260,22 @@ Alternative strategies are available for diagnostics:
   and keep only that chromosome in memory. This avoids persistent cache files,
   but can be slow for gzipped pairs.
 
-They also expose `--lowess-backend numba` as an experimental smoother. This is
-faster on small synthetic benchmarks and matches the current chunked
-local-decay smoothing wrappers on regression fixtures, but keep the default
-`statsmodels` backend for the most conservative reference-compatible runs. Use
-`--lowess-iterations` to change the number of robust residual reweighting passes;
-lower values are faster but can change expected-contact estimates.
+`--lowess-backend numba` (the default) is faster on small synthetic
+benchmarks and matches the current chunked local-decay smoothing wrappers on
+regression fixtures. Use `--lowess-backend statsmodels` for the most
+conservative reference-compatible runs -- this requires the optional
+`legacy` extra (`pip install ep-touche[legacy]` / `uv sync --extra legacy`).
+Use `--lowess-iterations` to change the number of robust residual reweighting
+passes; lower values are faster but can change expected-contact estimates.
 
-`--fisher-backend numba` is a further experimental, opt-in flag (default
-`scipy`) that replaces `scipy.stats.hypergeom.sf` with a `prange`-parallel
-numba hypergeometric survival function for the per-prey Fisher exact test.
-That step is single-threaded regardless of `--backend`/`--lowess-backend`, so
-with those set to `numba` it becomes the main reason local-decay doesn't
-saturate available cores; `--fisher-backend numba` addresses that, at the
-cost of p-values that match scipy to within ~1e-8 absolute error rather than
-exactly.
+`--fisher-backend numba` (the default) replaces `scipy.stats.hypergeom.sf`
+with a `prange`-parallel numba hypergeometric survival function for the
+per-prey Fisher exact test, matching it to within ~1e-8 absolute error rather
+than exactly. That step is single-threaded regardless of `--lowess-backend`,
+so with that set to `numba` it becomes the main reason local-decay doesn't
+saturate available cores; `--fisher-backend numba` addresses that.
+`--fisher-backend scipy` is exact and always available (scipy is a core
+dependency, since `background`'s scatterplot KDE coloring needs it too).
 
 `--jobs`/`-j` (default 1) processes that many baits concurrently in a thread
 pool instead of one at a time. Baits are independent, so this changes
@@ -357,9 +357,8 @@ uv run touche background compare \
 The `--min-ep-cpb` threshold filters pairs by control EP contacts per billion
 contacts before plotting comparisons.
 
-`background count` and `background run` default to `--backend numba` for
-accelerated EP/background counting. Pass `--backend numpy` for the plain
-NumPy reference implementation instead.
+`background count` and `background run` always use an accelerated Numba
+kernel for EP/background counting.
 
 ## APA
 
@@ -439,9 +438,8 @@ uv run touche apa compare \
 standalone `apa compare` command requires them because it only receives the
 already aggregated APA and signal files.
 
-`apa aggregate` and `apa run` default to `--backend numba` for accelerated APA
-matrix and 1D signal counting. Pass `--backend numpy` for the plain NumPy
-reference implementation instead.
+`apa aggregate` and `apa run` always use an accelerated Numba kernel for APA
+matrix and 1D signal counting.
 
 ## Output and manifests
 

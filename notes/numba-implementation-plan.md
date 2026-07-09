@@ -21,6 +21,27 @@ requested, unchanged from the original policy. `lowess_backend` remains a
 separate, independent default (`"statsmodels"`) pending a real-data parity
 check -- see the note at the end of "Decide default behavior".
 
+**Update 2:** The real-data parity check landed -- the full K562/mESC
+reference workflows were run end-to-end with `--lowess-backend numba` and
+reproduced the reference plots correctly at acceptable speed. `DEFAULT_LOWESS_BACKEND`
+and `DEFAULT_FISHER_BACKEND` (`src/touche/backends.py`) now both default to
+`"numba"`. `statsmodels` (only reachable via the now-opt-in
+`lowess_backend="statsmodels"`) moved to an optional `legacy` extra
+(`pip install ep-touche[legacy]` / `uv sync --extra legacy`). `scipy` stays a
+core dependency: `fisher_backend="scipy"` is still a fully supported exact
+alternative, and `background`'s EP-vs-background scatterplot KDE coloring
+(`_safe_kde` in `src/touche/background.py`) uses `scipy.stats.gaussian_kde`
+unconditionally, independent of any backend flag, with no numba/numpy
+alternative -- that usage is why scipy couldn't move to `legacy` too.
+
+**Update 3:** `src/touche/numba_kernels.py` was split into a `touche/numba/`
+subpackage, one file per domain (`apa.py`, `background.py`, `local_decay.py`,
+`stats.py`), plus a shared `_kernel_imports.py` for the numba
+import-guard. Historical file:line citations to `numba_kernels.py` below now
+refer to the corresponding `touche/numba/<domain>.py` file instead -- kept
+as-is rather than rewritten, since this section is a log of what was true
+when each entry was written.
+
 Original policy (superseded, kept for history):
 
 `pyproject.toml` used to expose:
@@ -289,12 +310,33 @@ Numba is unavailable.
      dependency rather than the `fast` extra, since defaulting to it while
      it stayed optional would break a fresh install's first default use.
      `backend="numpy"` remains fully supported as an explicit opt-out.
-     `lowess_backend` is a separate, independent decision and stays
-     `"statsmodels"`-default for now -- a real-data parity check against
-     `lowess_backend="numba"` is in progress to decide whether a "legacy"
-     statsmodels fallback is needed for anything beyond what already exists
-     (the statsmodels path itself, unconditionally available either way).
+     `lowess_backend`/`fisher_backend` were a separate, independent decision
+     and stayed `"statsmodels"`/`"scipy"`-default pending a real-data parity
+     check. **That check has since landed** (see "Update 2" in "Dependency
+     policy" above): `DEFAULT_LOWESS_BACKEND`/`DEFAULT_FISHER_BACKEND` now
+     both default to `"numba"`. `statsmodels` moved to the optional `legacy`
+     extra since `lowess_backend="statsmodels"` is now purely opt-in; `scipy`
+     stayed a core dependency since `background`'s KDE-colored scatterplot
+     needs it unconditionally, independent of any backend flag.
      `backend="auto"` remains not implemented, unchanged.
+
+     **Update 4:** `backend="numpy"` (the counting path -- APA matrix/1D
+     signal, EP/background pairs, local-decay's observed-count helper) has
+     been removed entirely, along with `Backend`/`DEFAULT_BACKEND`/
+     `validate_backend` in `backends.py` and every `--backend`/`backend=`
+     surface in `apa.py`/`background.py`/`local_decay.py`/`pipelines.py`/
+     `cli/*.py`. Unlike `lowess_backend`/`fisher_backend`, this numba kernel
+     was never an approximation -- every comparison test asserted exact
+     equality (`assert_frame_equal`, integer counts, no floating-point
+     accumulation order to diverge on), so keeping a second, unused
+     implementation around no longer served the "canonical correctness path"
+     purpose it was built for. The three numpy-vs-numba comparison tests
+     (`test_numba_compute_apa_matches_numpy`,
+     `test_numba_background_backend_matches_numpy_counts`,
+     `test_numba_compute_local_decay_matches_numpy`) were rewritten as
+     fixed-expected-value tests against the (now sole) numba implementation.
+     `lowess_backend`/`fisher_backend` are unaffected -- both numba paths are
+     validated approximations, not exact matches, so both alternatives stay.
 
 ## Risks and guardrails
 

@@ -8,7 +8,6 @@ import numpy as np
 import polars as pl
 
 from touche.anchors import read_bed_anchors
-from touche.backends import DEFAULT_BACKEND, validate_backend
 from touche.contacts import build_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex
@@ -52,7 +51,6 @@ def aggregate_apa(
     source: str = "auto",
     shift: int = 75,
     reference_style: bool = True,
-    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Path]:
@@ -72,7 +70,6 @@ def aggregate_apa(
         window=window,
         pixels=pixels,
         shift=shift,
-        backend=backend,
         progress=instrument,
     )
     with instrument.step("write apa outputs"):
@@ -89,7 +86,6 @@ def compute_apa(
     window: int,
     pixels: int,
     shift: int = 75,
-    backend: str = DEFAULT_BACKEND,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> ApaResult:
@@ -97,7 +93,6 @@ def compute_apa(
 
     if window % pixels != 0:
         raise ValueError("window must be divisible by pixels")
-    backend = validate_backend(backend)
     instrument = make_instrumentation(progress, profile=profile)
 
     labels = _pixel_labels(window, pixels)
@@ -124,74 +119,21 @@ def compute_apa(
 
         pos_a, pos_b = _shifted_positions(index, shift=shift)
         long_range = np.abs(pos_b - pos_a) > (min_distance - window)
-        prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
-        prey_strands = chrom_preys["strand"].to_list()
 
-        if backend == "numba":
-            _add_chrom_apa_numba(
-                matrix_arr,
-                bait_signal_arr,
-                prey_signal_arr,
-                pos_a,
-                pos_b,
-                long_range,
-                chrom_baits,
-                chrom_preys,
-                min_distance=min_distance,
-                max_distance=max_distance,
-                window=window,
-                pixels=pixels,
-            )
-            continue
-
-        bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
-        bait_strands = chrom_baits["strand"].to_list()
-        for bait_idx in range(len(bait_centers)):
-            bait_center = int(bait_centers[bait_idx])
-            bait_strand = bait_strands[bait_idx]
-            distances = np.abs(prey_centers - bait_center)
-            candidate_mask = (distances >= min_distance) & (distances <= max_distance)
-            if not np.any(candidate_mask):
-                continue
-            _add_anchor_signal(
-                bait_signal_arr,
-                pos_a,
-                pos_b,
-                center=bait_center,
-                strand=bait_strand,
-                window=window,
-                pixels=pixels,
-                mask=long_range,
-            )
-            bait_mask = (
-                _in_window(pos_a, bait_center - window, bait_center + window)
-                | _in_window(pos_b, bait_center - window, bait_center + window)
-            ) & long_range
-            for prey_idx in np.flatnonzero(candidate_mask):
-                _add_pair_matrix(
-                    matrix_arr,
-                    pos_a,
-                    pos_b,
-                    bait_center=bait_center,
-                    bait_strand=bait_strand,
-                    prey_center=int(prey_centers[prey_idx]),
-                    prey_strand=prey_strands[prey_idx],
-                    window=window,
-                    pixels=pixels,
-                    mask=bait_mask,
-                )
-
-        for prey_idx in range(len(prey_centers)):
-            _add_anchor_signal(
-                prey_signal_arr,
-                pos_a,
-                pos_b,
-                center=int(prey_centers[prey_idx]),
-                strand=prey_strands[prey_idx],
-                window=window,
-                pixels=pixels,
-                mask=long_range,
-            )
+        _add_chrom_apa_numba(
+            matrix_arr,
+            bait_signal_arr,
+            prey_signal_arr,
+            pos_a,
+            pos_b,
+            long_range,
+            chrom_baits,
+            chrom_preys,
+            min_distance=min_distance,
+            max_distance=max_distance,
+            window=window,
+            pixels=pixels,
+        )
 
     matrix_df = _matrix_to_frame(list(reversed(labels)), labels, matrix_arr[::-1])
     bait_signal_df = pl.DataFrame({"bin_label": labels, "contacts": bait_signal_arr})
@@ -312,7 +254,7 @@ def _apa_anchor_signal_numba(
     window: int,
     pixels: int,
 ) -> np.ndarray:
-    from touche.numba_kernels import apa_anchor_signal_numba
+    from touche.numba.apa import apa_anchor_signal_numba
 
     return apa_anchor_signal_numba(
         pos_a.astype(np.int64, copy=False),
@@ -350,7 +292,7 @@ def _apa_matrix_numba(
 ) -> np.ndarray:
     from numba import get_num_threads
 
-    from touche.numba_kernels import apa_matrix_numba
+    from touche.numba.apa import apa_matrix_numba
 
     return apa_matrix_numba(
         pos_a.astype(np.int64, copy=False),
@@ -594,68 +536,6 @@ def _is_plus_strand(strands: np.ndarray) -> np.ndarray:
 def _pixel_labels(window: int, pixels: int) -> list[int]:
     step = window // pixels
     return list(range(-window, 0, step)) + list(range(step, window + 1, step))
-
-
-def _oriented_bins(center: int, strand: str, *, window: int, pixels: int) -> list[tuple[int, int]]:
-    step = window // pixels
-    if strand == "-":
-        return [(start - step, start) for start in range(center + window, center - window, -step)]
-    return [(start, start + step) for start in range(center - window, center + window, step)]
-
-
-def _in_window(values: np.ndarray, start: int, end: int) -> np.ndarray:
-    return (values >= start) & (values <= end)
-
-
-def _add_anchor_signal(
-    signal: np.ndarray,
-    pos_a: np.ndarray,
-    pos_b: np.ndarray,
-    *,
-    center: int,
-    strand: str,
-    window: int,
-    pixels: int,
-    mask: np.ndarray,
-) -> None:
-    bins = _oriented_bins(center, strand, window=window, pixels=pixels)
-    for i, (start, end) in enumerate(bins):
-        count = np.count_nonzero(
-            mask & (_in_window(pos_a, start, end) | _in_window(pos_b, start, end))
-        )
-        signal[i] += count
-
-
-def _add_pair_matrix(
-    matrix: np.ndarray,
-    pos_a: np.ndarray,
-    pos_b: np.ndarray,
-    *,
-    bait_center: int,
-    bait_strand: str,
-    prey_center: int,
-    prey_strand: str,
-    window: int,
-    pixels: int,
-    mask: np.ndarray,
-) -> None:
-    bait_bins = _oriented_bins(bait_center, bait_strand, window=window, pixels=pixels)
-    prey_bins = _oriented_bins(prey_center, prey_strand, window=window, pixels=pixels)
-    masked_a = pos_a[mask]
-    masked_b = pos_b[mask]
-    for col_i, (bait_start, bait_end) in enumerate(bait_bins):
-        side_a_in_bait = _in_window(masked_a, bait_start, bait_end)
-        side_b_in_bait = _in_window(masked_b, bait_start, bait_end)
-        if not np.any(side_a_in_bait | side_b_in_bait):
-            continue
-        for row_i, (prey_start, prey_end) in enumerate(prey_bins):
-            side_a_in_prey = _in_window(masked_a, prey_start, prey_end)
-            side_b_in_prey = _in_window(masked_b, prey_start, prey_end)
-            count = np.count_nonzero(
-                (side_a_in_bait & side_b_in_prey) | (side_b_in_bait & side_a_in_prey)
-            )
-            if count:
-                matrix[row_i, col_i] += count
 
 
 def _close_figure(fig: "Figure") -> None:

@@ -6,13 +6,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from touche.backends import (
-    DEFAULT_BACKEND,
     DEFAULT_FISHER_BACKEND,
     DEFAULT_LOWESS_BACKEND,
-    validate_backend,
+    require_statsmodels,
     validate_fisher_backend,
     validate_lowess_backend,
 )
@@ -82,7 +80,6 @@ def call_local_decay(
     source: str = "auto",
     lowess_window: int = 5_000,
     lowess_delta: float = 16.0,
-    backend: str = DEFAULT_BACKEND,
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
@@ -132,7 +129,6 @@ def call_local_decay(
             min_distance=min_distance,
             lowess_window=lowess_window,
             lowess_delta=lowess_delta,
-            backend=backend,
             lowess_backend=lowess_backend,
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
@@ -150,7 +146,6 @@ def call_local_decay(
             source=source,
             lowess_window=lowess_window,
             lowess_delta=lowess_delta,
-            backend=backend,
             lowess_backend=lowess_backend,
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
@@ -174,7 +169,6 @@ def call_local_decay(
             min_distance=min_distance,
             lowess_window=lowess_window,
             lowess_delta=lowess_delta,
-            backend=backend,
             lowess_backend=lowess_backend,
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
@@ -232,7 +226,6 @@ def _call_local_decay_by_chromosome(
     source: str,
     lowess_window: int,
     lowess_delta: float,
-    backend: str,
     lowess_backend: str,
     fisher_backend: str,
     lowess_iterations: int,
@@ -272,7 +265,6 @@ def _call_local_decay_by_chromosome(
                 min_distance=min_distance,
                 lowess_window=lowess_window,
                 lowess_delta=lowess_delta,
-                backend=backend,
                 lowess_backend=lowess_backend,
                 fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
@@ -296,7 +288,6 @@ def _call_local_decay_from_cache(
     min_distance: int,
     lowess_window: int,
     lowess_delta: float,
-    backend: str,
     lowess_backend: str,
     fisher_backend: str,
     lowess_iterations: int,
@@ -332,7 +323,6 @@ def _call_local_decay_from_cache(
                 min_distance=min_distance,
                 lowess_window=lowess_window,
                 lowess_delta=lowess_delta,
-                backend=backend,
                 lowess_backend=lowess_backend,
                 fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
@@ -355,7 +345,6 @@ def compute_local_decay(
     min_distance: int = 5_000,
     lowess_window: int = 5_000,
     lowess_delta: float = 16.0,
-    backend: str = DEFAULT_BACKEND,
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
@@ -369,7 +358,6 @@ def compute_local_decay(
         raise ValueError("dist must be positive")
     if cap < 0:
         raise ValueError("cap must be non-negative")
-    backend = validate_backend(backend)
     lowess_backend = validate_lowess_backend(lowess_backend)
     fisher_backend = validate_fisher_backend(fisher_backend)
     if lowess_iterations < 0:
@@ -402,7 +390,6 @@ def compute_local_decay(
         min_distance=min_distance,
         lowess_window=lowess_window,
         lowess_delta=lowess_delta,
-        backend=backend,
         lowess_backend=lowess_backend,
         fisher_backend=fisher_backend,
         lowess_iterations=lowess_iterations,
@@ -651,7 +638,6 @@ def _call_bait_contacts(
     min_distance: int,
     lowess_window: int,
     lowess_delta: float,
-    backend: str,
     lowess_backend: str,
     fisher_backend: str,
     lowess_iterations: int,
@@ -700,33 +686,14 @@ def _call_bait_contacts(
     minus = pos_a[(bait_start <= pos_b) & (pos_b <= bait_stop)]
     histogram_bins = len(counts)
 
-    if backend == "numba":
-        observed_values, directional_distances, contact_counts = _local_decay_observed_numba(
-            plus,
-            minus,
-            bait_center,
-            prey_centers,
-            cap=cap,
-            min_distance=min_distance,
-        )
-    else:
-        observed_values = []
-        directional_distances = []
-        contact_counts = []
-        for prey_center in prey_centers:
-            directional_distance = int(prey_center - bait_center)
-            directional_distances.append(directional_distance)
-            if abs(directional_distance) <= min_distance:
-                observed_values.append(0)
-                contact_counts.append(-1)
-                continue
-            contact_positions = plus if directional_distance > 0 else minus
-            prey_start = int(prey_center - cap)
-            prey_stop = int(prey_center + cap)
-            observed_values.append(
-                int(((prey_start <= contact_positions) & (contact_positions <= prey_stop)).sum())
-            )
-            contact_counts.append(len(contact_positions))
+    observed_values, directional_distances, contact_counts = _local_decay_observed_numba(
+        plus,
+        minus,
+        bait_center,
+        prey_centers,
+        cap=cap,
+        min_distance=min_distance,
+    )
 
     prey_centers = np.asarray(prey_centers, dtype=np.int64)
     directional_distances = np.asarray(directional_distances, dtype=np.int64)
@@ -789,7 +756,7 @@ def _local_decay_observed_numba(
     cap: int,
     min_distance: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    from touche.numba_kernels import local_decay_observed_counts_numba
+    from touche.numba.local_decay import local_decay_observed_counts_numba
 
     return local_decay_observed_counts_numba(
         plus.astype(np.int64, copy=False),
@@ -963,6 +930,9 @@ def _safe_lowess(
         return _lowess_evenly_spaced_numba(endog, frac=frac, it=it, delta=delta)
     if backend != "statsmodels":
         raise ValueError("lowess backend must be one of: statsmodels, numba")
+    require_statsmodels()
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
     return np.asarray(
         lowess(
             endog,
@@ -981,7 +951,7 @@ def _safe_lowess(
 def _lowess_evenly_spaced_numba(
     endog: np.ndarray, *, frac: float, it: int, delta: float
 ) -> np.ndarray:
-    from touche.numba_kernels import lowess_evenly_spaced_numba
+    from touche.numba.local_decay import lowess_evenly_spaced_numba
 
     return lowess_evenly_spaced_numba(
         np.asarray(endog, dtype=np.float64), float(frac), int(it), float(delta)
@@ -998,7 +968,7 @@ def _lowess_batch_numba(
     replace many small `prange` launches with one larger one; see
     `lowess_evenly_spaced_batched_numba`'s docstring.
     """
-    from touche.numba_kernels import lowess_evenly_spaced_batched_numba
+    from touche.numba.local_decay import lowess_evenly_spaced_batched_numba
 
     offsets = np.zeros(len(chunks) + 1, dtype=np.int64)
     if chunks:

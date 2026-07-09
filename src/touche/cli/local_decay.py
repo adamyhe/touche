@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from touche.backends import DEFAULT_BACKEND, DEFAULT_FISHER_BACKEND, DEFAULT_LOWESS_BACKEND
+from touche.backends import DEFAULT_FISHER_BACKEND, DEFAULT_LOWESS_BACKEND
 from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
 from touche.pipelines import run_local_decay_pipeline
@@ -28,7 +28,6 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     call_parser.add_argument("--lowess-window", default=5_000, type=int)
     call_parser.add_argument("--lowess-delta", default=16.0, type=float)
     call_parser.add_argument("--lowess-iterations", default=3, type=int)
-    call_parser.add_argument("--backend", choices=["numpy", "numba"], default=DEFAULT_BACKEND)
     call_parser.add_argument("--index-strategy", choices=["cache", "all", "chromosome"], default="cache")
     call_parser.add_argument("--cache-dir", type=Path)
     call_parser.add_argument("--cache-prefix", default="contacts")
@@ -70,7 +69,6 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--lowess-window", default=5_000, type=int)
     run_parser.add_argument("--lowess-delta", default=16.0, type=float)
     run_parser.add_argument("--lowess-iterations", default=3, type=int)
-    run_parser.add_argument("--backend", choices=["numpy", "numba"], default=DEFAULT_BACKEND)
     run_parser.add_argument("--index-strategy", choices=["cache", "all", "chromosome"], default="cache")
     run_parser.add_argument("--cache-dir", type=Path)
     run_parser.add_argument("--cache-prefix", default="contacts")
@@ -142,7 +140,6 @@ def _call_local_decay(args: argparse.Namespace) -> None:
         source=args.source,
         lowess_window=args.lowess_window,
         lowess_delta=args.lowess_delta,
-        backend=args.backend,
         lowess_backend=args.lowess_backend,
         fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
@@ -179,7 +176,6 @@ def _run_local_decay(args: argparse.Namespace) -> None:
         source=args.source,
         lowess_window=args.lowess_window,
         lowess_delta=args.lowess_delta,
-        backend=args.backend,
         lowess_backend=args.lowess_backend,
         fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,

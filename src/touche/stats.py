@@ -37,10 +37,10 @@ def fisher_greater_batch(
 ) -> np.ndarray:
     """Vectorized sibling of `fisher_greater` -- `hypergeom.sf` broadcasts over arrays.
 
-    `backend="numba"` uses a `prange`-parallel hypergeometric survival
-    function instead of `scipy.stats.hypergeom.sf`, matching it to within
-    ~1e-8 absolute error (see notes/numba-implementation-plan.md) in exchange
-    for using more than one core. `backend="scipy"` (the default) is exact.
+    `backend="numba"` (the default) uses a `prange`-parallel hypergeometric
+    survival function instead of `scipy.stats.hypergeom.sf`, matching it to
+    within ~1e-8 absolute error (see notes/numba-implementation-plan.md) in
+    exchange for using more than one core. `backend="scipy"` is exact.
     """
 
     a = np.round(a1)
@@ -54,7 +54,7 @@ def fisher_greater_batch(
     row_1 = a + b
     col_1 = a + c
     if backend == "numba":
-        from touche.numba_kernels import hypergeom_sf_numba
+        from touche.numba.stats import hypergeom_sf_numba
 
         return hypergeom_sf_numba(
             (a - 1).astype(np.int64),

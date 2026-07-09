@@ -819,13 +819,15 @@ Track:
 Current benchmark artifacts:
 
 - `notes/benchmarks/benchmark_numba_kernels.py`: synthetic microbenchmarks for
-  counting kernels, LOWESS variants, and Fisher-test implementations.
-- `notes/benchmarks/benchmark_reference_real_data.py`: real reference-data
-  benchmark pipeline that downloads the upstream example pairs and input files,
-  then profiles preprocessing, local-decay, APA, and EP/background CLI steps with
-  wall time and sampled peak RSS. Added but not run locally yet.
-- `notes/benchmarks/reference-real-data-benchmark.md`: agent-facing usage notes
-  for the real-data benchmark runner.
+  counting kernels and the LOWESS/Fisher backends.
+- `scripts/reference_replication.py`: real reference-data benchmark pipeline
+  that downloads the upstream example pairs and input files, then profiles
+  preprocessing, local-decay, APA, and EP/background CLI steps with wall time
+  and sampled peak RSS, rendering the same reference-comparable plots as the
+  upstream README. Promoted out of `notes/benchmarks/` since it's a runnable
+  replication tool, not just a benchmark log.
+- `scripts/reference_replication.md`: usage notes for the real-data
+  replication runner.
 
 Suggested tolerance policy:
 

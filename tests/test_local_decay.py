@@ -12,7 +12,7 @@ import numpy as np
 import polars as pl
 from polars.testing import assert_frame_equal, assert_series_equal
 
-from touche.backends import has_numba
+from touche.backends import has_numba, has_statsmodels
 from touche.cli.local_decay import _assign_pair_types
 from touche.contacts import build_contact_indexes, build_npz_cache
 from touche.local_decay import (
@@ -223,7 +223,7 @@ class LocalDecayTests(unittest.TestCase):
             self.assertEqual(calls[0, "observed"], 1)
 
     @unittest.skipUnless(has_numba(), "numba is not installed")
-    def test_numba_compute_local_decay_matches_numpy(self) -> None:
+    def test_compute_local_decay_matches_expected_calls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             baits = tmp_path / "baits.tsv"
@@ -247,21 +247,42 @@ class LocalDecayTests(unittest.TestCase):
             indexes = build_contact_indexes(pairs, source="touche")
             bait_anchors = read_center_anchors(baits)
             prey_anchors = read_center_anchors(preys)
-            kwargs = {
-                "dist": 10_000,
-                "cap": 100,
-                "min_distance": 1_000,
-                "lowess_window": 500,
-            }
 
-            numpy_calls = compute_local_decay(
-                indexes, bait_anchors, prey_anchors, backend="numpy", **kwargs
-            )
-            numba_calls = compute_local_decay(
-                indexes, bait_anchors, prey_anchors, backend="numba", **kwargs
+            calls = compute_local_decay(
+                indexes,
+                bait_anchors,
+                prey_anchors,
+                dist=10_000,
+                cap=100,
+                min_distance=1_000,
+                lowess_window=500,
             )
 
-            assert_frame_equal(numba_calls, numpy_calls)
+            expected = pl.DataFrame(
+                {
+                    "chr": ["chr1", "chr1"],
+                    "bait_center": [10000, 10000],
+                    "prey_center": [6000, 14000],
+                    "directional_distance": [-4000, 4000],
+                    "p_value": [0.5, 0.24997499749921318],
+                    "observed": [1, 2],
+                    "expected": [0.0, 0.0],
+                    "observed_background": [4999, 4998],
+                    "expected_background": [5000.0, 5000.0],
+                },
+                schema={
+                    "chr": pl.Utf8,
+                    "bait_center": pl.Int64,
+                    "prey_center": pl.Int64,
+                    "directional_distance": pl.Int64,
+                    "p_value": pl.Float64,
+                    "observed": pl.Int64,
+                    "expected": pl.Float64,
+                    "observed_background": pl.Int64,
+                    "expected_background": pl.Float64,
+                },
+            )
+            assert_frame_equal(calls, expected, abs_tol=1e-6, check_exact=False)
 
     @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_fisher_backend_numba_matches_scipy(self) -> None:
@@ -328,6 +349,7 @@ class LocalDecayTests(unittest.TestCase):
         self.assertTrue(pl.Series(smoothed).is_not_nan().all())
 
     @unittest.skipUnless(has_numba(), "numba is not installed")
+    @unittest.skipUnless(has_statsmodels(), "statsmodels is not installed")
     def test_numba_lowess_backend_matches_statsmodels_wrappers(self) -> None:
         counts = pl.Series([0, 1, 0, 0, 2, 0, 1, 0, 0, 1] * 200).cast(pl.Float64).to_numpy()
         statsmodels_zero = fit_zero_inflation_model(
@@ -389,7 +411,10 @@ class LocalDecayTests(unittest.TestCase):
         this pins down that the two are numerically identical, not just close,
         per the project's no-numeric-deviation policy.
         """
-        from touche.numba_kernels import lowess_evenly_spaced_batched_numba, lowess_evenly_spaced_numba
+        from touche.numba.local_decay import (
+            lowess_evenly_spaced_batched_numba,
+            lowess_evenly_spaced_numba,
+        )
 
         rng = np.random.default_rng(0)
         chunk_lengths = [5000, 5000, 3000, 1, 2, 5300, 0]
@@ -493,7 +518,6 @@ class LocalDecayTests(unittest.TestCase):
                 "cap": 500,
                 "min_distance": 500,
                 "lowess_window": 500,
-                "backend": "numba",
                 "lowess_backend": "numba",
                 "fisher_backend": "numba",
             }

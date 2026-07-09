@@ -89,7 +89,7 @@ class BackgroundCountTests(unittest.TestCase):
             self.assertEqual(result[0, "EP_contacts"], 1)
 
     @unittest.skipUnless(has_numba(), "numba is not installed")
-    def test_numba_background_backend_matches_numpy_counts(self) -> None:
+    def test_compute_ep_and_background_matches_expected_counts(self) -> None:
         indexes = {
             "chr1": ContactIndex(
                 chrom="chr1",
@@ -127,24 +127,25 @@ class BackgroundCountTests(unittest.TestCase):
             "max_bg_distance": 60,
         }
 
-        numpy_result = compute_ep_and_background(indexes, baits, preys, backend="numpy", **kwargs)
-        numba_result = compute_ep_and_background(indexes, baits, preys, backend="numba", **kwargs)
+        result = compute_ep_and_background(indexes, baits, preys, **kwargs)
 
-        assert_frame_equal(numba_result, numpy_result)
-
-    def test_invalid_background_backend_raises(self) -> None:
-        with self.assertRaisesRegex(ValueError, "backend"):
-            compute_ep_and_background(
-                {},
-                pl.DataFrame(schema=["chr", "center"]),
-                pl.DataFrame(schema=["chr", "center"]),
-                min_distance=150,
-                max_distance=250,
-                window=10,
-                min_bg_distance=40,
-                max_bg_distance=60,
-                backend="bad",
-            )
+        expected = pl.DataFrame(
+            {
+                "chr": ["chr1", "chr1", "chr1"],
+                "promoter": [100, 500, 500],
+                "enhancer": [300, 300, 700],
+                "EP_contacts": [1, 0, 1],
+                "BG_contacts": [2, 0, 2],
+            },
+            schema={
+                "chr": pl.Utf8,
+                "promoter": pl.Int64,
+                "enhancer": pl.Int64,
+                "EP_contacts": pl.Int64,
+                "BG_contacts": pl.Int64,
+            },
+        )
+        assert_frame_equal(result, expected)
 
 
 if __name__ == "__main__":
