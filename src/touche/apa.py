@@ -225,7 +225,13 @@ def _add_chrom_apa_numba(
     prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
     prey_strands = _strand_codes(chrom_preys["strand"])
 
-    pair_bait_indexes: list[int] = []
+    order_a = np.argsort(pos_a, kind="stable")
+    order_b = np.argsort(pos_b, kind="stable")
+    sorted_pos_a = pos_a[order_a]
+    sorted_pos_b = pos_b[order_b]
+
+    group_bait_indexes: list[int] = []
+    group_starts: list[int] = [0]
     pair_prey_indexes: list[int] = []
     active_bait = np.zeros(bait_centers.shape[0], dtype=bool)
     for bait_index, bait_center in enumerate(bait_centers):
@@ -235,13 +241,18 @@ def _add_chrom_apa_numba(
         )
         if len(candidate_indexes):
             active_bait[bait_index] = True
-            pair_bait_indexes.extend([bait_index] * len(candidate_indexes))
+            group_bait_indexes.append(bait_index)
             pair_prey_indexes.extend(candidate_indexes.tolist())
+            group_starts.append(len(pair_prey_indexes))
 
     if active_bait.any():
         bait_values = _apa_anchor_signal_numba(
             pos_a,
             pos_b,
+            sorted_pos_a,
+            order_a,
+            sorted_pos_b,
+            order_b,
             bait_centers[active_bait],
             bait_strands[active_bait],
             long_range,
@@ -253,6 +264,10 @@ def _add_chrom_apa_numba(
     prey_values = _apa_anchor_signal_numba(
         pos_a,
         pos_b,
+        sorted_pos_a,
+        order_a,
+        sorted_pos_b,
+        order_b,
         prey_centers,
         prey_strands,
         long_range,
@@ -261,15 +276,20 @@ def _add_chrom_apa_numba(
     )
     prey_signal += prey_values.sum(axis=0)
 
-    if pair_bait_indexes:
+    if group_bait_indexes:
         matrix_values = _apa_matrix_numba(
             pos_a,
             pos_b,
+            sorted_pos_a,
+            order_a,
+            sorted_pos_b,
+            order_b,
             bait_centers,
             bait_strands,
             prey_centers,
             prey_strands,
-            np.asarray(pair_bait_indexes, dtype=np.int64),
+            np.asarray(group_bait_indexes, dtype=np.int64),
+            np.asarray(group_starts, dtype=np.int64),
             np.asarray(pair_prey_indexes, dtype=np.int64),
             long_range,
             window=window,
@@ -281,6 +301,10 @@ def _add_chrom_apa_numba(
 def _apa_anchor_signal_numba(
     pos_a: np.ndarray,
     pos_b: np.ndarray,
+    sorted_pos_a: np.ndarray,
+    order_a: np.ndarray,
+    sorted_pos_b: np.ndarray,
+    order_b: np.ndarray,
     centers: np.ndarray,
     strand_codes: np.ndarray,
     contact_mask: np.ndarray,
@@ -293,6 +317,10 @@ def _apa_anchor_signal_numba(
     return apa_anchor_signal_numba(
         pos_a.astype(np.int64, copy=False),
         pos_b.astype(np.int64, copy=False),
+        sorted_pos_a.astype(np.int64, copy=False),
+        order_a.astype(np.int64, copy=False),
+        sorted_pos_b.astype(np.int64, copy=False),
+        order_b.astype(np.int64, copy=False),
         centers.astype(np.int64, copy=False),
         strand_codes.astype(np.int64, copy=False),
         contact_mask.astype(np.bool_, copy=False),
@@ -304,11 +332,16 @@ def _apa_anchor_signal_numba(
 def _apa_matrix_numba(
     pos_a: np.ndarray,
     pos_b: np.ndarray,
+    sorted_pos_a: np.ndarray,
+    order_a: np.ndarray,
+    sorted_pos_b: np.ndarray,
+    order_b: np.ndarray,
     bait_centers: np.ndarray,
     bait_strands: np.ndarray,
     prey_centers: np.ndarray,
     prey_strands: np.ndarray,
-    pair_bait_index: np.ndarray,
+    group_bait_index: np.ndarray,
+    group_start: np.ndarray,
     pair_prey_index: np.ndarray,
     long_range: np.ndarray,
     *,
@@ -322,11 +355,16 @@ def _apa_matrix_numba(
     return apa_matrix_numba(
         pos_a.astype(np.int64, copy=False),
         pos_b.astype(np.int64, copy=False),
+        sorted_pos_a.astype(np.int64, copy=False),
+        order_a.astype(np.int64, copy=False),
+        sorted_pos_b.astype(np.int64, copy=False),
+        order_b.astype(np.int64, copy=False),
         bait_centers.astype(np.int64, copy=False),
         bait_strands.astype(np.int64, copy=False),
         prey_centers.astype(np.int64, copy=False),
         prey_strands.astype(np.int64, copy=False),
-        pair_bait_index.astype(np.int64, copy=False),
+        group_bait_index.astype(np.int64, copy=False),
+        group_start.astype(np.int64, copy=False),
         pair_prey_index.astype(np.int64, copy=False),
         long_range.astype(np.bool_, copy=False),
         int(window),
