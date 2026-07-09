@@ -5,11 +5,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from scipy.stats import gaussian_kde
 
 from touche.anchors import read_bed_anchors
-from touche.backends import validate_backend
 from touche.contacts import build_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex, NamedDepth, NamedPath
@@ -19,6 +18,13 @@ if TYPE_CHECKING:
 
 BACKGROUND_COLUMNS = ["chr", "promoter", "enhancer", "EP_contacts", "BG_contacts"]
 PAIR_COLUMNS = ["chr", "promoter", "enhancer"]
+_BACKGROUND_SCHEMA = {
+    "chr": pl.Utf8,
+    "promoter": pl.Int64,
+    "enhancer": pl.Int64,
+    "EP_contacts": pl.Int64,
+    "BG_contacts": pl.Int64,
+}
 
 
 def count_ep_and_background(
@@ -33,15 +39,19 @@ def count_ep_and_background(
     min_bg_distance: int,
     max_bg_distance: int,
     source: str = "auto",
-    backend: str = "numpy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Count anchor-to-anchor and local-background contacts for bait/prey pairs."""
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
-        indexes = build_contact_indexes(pairs_path, source=source, cis_only=True)
+        indexes = build_contact_indexes(
+            pairs_path,
+            source=source,
+            cis_only=True,
+            include_metadata=False,
+        )
         baits = read_bed_anchors(baits_path)
         preys = read_bed_anchors(preys_path)
     result = compute_ep_and_background(
@@ -53,53 +63,51 @@ def count_ep_and_background(
         window=window,
         min_bg_distance=min_bg_distance,
         max_bg_distance=max_bg_distance,
-        backend=backend,
         progress=instrument,
     )
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with instrument.step("write counts"):
-        result.to_csv(out_path, sep="\t", header=False, index=False)
+        result.write_csv(out_path, include_header=False, separator="\t")
     return result
 
 
 def compute_ep_and_background(
     indexes: dict[str, ContactIndex],
-    baits: pd.DataFrame,
-    preys: pd.DataFrame,
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
     *,
     min_distance: int,
     max_distance: int,
     window: int,
     min_bg_distance: int,
     max_bg_distance: int,
-    backend: str = "numpy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Count EP and local-background contacts from in-memory indexes and anchors."""
 
-    backend = validate_backend(backend)
     instrument = make_instrumentation(progress, profile=profile)
     rows: list[dict[str, object]] = []
-    grouped_baits = list(baits.groupby("chr", sort=False))
+    chrom_list = baits["chr"].unique(maintain_order=True).to_list()
 
     chrom_iter = instrument.iter(
-        grouped_baits,
-        total=len(grouped_baits),
+        chrom_list,
+        total=len(chrom_list),
         desc="background chromosomes",
         unit="chrom",
     )
-    for chrom, chrom_baits in chrom_iter:
+    for chrom in chrom_iter:
         index = indexes.get(chrom)
         if index is None:
             continue
-        chrom_preys = preys.loc[preys["chr"] == chrom]
-        if chrom_preys.empty:
+        chrom_baits = baits.filter(pl.col("chr") == chrom)
+        chrom_preys = preys.filter(pl.col("chr") == chrom)
+        if chrom_preys.is_empty():
             continue
-        prey_centers = chrom_preys["center"].to_numpy(dtype=np.int64)
-        bait_centers = chrom_baits["center"].to_numpy(dtype=np.int64)
+        prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
+        bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
         pair_bait_indexes: list[int] = []
         pair_prey_indexes: list[int] = []
         for bait_index, bait_center in enumerate(bait_centers):
@@ -112,76 +120,31 @@ def compute_ep_and_background(
         if not pair_bait_indexes:
             continue
 
-        if backend == "numba":
-            ep_counts, bg_counts = _count_ep_background_pairs_numba(
-                index.pos_a,
-                index.pos_b,
-                bait_centers,
-                prey_centers,
-                np.asarray(pair_bait_indexes, dtype=np.int64),
-                np.asarray(pair_prey_indexes, dtype=np.int64),
-                window=window,
-                min_bg_distance=min_bg_distance,
-                max_bg_distance=max_bg_distance,
+        ep_counts, bg_counts = _count_ep_background_pairs_numba(
+            index.pos_a,
+            index.pos_b,
+            bait_centers,
+            prey_centers,
+            np.asarray(pair_bait_indexes, dtype=np.int64),
+            np.asarray(pair_prey_indexes, dtype=np.int64),
+            window=window,
+            min_bg_distance=min_bg_distance,
+            max_bg_distance=max_bg_distance,
+        )
+        for pair_index, (bait_index, prey_index) in enumerate(
+            zip(pair_bait_indexes, pair_prey_indexes, strict=True)
+        ):
+            rows.append(
+                {
+                    "chr": chrom,
+                    "promoter": int(bait_centers[bait_index]),
+                    "enhancer": int(prey_centers[prey_index]),
+                    "EP_contacts": int(ep_counts[pair_index]),
+                    "BG_contacts": int(bg_counts[pair_index]),
+                }
             )
-            for pair_index, (bait_index, prey_index) in enumerate(
-                zip(pair_bait_indexes, pair_prey_indexes, strict=True)
-            ):
-                rows.append(
-                    {
-                        "chr": chrom,
-                        "promoter": int(bait_centers[bait_index]),
-                        "enhancer": int(prey_centers[prey_index]),
-                        "EP_contacts": int(ep_counts[pair_index]),
-                        "BG_contacts": int(bg_counts[pair_index]),
-                    }
-                )
-            continue
 
-        for bait in chrom_baits.itertuples(index=False):
-            distances = np.abs(prey_centers - bait.center)
-            candidate_preys = chrom_preys.loc[
-                (distances >= min_distance) & (distances <= max_distance)
-            ]
-            for prey in candidate_preys.itertuples(index=False):
-                ep_contacts = _count_between_windows(
-                    index.pos_a,
-                    index.pos_b,
-                    bait.center - window,
-                    bait.center + window,
-                    prey.center - window,
-                    prey.center + window,
-                )
-                bait_to_prey_bg = _count_anchor_to_background(
-                    index.pos_a,
-                    index.pos_b,
-                    bait.center,
-                    prey.center,
-                    window=window,
-                    min_bg_distance=min_bg_distance,
-                    max_bg_distance=max_bg_distance,
-                )
-                prey_to_bait_bg = _count_anchor_to_background(
-                    index.pos_a,
-                    index.pos_b,
-                    prey.center,
-                    bait.center,
-                    window=window,
-                    min_bg_distance=min_bg_distance,
-                    max_bg_distance=max_bg_distance,
-                )
-                rows.append(
-                    {
-                        "chr": chrom,
-                        "promoter": int(bait.center),
-                        "enhancer": int(prey.center),
-                        "EP_contacts": int(ep_contacts),
-                        "BG_contacts": int(bait_to_prey_bg + prey_to_bait_bg),
-                    }
-                )
-
-    result = pd.DataFrame(rows, columns=BACKGROUND_COLUMNS)
-    return result
+    return pl.DataFrame(rows, schema=_BACKGROUND_SCHEMA)
 
 
 def _count_ep_background_pairs_numba(
@@ -196,7 +159,7 @@ def _count_ep_background_pairs_numba(
     min_bg_distance: int,
     max_bg_distance: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    from touche.numba_kernels import count_ep_background_pairs_numba
+    from touche.numba.background import count_ep_background_pairs_numba
 
     return count_ep_background_pairs_numba(
         pos_a.astype(np.int64, copy=False),
@@ -220,7 +183,7 @@ def compare_background_ratios(
     out_dir: str | Path | None = None,
     table_out: str | Path | None = None,
     reference_style: bool = True,
-) -> tuple[pd.DataFrame, dict[str, Path]]:
+) -> tuple[pl.DataFrame, dict[str, Path]]:
     """Compare EP/background ratios across control and treatment samples."""
 
     if not treatments:
@@ -233,19 +196,27 @@ def compare_background_ratios(
     merged = _merge_samples([control, *treatments])
     for sample in sample_order:
         depth_scale = depths[sample] / 10_000_000_000
-        merged[f"EP_CPB_{sample}"] = merged[f"EP_contacts_{sample}"] / depth_scale
+        merged = merged.with_columns(
+            (pl.col(f"EP_contacts_{sample}") / depth_scale).alias(f"EP_CPB_{sample}")
+        )
 
-    passes_threshold = np.logical_or.reduce(
-        [merged[f"EP_CPB_{sample}"] > min_ep_cpb for sample in sample_order]
+    passes_threshold = pl.any_horizontal(
+        [pl.col(f"EP_CPB_{sample}") > min_ep_cpb for sample in sample_order]
     )
-    positive_all = np.logical_and.reduce(
-        [merged[f"EP_CPB_{sample}"] > 0 for sample in sample_order]
-    )
-    merged = merged.loc[passes_threshold & positive_all].replace([np.inf, -np.inf], np.nan).dropna()
+    positive_all = pl.all_horizontal([pl.col(f"EP_CPB_{sample}") > 0 for sample in sample_order])
+    merged = merged.filter(passes_threshold & positive_all)
+
+    numeric_columns = [c for c, dtype in zip(merged.columns, merged.dtypes) if dtype.is_numeric()]
+    merged = merged.with_columns(
+        [
+            pl.when(pl.col(c).is_infinite()).then(None).otherwise(pl.col(c)).alias(c)
+            for c in numeric_columns
+        ]
+    ).drop_nulls()
 
     if table_out is not None:
         Path(table_out).parent.mkdir(parents=True, exist_ok=True)
-        merged.to_csv(table_out, sep="\t", index=False)
+        merged.write_csv(table_out, separator="\t")
 
     plot_paths: dict[str, Path] = {}
     if out_dir is not None:
@@ -267,54 +238,9 @@ def compare_background_ratios(
     return merged, plot_paths
 
 
-def _in_window(values: np.ndarray, start: int, end: int) -> np.ndarray:
-    return (values >= start) & (values <= end)
-
-
-def _in_background(
-    values: np.ndarray, center: int, min_distance: int, max_distance: int
-) -> np.ndarray:
-    left = _in_window(values, center - max_distance, center - min_distance)
-    right = _in_window(values, center + min_distance, center + max_distance)
-    return left | right
-
-
-def _count_between_windows(
-    pos_a: np.ndarray,
-    pos_b: np.ndarray,
-    start_1: int,
-    end_1: int,
-    start_2: int,
-    end_2: int,
-) -> int:
-    side_a_in_1 = _in_window(pos_a, start_1, end_1)
-    side_b_in_1 = _in_window(pos_b, start_1, end_1)
-    side_a_in_2 = _in_window(pos_a, start_2, end_2)
-    side_b_in_2 = _in_window(pos_b, start_2, end_2)
-    return int(np.count_nonzero((side_a_in_1 & side_b_in_2) | (side_b_in_1 & side_a_in_2)))
-
-
-def _count_anchor_to_background(
-    pos_a: np.ndarray,
-    pos_b: np.ndarray,
-    anchor_center: int,
-    background_center: int,
-    *,
-    window: int,
-    min_bg_distance: int,
-    max_bg_distance: int,
-) -> int:
-    side_a_in_anchor = _in_window(pos_a, anchor_center - window, anchor_center + window)
-    side_b_in_anchor = _in_window(pos_b, anchor_center - window, anchor_center + window)
-    side_a_in_bg = _in_background(pos_a, background_center, min_bg_distance, max_bg_distance)
-    side_b_in_bg = _in_background(pos_b, background_center, min_bg_distance, max_bg_distance)
-    return int(
-        np.count_nonzero((side_a_in_anchor & side_b_in_bg) | (side_b_in_anchor & side_a_in_bg))
-    )
-
 
 def plot_background_scatter(
-    data: pd.DataFrame,
+    data: pl.DataFrame,
     *,
     x_sample: str,
     y_sample: str,
@@ -329,8 +255,10 @@ def plot_background_scatter(
 
     x_col = f"ratio_{x_sample}"
     y_col = f"ratio_{y_sample}"
-    plot_data = data.loc[(data[x_col] > 0) & (data[y_col] > 0)].copy()
-    values = np.vstack([plot_data[x_col], plot_data[y_col]])
+    plot_data = data.filter((pl.col(x_col) > 0) & (pl.col(y_col) > 0))
+    x_values = plot_data[x_col].to_numpy()
+    y_values = plot_data[y_col].to_numpy()
+    values = np.vstack([x_values, y_values])
     colors = _safe_kde(values)
 
     figsize = (8, 8)
@@ -342,9 +270,8 @@ def plot_background_scatter(
 
     fig, ax = plt.subplots(figsize=figsize)
     sns.scatterplot(
-        data=plot_data,
-        x=x_col,
-        y=y_col,
+        x=x_values,
+        y=y_values,
         c=colors,
         cmap="jet",
         ax=ax,
@@ -373,23 +300,23 @@ def parse_named_depth(value: str) -> NamedDepth:
     return NamedDepth(name=name, depth=int(raw_depth))
 
 
-def _read_background(path: str | Path, sample: str) -> pd.DataFrame:
-    data = pd.read_csv(path, sep="\t", names=BACKGROUND_COLUMNS)
-    data[f"ratio_{sample}"] = data["EP_contacts"] / data["BG_contacts"]
+def _read_background(path: str | Path, sample: str) -> pl.DataFrame:
+    data = pl.read_csv(path, separator="\t", has_header=False, new_columns=BACKGROUND_COLUMNS)
+    data = data.with_columns(
+        (pl.col("EP_contacts") / pl.col("BG_contacts")).alias(f"ratio_{sample}")
+    )
     return data.rename(
-        columns={
+        {
             "EP_contacts": f"EP_contacts_{sample}",
             "BG_contacts": f"BG_contacts_{sample}",
         }
     )
 
 
-def _merge_samples(samples: list[NamedPath]) -> pd.DataFrame:
+def _merge_samples(samples: list[NamedPath]) -> pl.DataFrame:
     merged = _read_background(samples[0].path, samples[0].name)
     for sample in samples[1:]:
-        merged = merged.merge(
-            _read_background(sample.path, sample.name), how="inner", on=PAIR_COLUMNS
-        )
+        merged = merged.join(_read_background(sample.path, sample.name), how="inner", on=PAIR_COLUMNS)
     return merged
 
 

@@ -9,6 +9,7 @@ from typing import Any
 from touche import __version__
 from touche.anchors import read_bed_anchors
 from touche.apa import aggregate_apa, compare_apa_change
+from touche.backends import DEFAULT_FISHER_BACKEND, DEFAULT_LOWESS_BACKEND
 from touche.background import compare_background_ratios, count_ep_and_background
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
@@ -33,8 +34,13 @@ def run_local_decay_pipeline(
     plot_min_contacts: int = 1,
     plot_min_distance: int = 15_000,
     reference_style: bool = True,
-    backend: str = "numpy",
-    lowess_backend: str = "statsmodels",
+    lowess_backend: str = DEFAULT_LOWESS_BACKEND,
+    fisher_backend: str = DEFAULT_FISHER_BACKEND,
+    n_jobs: int = 1,
+    index_strategy: str = "cache",
+    cache_dir: str | Path | None = None,
+    cache_prefix: str = "contacts",
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
@@ -64,8 +70,13 @@ def run_local_decay_pipeline(
             source=source,
             lowess_window=lowess_window,
             lowess_delta=lowess_delta,
-            backend=backend,
             lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
+            n_jobs=n_jobs,
+            index_strategy=index_strategy,
+            cache_dir=cache_dir,
+            cache_prefix=cache_prefix,
+            require_cache=require_cache,
             lowess_iterations=lowess_iterations,
             progress=instrument,
         )
@@ -104,8 +115,13 @@ def run_local_decay_pipeline(
             "plot_min_contacts": plot_min_contacts,
             "plot_min_distance": plot_min_distance,
             "reference_style": reference_style,
-            "backend": backend,
             "lowess_backend": lowess_backend,
+            "fisher_backend": fisher_backend,
+            "n_jobs": n_jobs,
+            "index_strategy": index_strategy,
+            "cache_dir": str(cache_dir) if cache_dir is not None else None,
+            "cache_prefix": cache_prefix,
+            "require_cache": require_cache,
         },
         outputs={
             "contacts": str(contacts_out),
@@ -140,7 +156,6 @@ def run_background_pipeline(
     source: str = "auto",
     min_ep_cpb: float = 8.0,
     reference_style: bool = True,
-    backend: str = "numpy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
@@ -170,7 +185,6 @@ def run_background_pipeline(
                 min_bg_distance=min_bg_distance,
                 max_bg_distance=max_bg_distance,
                 source=source,
-                backend=backend,
                 progress=instrument,
             )
         count_paths[sample.name] = sample_out
@@ -206,7 +220,6 @@ def run_background_pipeline(
             "source": source,
             "min_ep_cpb": min_ep_cpb,
             "reference_style": reference_style,
-            "backend": backend,
         },
         outputs={
             "counts": {name: str(path) for name, path in count_paths.items()},
@@ -239,7 +252,6 @@ def run_apa_pipeline(
     bait_count: int | None = None,
     prey_count: int | None = None,
     reference_style: bool = True,
-    backend: str = "numpy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
@@ -265,7 +277,6 @@ def run_apa_pipeline(
             source=source,
             shift=shift,
             reference_style=reference_style,
-            backend=backend,
             progress=instrument,
         )
     with instrument.step(f"aggregate apa {treatment.name}"):
@@ -281,7 +292,6 @@ def run_apa_pipeline(
             source=source,
             shift=shift,
             reference_style=reference_style,
-            backend=backend,
             progress=instrument,
         )
     compare_dir.mkdir(parents=True, exist_ok=True)
@@ -328,7 +338,6 @@ def run_apa_pipeline(
             "bait_count": inferred_bait_count,
             "prey_count": inferred_prey_count,
             "reference_style": reference_style,
-            "backend": backend,
         },
         outputs={
             "control": {key: str(value) for key, value in control_outputs.items()},

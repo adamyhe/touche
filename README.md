@@ -4,8 +4,7 @@
 [![Tests](https://github.com/adamyhe/touche/actions/workflows/ci.yml/badge.svg)](https://github.com/adamyhe/touche/actions/workflows/ci.yml)
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/ep-touche?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/ep-touche)
 
-Python package and CLI tools for high-resolution chromatin contact analyses,
-refactored from the Danko Lab E-P_contacts reference workflows.
+Python API and CLI tools for analyzing enhancer-promoter contacts (touches) from high-resolution chromatin contact data, refactored from the [Danko Lab E-P_contacts reference workflows](https://github.com/Danko-Lab/E-P_contacts).
 
 `touche` starts from processed pairs files. Raw FASTQ processing, alignment,
 deduplication, and cooler generation should be handled by an external workflow
@@ -13,11 +12,11 @@ such as `distiller-nf`.
 
 ## Status
 
-The current implementation includes:
+The current implementation includes CLI tools+API for:
 
 - Micro-C pairs conversion, filtering, QC, and chromosome-sharded NPZ caches
 - local-decay contact calling, pair-type assignment, and plotting
-- APA aggregation and inter-sample APA comparison
+- Aggregated peak analysis (APA) aggregation and inter-sample APA comparison
 - enhancer/promoter local-background counting and treatment comparison
 - pipeline `run` wrappers that preserve intermediate outputs and write JSON
   manifests
@@ -38,11 +37,19 @@ uv add ep-touche
 uv run touche --help
 ```
 
-Optional accelerated kernels are available with:
+`local-decay`'s exact, statsmodels-backed LOWESS path
+(`lowess_backend="statsmodels"`) is an optional `legacy` extra, since the
+default `lowess_backend="numba"` covers everyday use:
 
 ```bash
-pip install "ep-touche[fast]"
+pip install ep-touche[legacy]
+# or: uv sync --extra legacy
 ```
+
+Our custom `numba` kernel is substantially faster and produces essentially
+equivalent results, so should be the main option used for LOWESS in
+`local-decay`, but `statsmodels` LOWESS is maintained as an optional backend
+for true equivalences with the reference code base.
 
 ## CLI Overview
 
@@ -80,11 +87,9 @@ indexes = tt.build_contact_indexes("sample.nodups_30_intra.pairs.gz", source="to
 The API is organized around reading pairs and anchors once, running in-memory
 compute functions such as `compute_apa`, `compute_local_decay`, and
 `compute_ep_and_background`, then displaying or saving returned Matplotlib
-figures as needed. Some counting functions support optional accelerated
-backends, such as `compute_apa(..., backend="numba")` and
-`compute_ep_and_background(..., backend="numba")`. Long-running CLI and API
-calls also support optional progress bars and lightweight profiling. See the
-[API guide](docs/api.md) for examples.
+figures as needed. Counting always uses an accelerated Numba kernel.
+Long-running CLI and API calls also support optional progress bars and
+lightweight profiling. See the [API guide](docs/api.md) for examples.
 
 ## Documentation
 

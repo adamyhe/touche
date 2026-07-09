@@ -26,7 +26,6 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
     count_parser.add_argument("--min-bg-distance", required=True, type=int)
     count_parser.add_argument("--max-bg-distance", required=True, type=int)
     count_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
-    count_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
     add_instrumentation_args(count_parser)
     count_parser.set_defaults(func=_count_background)
 
@@ -84,7 +83,6 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--max-bg-distance", required=True, type=int)
     run_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
     run_parser.add_argument("--min-ep-cpb", default=8.0, type=float)
-    run_parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
     add_instrumentation_args(run_parser)
     run_parser.add_argument(
         "--reference-style",
@@ -107,7 +105,6 @@ def _count_background(args: argparse.Namespace) -> None:
         min_bg_distance=args.min_bg_distance,
         max_bg_distance=args.max_bg_distance,
         source=args.source,
-        backend=args.backend,
         progress=instrument,
     )
     print_json(add_timings({"rows": int(len(result)), "out": str(args.out)}, instrument))
@@ -155,7 +152,6 @@ def _run_background(args: argparse.Namespace) -> None:
         source=args.source,
         min_ep_cpb=args.min_ep_cpb,
         reference_style=args.reference_style,
-        backend=args.backend,
         progress=instrument,
     )
     print_json(manifest)

@@ -12,7 +12,39 @@ considered as a default after chromosome-scale benchmarks show clear wins.
 
 ## Dependency policy
 
-`pyproject.toml` already exposes:
+**Update:** Numba is now a core dependency (`pyproject.toml`'s `dependencies`,
+no more `[project.optional-dependencies] fast` extra), and `backend` now
+defaults to `"numba"` everywhere it's exposed (see "Decide default behavior"
+below for the rationale and evidence). Base installs still do not import
+Numba during package import -- only when a numba backend is actually
+requested, unchanged from the original policy. `lowess_backend` remains a
+separate, independent default (`"statsmodels"`) pending a real-data parity
+check -- see the note at the end of "Decide default behavior".
+
+**Update 2:** The real-data parity check landed -- the full K562/mESC
+reference workflows were run end-to-end with `--lowess-backend numba` and
+reproduced the reference plots correctly at acceptable speed. `DEFAULT_LOWESS_BACKEND`
+and `DEFAULT_FISHER_BACKEND` (`src/touche/backends.py`) now both default to
+`"numba"`. `statsmodels` (only reachable via the now-opt-in
+`lowess_backend="statsmodels"`) moved to an optional `legacy` extra
+(`pip install ep-touche[legacy]` / `uv sync --extra legacy`). `scipy` stays a
+core dependency: `fisher_backend="scipy"` is still a fully supported exact
+alternative, and `background`'s EP-vs-background scatterplot KDE coloring
+(`_safe_kde` in `src/touche/background.py`) uses `scipy.stats.gaussian_kde`
+unconditionally, independent of any backend flag, with no numba/numpy
+alternative -- that usage is why scipy couldn't move to `legacy` too.
+
+**Update 3:** `src/touche/numba_kernels.py` was split into a `touche/numba/`
+subpackage, one file per domain (`apa.py`, `background.py`, `local_decay.py`,
+`stats.py`), plus a shared `_kernel_imports.py` for the numba
+import-guard. Historical file:line citations to `numba_kernels.py` below now
+refer to the corresponding `touche/numba/<domain>.py` file instead -- kept
+as-is rather than rewritten, since this section is a log of what was true
+when each entry was written.
+
+Original policy (superseded, kept for history):
+
+`pyproject.toml` used to expose:
 
 ```toml
 [project.optional-dependencies]
@@ -267,6 +299,44 @@ Numba is unavailable.
    - keep default `numpy` unless repeated real-data benchmarks show meaningful
      speedups after accounting for JIT compile time.
    - consider `backend="auto"` only after there are input-size heuristics.
+   - **Status: done.** The large-scale synthetic benchmark (100k contacts,
+     300 baits/preys, 20 Mb genome) and the "Large-scale local-decay
+     benchmark with numba LOWESS" run above showed correctness-verified
+     speedups (APA ~80-400x, background ~7-22x, local-decay ~3.8x with
+     `lowess_backend="numba"`) with matching row-count/matrix-sum
+     fingerprints and no regressions -- the bar set above is met. `backend`
+     now defaults to `"numba"` (via `touche.backends.DEFAULT_BACKEND`) at
+     every compute function, pipeline, and CLI flag; `numba` is now a core
+     dependency rather than the `fast` extra, since defaulting to it while
+     it stayed optional would break a fresh install's first default use.
+     `backend="numpy"` remains fully supported as an explicit opt-out.
+     `lowess_backend`/`fisher_backend` were a separate, independent decision
+     and stayed `"statsmodels"`/`"scipy"`-default pending a real-data parity
+     check. **That check has since landed** (see "Update 2" in "Dependency
+     policy" above): `DEFAULT_LOWESS_BACKEND`/`DEFAULT_FISHER_BACKEND` now
+     both default to `"numba"`. `statsmodels` moved to the optional `legacy`
+     extra since `lowess_backend="statsmodels"` is now purely opt-in; `scipy`
+     stayed a core dependency since `background`'s KDE-colored scatterplot
+     needs it unconditionally, independent of any backend flag.
+     `backend="auto"` remains not implemented, unchanged.
+
+     **Update 4:** `backend="numpy"` (the counting path -- APA matrix/1D
+     signal, EP/background pairs, local-decay's observed-count helper) has
+     been removed entirely, along with `Backend`/`DEFAULT_BACKEND`/
+     `validate_backend` in `backends.py` and every `--backend`/`backend=`
+     surface in `apa.py`/`background.py`/`local_decay.py`/`pipelines.py`/
+     `cli/*.py`. Unlike `lowess_backend`/`fisher_backend`, this numba kernel
+     was never an approximation -- every comparison test asserted exact
+     equality (`assert_frame_equal`, integer counts, no floating-point
+     accumulation order to diverge on), so keeping a second, unused
+     implementation around no longer served the "canonical correctness path"
+     purpose it was built for. The three numpy-vs-numba comparison tests
+     (`test_numba_compute_apa_matches_numpy`,
+     `test_numba_background_backend_matches_numpy_counts`,
+     `test_numba_compute_local_decay_matches_numpy`) were rewritten as
+     fixed-expected-value tests against the (now sole) numba implementation.
+     `lowess_backend`/`fisher_backend` are unaffected -- both numba paths are
+     validated approximations, not exact matches, so both alternatives stay.
 
 ## Risks and guardrails
 
@@ -490,6 +560,55 @@ Native statsmodels optimizations:
   speed/compatibility tradeoff.
 - `lowess_delta` was already exposed and remains the main statsmodels speed knob.
 
+## Large-scale local-decay benchmark with numba LOWESS
+
+Re-ran the local-decay benchmark at a much larger, more realistic synthetic
+scale (100,000 contacts, 300 baits, 300 preys, 20 Mb genome, 5 repeats) on a
+multi-core HPC node, this time passing `--lowess-backend numba` to both legs
+of the `backend=numpy` vs `backend=numba` comparison. The earlier large-scale
+run (see "Initial local-decay benchmark") only swapped the counting kernel and
+left the LOWESS smoother on `statsmodels` for both legs, which is why it only
+saw ~1.03x.
+
+Correctness held throughout (`rows=1794`, matching row counts and no mismatch
+warnings across every leg).
+
+```text
+numpy counting + statsmodels LOWESS (earlier run): median=451.0s
+numpy counting + numba LOWESS:                     median=119.2s   (3.8x)
+numba counting + numba LOWESS:                     median=123.3s   (0.966x vs the row above)
+```
+
+Interpretation:
+
+- The ~3.8x win comes entirely from the LOWESS kernel, not the counting
+  kernel. Once `lowess_backend="numba"` is set, swapping the counting
+  `backend` between `numpy` and `numba` makes no meaningful difference --
+  confirming LOWESS fitting, not observed/expected counting, is local-decay's
+  real bottleneck at realistic scale.
+- CPU utilization moved from ~1.2 cores (both `statsmodels`-LOWESS legs) to
+  ~11.2-11.4 cores with `lowess_backend="numba"`, matching
+  `lowess_evenly_spaced_numba`'s internal `prange` over anchor points doing
+  real work on a many-core node.
+- Peak RSS actually dropped slightly (421 -> 393 MiB) when also switching
+  counting to numba, because the numpy-counting leg already pays numba's
+  import cost once `lowess_backend="numba"` is set -- there's no separate
+  "numba tax" left for the counting leg to add on top.
+- Separately, background's numba wall time dropped a lot between the two
+  large-scale runs (28.0s -> 7.3s) purely from numba's on-disk `cache=True`
+  reusing a previously-compiled kernel -- a reminder that a single cold run
+  measures compile time bundled into wall time, and is pessimistic versus
+  steady-state usage.
+
+This closes the LOWESS half of the "Future work" question below: getting
+local-decay's big real-world speedup does not require the speculative
+nopython-port-for-`prange`-across-baits work -- defaulting `lowess_backend`
+to `numba` gets most of the win today, with much less engineering cost. Exact
+parity with `statsmodels` is still unvalidated on real/reference data (see
+"Experimental Numba LOWESS benchmark" above), so `lowess_backend="numba"`
+should stay opt-in until that's checked, independent of whatever the counting
+`backend` default ends up being.
+
 ## Fisher exact microbenchmark
 
 Replaced `scipy.stats.fisher_exact(..., alternative="greater")` with the
@@ -509,3 +628,328 @@ scipy_fisher_exact: min=1.7876s median=1.8119s mean=1.8708s repeats=3
 direct_hypergeom_sf: min=1.3367s median=1.4653s mean=1.4361s repeats=3
 median_speedup=1.24x
 ```
+
+## Future work: parallelizing the remaining heavy bits
+
+**Update:** the "tabled" decision below (whether `backend`/`lowess_backend="numba"`
+becomes default) is now resolved -- see "Decide default behavior" above.
+`backend` defaults to `numba` as of this update; `lowess_backend` stays
+`statsmodels`-default pending a real-data parity check, with the "Large-scale
+local-decay benchmark with numba LOWESS" section above already showing that
+switching `lowess_backend` to `numba` (independent of `backend`) is what
+actually fixes local-decay's real bottleneck (~3.8x), which supersedes the
+nopython-port-for-`prange`-across-baits option originally discussed here --
+that speedup is achievable today without it. The rest of this section is
+rewritten as a prioritized roadmap for what's left, now that LOWESS is no
+longer the dominant local-decay cost once `lowess_backend="numba"` is used.
+
+**Kernel-level `prange` vs. outer-level (chromosome/bait) threading, under a
+fixed core budget:** these two levels are not additive -- they compete for
+the same cores, and combining them without capping one causes
+oversubscription (see "Risks and guardrails" below). The deciding factor is
+whether a *single* kernel call's internal parallelism degree already
+approaches the core count:
+
+- **Local-decay's LOWESS kernel** (`lowess_evenly_spaced_numba`) parallelizes
+  over delta-spaced anchor points, but **not** within one bait's whole
+  `dist`-sized histogram as originally assumed here.
+  `fit_zero_inflation_model`/`fit_distance_decay_model` chunk the fit into
+  `lowess_window`-sized windows (default 5,000) and call `_safe_lowess`
+  separately per chunk -- at realistic settings that's `dist / lowess_window
+  = 200` chunks per model, `400` numba-LOWESS calls per bait (zero-inflation
+  + distance-decay), each with only `lowess_window / lowess_delta ~= 312`
+  anchors -- not "tens of thousands." Profiling (cProfile, 40 synthetic
+  baits, `dist=1_000_000`) confirmed this: `_lowess_evenly_spaced_numba` was
+  74% of total wall time across 16,040 calls, and per-call `prange`
+  launch/synchronization overhead was significant at this granularity. This
+  was the structural reason local-decay kept showing low average core
+  utilization (observed: 4-8 of 32 cores) even with `backend`/
+  `lowess_backend`/`fisher_backend` all set to `numba` and
+  `NUMBA_NUM_THREADS=32` set explicitly -- most wall-clock was spent in many
+  small, cheap parallel regions rather than one big one.
+
+  **Update: fixed via a batched-launch kernel, not a chunking-behavior
+  change.** Per the project's no-numeric-deviation policy, increasing
+  `lowess_window` was ruled out as "the fix" (it's a real user-facing tunable
+  that changes the smoothing bandwidth, not a free performance switch), and
+  restructuring the actual chunk boundaries/merge algorithm was ruled out too
+  (that's the algorithm, likely mirroring the reference's own chunked
+  approach, not a performance artifact). Instead, `numba_kernels.py` gained
+  `lowess_evenly_spaced_batched_numba` (`prange` over chunks, each chunk
+  fit sequentially via a new `_lowess_fit_chunk_sequential` helper extracted
+  from the original per-chunk logic) and `local_decay.py` gained
+  `_lowess_batch_numba`, used by `fit_zero_inflation_model`/
+  `fit_distance_decay_model` (numba backend only; `statsmodels` is
+  unchanged) to fit all of a bait's chunks in one launch instead of one
+  launch per chunk. Because each chunk's fit has no cross-chunk dependency
+  (only the *merge* step, which stays untouched and sequential in Python,
+  depends on other chunks), reordering anchor/residual/robustness-weight
+  loops from `prange` to `range` cannot change any computed value -- verified
+  bit-identical (`np.array_equal`, not just close) against the pre-batching
+  implementation across 6 configs (non-divisible `winsize`, `iterations=0`,
+  `target_len < winsize`, etc.) plus a dedicated kernel-level regression test
+  (`test_batched_lowess_numba_matches_per_chunk_calls`). Measured ~4x on a
+  realistic per-bait timing (`dist=1_000_000`, default `winsize=5_000`:
+  0.389s -> 0.096s) and ~4.2x on the full `compute_local_decay` pipeline
+  (40 synthetic baits: 15.9s -> 3.8s cProfile wall time), confirming this was
+  in fact the dominant remaining bottleneck. Kernel-level parallelism is
+  primary for local-decay again, now that the launch-granularity problem
+  behind it is fixed rather than assumed away.
+
+  **Update: re-profiling after the batched-launch fix surfaced a second,
+  unrelated bottleneck -- fixed.** With LOWESS batched, `fit_distance_decay_model`'s
+  *own* code (excluding LOWESS calls) became 52% of total wall time in the
+  same 40-bait profile. Its chunk-merge loop rebuilt `bg_model` via
+  `np.concatenate([bg_model[:-overlap], merge, counts_tail])` once per chunk
+  (~200 times per bait) -- each call re-copies the *entire* accumulated
+  result so far, making the loop O(target_len^2 / winsize) overall, not
+  O(target_len). Scaling-tested in isolation: per-element cost rose from
+  0.004us/elem at `dist=100k` to 0.21us/elem at `dist=2M`, the signature of
+  superlinear growth. This predates the LOWESS batching work and is
+  unrelated to parallelism -- it was always there, just dwarfed by the
+  larger LOWESS overhead until that was fixed. Replaced with a
+  pre-allocated buffer (`write_pos` tracks the same length `bg_model` would
+  have at each step; the "blend last 300 elements" branch overwrites
+  `buffer[write_pos-overlap:write_pos]` and appends `counts_tail` in place,
+  the "replace bg_model entirely" branch overwrites `buffer[:write_pos]`),
+  so every position is written a constant number of times instead of being
+  re-copied on every subsequent chunk -- same merge order and math, pure
+  mechanism change. Verified bit-identical against the pre-fix
+  `np.concatenate` version across 9 configs (non-divisible `winsize`, tiny
+  `dist` that repeatedly hits the "replace" branch, boundary-adjacent sizes
+  near the 300/1,001-element special cases) plus a dedicated regression
+  test (`test_fit_distance_decay_model_handles_many_small_chunks`) pinning
+  down the "replace" branch specifically. ~5.8x on the isolated function at
+  `dist=1_000_000` (0.094s -> 0.016s) and a further ~2x on the full
+  `compute_local_decay` pipeline on top of the LOWESS batching fix (3.8s ->
+  1.9s cProfile wall time on the same 40-bait synthetic benchmark) --
+  combined, ~8.2x faster than before either fix.
+
+  Also confirmed empirically (relevant to the still-deferred item 3 below):
+  `numba.set_num_threads()`/`get_num_threads()` are thread-local, not a
+  racy process-global -- 4 concurrent Python threads each setting a
+  different value each correctly read back their own value. The
+  "cap each worker's numba thread budget" mitigation item 3 relies on is
+  therefore safe to implement without cross-thread interference, if/when
+  outer-level threading is revisited.
+
+  **Update: re-profiling at real-data scale (not the 40-bait/500k-contact
+  synthetic benchmark above) showed the picture flips again.** At 500
+  baits / 3M contacts, `_lowess_batch_numba` (genuine parallel work) was
+  only 32% of wall time; the other 66% was a long tail of individually-fast
+  but single-threaded numpy calls (`_call_bait_contacts`'s own code --
+  mostly `in_region` contact filtering -- plus `fit_zero_inflation_model`'s
+  own code, `np.histogram`, `astype`, `np.arange`, `np.clip`, etc.), none
+  of them one big fixable inefficiency the way the LOWESS chunking and
+  merge-loop bugs were. Two more targeted fixes from that list:
+  - `np.histogram(distances, bins=max_distance, range=(0, max_distance))`
+    in `_call_bait_contacts` replaced with `np.bincount` -- distances are
+    already integers with unit bin width, so histogram's bin-edge
+    machinery is pure overhead for this input; verified exact match
+    (including the "value exactly at max_distance" boundary case
+    histogram right-closes its last bin on) across 5 edge cases. ~6.3x on
+    that operation in isolation.
+  - `fit_distance_decay_model` built a full `target_len`-sized (up to
+    1,000,000-element) `pos = np.arange(...)` unconditionally, but the
+    numba LOWESS kernel never reads `exog`/`pos` at all (implicit
+    evenly-spaced positions) -- only the tiny `seed_len<=1000` slice and
+    the `statsmodels` branch ever needed it. Now built lazily, only when
+    `backend != "numba"`.
+
+  Both verified bit-identical against the pre-fix code via `git stash`
+  (rerunning the exact same inputs through both versions, avoiding
+  hand-reconstruction transcription risk) across 4 `fit_distance_decay_model`
+  configs plus one full `compute_local_decay` pipeline run. Modest
+  combined impact on their own (~1.15x at the 500-bait/3M-contact scale --
+  correctly so, since they were secondary items in that profile, not the
+  dominant cost).
+
+  **The real lever at this scale is outer-level (bait) threading, done
+  below -- and it's a different case from item 3's APA/background design,
+  not the same one revisited.** Unlike APA/background's per-chromosome
+  kernels (where the *kernel* itself has a parallelism degree that shrinks
+  for small chromosomes), local-decay's remaining single-threaded time
+  here is spread across many small numpy calls with no single kernel to
+  make bigger -- there's nothing left to batch into one `prange` launch the
+  way the LOWESS chunking was. Baits are independent (no shared mutable
+  state, no randomness), so running several concurrently and letting the
+  OS schedule their numpy-heavy pipelines across different cores is the
+  correct tool here, not a premature one.
+
+  **Status: implemented.** `compute_local_decay` gained `n_jobs: int = 1`,
+  threaded through `call_local_decay`/`run_local_decay_pipeline` and a
+  `--jobs`/`-j` CLI flag on `local-decay call`/`run`. `n_jobs > 1` fans each
+  chromosome's baits out across a `ThreadPoolExecutor`; each worker calls
+  `numba.set_num_threads(cores // n_jobs)` before its own `_call_bait_contacts`
+  call (safe per the thread-local confirmation above), and futures are
+  harvested in submission order rather than as-completed so output rows
+  land in the same order as the sequential path regardless of `n_jobs`.
+  Because baits have no cross-bait dependency, this is exact rather than
+  approximate: verified bit-identical (`assert_frame_equal`, all columns
+  including `p_value`) between `n_jobs=1` and `n_jobs=4` on a 12-bait
+  synthetic fixture, plus a dedicated regression test
+  (`test_compute_local_decay_n_jobs_matches_sequential`). Measured on a
+  200-bait/1.5M-contact synthetic benchmark (10-core machine): 9.3s at
+  `n_jobs=1` down to 5.0s at `n_jobs=8` (~1.85x) -- diminishing beyond
+  `n_jobs=4` on that machine specifically, because capping each worker's
+  numba thread budget to `cores // n_jobs` trades kernel-level parallelism
+  away as `n_jobs` grows (at `n_jobs=8` on 10 cores, `threads_per_job=1`,
+  meaning the LOWESS kernel's own `prange` parallelism is nearly
+  eliminated). The right `n_jobs` is therefore a genuine tuning question,
+  not a "bigger is always better" knob -- it trades kernel-level
+  parallelism for bait-level parallelism, and the optimum depends on core
+  count and the per-bait glue-vs-kernel time ratio for the workload at
+  hand. `NUMBA_NUM_THREADS` still controls the total core budget both
+  levels compete for.
+- **APA/background's per-chromosome kernels** have a parallelism degree
+  bounded by baits/preys active in that chromosome (APA's anchor kernel) or
+  candidate pairs after distance filtering (background) -- both shrink a lot
+  for smaller/sparser chromosomes, leaving cores idle that a concurrent
+  second chromosome could otherwise use. Item 3 below designs outer
+  chromosome-level threading for this case, but it's deferred for now in
+  favor of staying sequential and letting `NUMBA_NUM_THREADS` control core
+  usage -- see item 3's "Status: deferred" note for why.
+
+1. **Vectorize local-decay's per-prey Fisher-exact loop.** **Status: done,
+   but only a partial fix -- see caveat below.** `_call_bait_contacts`'s tail
+   loop previously computed `exp_prob` via a fresh
+   `bg_pdf[exp_start:exp_stop+1].sum()` slice-sum per prey, then called
+   `fisher_greater` (pure scipy `hypergeom.sf`) once per prey -- both scalar,
+   entirely single-threaded and GIL-bound, running once per (bait, prey)
+   candidate. Replaced with: a cumulative-sum lookup for `exp_prob`
+   (`cumsum = np.concatenate([[0.0], np.cumsum(bg_pdf)])`, indexed once per
+   prey instead of re-summing a window each time) and a new vectorized
+   `fisher_greater_batch(a1, a2, b1, b2) -> np.ndarray` in `stats.py`
+   (`hypergeom.sf` broadcasts over array args), both applied across all of a
+   bait's preys at once instead of one Python-level iteration per prey.
+   Verified via exact equality against the scalar loop on a synthetic
+   fixture and via the existing `test_numba_compute_local_decay_matches_numpy`
+   parity test.
+
+   **Caveat (partially resolved by the numba `fisher_backend` prototype
+   below) -- vectorizing alone only partially addressed low core
+   utilization on local-decay.** Microbenchmarking (5000 synthetic preys,
+   ~2M-bin background histogram) found the windowed-sum-to-cumsum change is
+   a large win in isolation (~13x on that piece alone) but negligible
+   against the total, because `fisher_greater`/`hypergeom.sf` completely
+   dominates runtime -- vectorizing it via `fisher_greater_batch` only gave
+   ~1.5x (scipy's hypergeometric survival function has substantial fixed
+   per-element cost even when called as one batched array op instead of N
+   scalar calls; it isn't a thin wrapper over cheap arithmetic). After
+   `backend="numba"` and `lowess_backend="numba"` made the counting/LOWESS
+   kernels fast and fully parallel, this comparatively-slow, still
+   single-threaded loop became a larger share of each bait's wall time than
+   before -- which is why the real-data benchmark showed only ~2-3 cores
+   active on local-decay rather than saturating the core budget.
+
+   **Update: prototyped an opt-in `fisher_backend="numba"` that replaces
+   `hypergeom.sf` itself.** `numba_kernels.py`'s `hypergeom_sf_numba` (with
+   scalar helpers `_log_binom`/`_hypergeom_sf_scalar`) computes the
+   hypergeometric survival function via a `prange`-parallel log-space PMF
+   tail sum -- `lgamma`-based binomial-coefficient differences (avoiding
+   naive factorials, which overflow immediately at this scale), summing
+   whichever side of the k-split is smaller (direct tail vs. `1 -`
+   complement) to avoid precision loss when the true answer is close to 1.
+   Exposed as `fisher_backend: Literal["scipy", "numba"] = "scipy"` --
+   mirroring the `lowess_backend` pattern exactly (own `DEFAULT_FISHER_BACKEND`
+   constant and `validate_fisher_backend()` in `backends.py`, threaded through
+   every `call_local_decay`/`compute_local_decay`/`_call_bait_contacts` layer,
+   `run_local_decay_pipeline`, and a `--fisher-backend {scipy,numba}` CLI flag
+   on `local-decay call`/`run`) -- `fisher_backend="scipy"` (exact, scipy-backed)
+   stays the default; `numba` is opt-in.
+
+   Validated against `scipy.stats.hypergeom.sf` across 40,000 randomized
+   table shapes (uniform-random `(k, M, n, N)`, plus tables shaped like
+   local-decay's actual usage: `M`/`N` in the millions from a genome-scale
+   background histogram with `n` in the tens from observed/expected contact
+   counts) -- max absolute error ~1.7e-8, zero NaN mismatches (both sides
+   return `nan` for the degenerate `total<=0` table, which
+   `_call_bait_contacts` cannot produce since its histograms always have at
+   least one bin). This is negligible for p-value thresholding at any
+   normal significance level. `tests/test_stats.py::test_fisher_greater_batch_numba_matches_scipy`
+   and `tests/test_local_decay.py::test_fisher_backend_numba_matches_scipy`
+   encode this as a closeness check (`atol=1e-6`), not exact equality --
+   unlike the integer-count numba/numpy backends elsewhere in this file,
+   this is a different floating-point algorithm for the same quantity, so
+   bit-identical output was never the goal.
+
+2. **Parallelize `apa_matrix_numba`.** **Status: done.**
+   `apa_matrix_numba` (`src/touche/numba_kernels.py:207`) previously ran
+   `@njit(cache=True)` only -- no `parallel=True`/`prange`, unlike its sibling
+   `apa_anchor_signal_numba` (`:168`, `parallel=True` with `prange` over
+   `center_index`). Naively adding `prange` to the outer
+   `for pair_index in range(...)` loop would introduce a real data race --
+   multiple pairs write `matrix[prey_bin, bait_bin] += count` into the *same*
+   shared cell (unlike `apa_anchor_signal_numba`, where each `prange`
+   iteration owns an exclusive output row indexed by the loop variable
+   itself), so `matrix` is now `thread_matrices` of shape
+   `(n_threads, bins, bins)`: each thread accumulates into its own exclusive
+   slice via `get_thread_id()`, and the caller sums over `axis=0` after the
+   parallel loop -- the standard thread-local-buffer pattern for
+   scatter-add reductions numba can't auto-parallelize. `n_threads` is
+   computed via `numba.get_num_threads()` in the Python wrapper
+   (`apa.py`'s `_apa_matrix_numba`) and passed in as a plain argument rather
+   than called inside the kernel -- calling `get_num_threads()` from inside
+   an `@njit(cache=True)` function makes numba treat it as a dynamic global
+   and silently disables on-disk caching (confirmed via
+   `NumbaWarning: Cannot cache compiled function ... as it uses dynamic
+   globals`); `get_thread_id()` alone does not have this problem and stays
+   inside the kernel. Verified via the existing exact-equality test
+   (`tests/test_apa_aggregate.py::test_numba_compute_apa_matches_numpy`) and
+   an ad hoc synthetic benchmark (100k contacts, 300 baits/preys, 20 Mb
+   chromosome, matching the scale used elsewhere in this file) showing
+   ~4.3x speedup over the old sequential kernel with bit-identical output.
+
+3. **Opt-in cross-chromosome thread-pool parallelism for APA/background only**
+   (biggest lift, needs its own review before implementing; per the framing
+   above, deliberately scoped to exclude `compute_local_decay`).
+   **Status: deferred.** For the sake of simplicity, `compute_apa` and
+   `compute_ep_and_background`'s outer per-chromosome loops stay strictly
+   sequential for now; core usage for a whole run is controlled via the
+   `NUMBA_NUM_THREADS` environment variable (or `numba.set_num_threads()` in
+   a notebook) instead of adding a second, outer-level parallelism knob.
+   Given item 2 already gives every numba kernel in the codebase
+   kernel-level `prange` parallelism, the added API surface and complexity
+   below (new `n_jobs`/`--jobs` parameter, worker-thread error propagation,
+   progress-bar interaction, work-stealing scheduler) isn't worth it
+   right now. The design is kept below in case per-chromosome kernel
+   parallelism is later shown (via profiling on real multi-core hardware)
+   to leave cores idle for long stretches -- e.g. many small chromosomes
+   trailing behind one large one -- at which point this becomes worth
+   revisiting rather than re-deriving from scratch.
+
+   `compute_apa` and `compute_ep_and_background`'s outer per-chromosome loops
+   (`apa.py:116`, `background.py:106`) are strictly sequential today, but
+   each chromosome's `ContactIndex` and bait/prey subset is fully independent
+   -- the only shared state to reconcile is each function's own accumulator
+   (`apa.py`'s `matrix_arr`/`bait_signal_arr`/`prey_signal_arr`, accumulated
+   via `+=`; `background.py`'s plain `rows` list, built via `.append`). With
+   `backend="numba"` now the default, numba-jitted kernels release the GIL
+   while running, so a `concurrent.futures.ThreadPoolExecutor` across
+   chromosomes can get real parallelism for the compute-heavy portion
+   without multiprocessing's pickling/startup overhead (the process-based
+   option originally proposed here) -- each worker thread processes one
+   chromosome (building its own local accumulator/list), the main thread
+   reduces (`sum` the arrays / concatenate the lists, in a fixed chromosome
+   order, not completion order) after all futures complete.
+   - **Must cap numba's thread budget per worker** (e.g.
+     `numba.set_num_threads(max(1, cores // n_jobs))` before each worker's
+     kernel call) -- otherwise each of `n_jobs` outer threads spawns its own
+     numba thread pool sized to all cores, oversubscribing badly once more
+     than one chromosome is in flight.
+   - **Must not statically assign one thread per chromosome.** Chromosomes
+     vary hugely in size (chr1 vs. chrY), so a naive 1-thread-per-chromosome
+     assignment wastes cores once the small chromosomes finish and sit idle
+     while the biggest one grinds on -- wall clock ends up capped by the
+     single biggest chromosome regardless of `n_jobs`. Use a bounded
+     work-stealing pool (submit one task per chromosome to a fixed-size
+     executor) and schedule biggest-chromosome-first, so the long-pole task
+     starts immediately and smaller ones backfill the remaining workers as
+     they free up.
+   - Scope as a new opt-in `n_jobs: int = 1` parameter on `compute_apa`/
+     `compute_ep_and_background` plus a `--jobs`/`-j` CLI flag, defaulting to
+     sequential (1) until validated on real multi-core hardware -- this is
+     genuinely new public API surface (return-value ordering, error
+     propagation from worker threads, interaction with the existing progress
+     bars) that deserves its own dedicated plan/review rather than being
+     bundled into a default-flip change.

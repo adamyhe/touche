@@ -6,7 +6,35 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
 
-from touche.models import ContactPair
+import polars as pl
+
+PAIR_SOURCES = {"auto", "distiller", "touche"}
+
+TOUCHE_COLUMNS = [
+    "chrom_a",
+    "pos_a",
+    "chrom_b",
+    "pos_b",
+    "strand_a",
+    "strand_b",
+    "read_type",
+    "mapq_a",
+    "mapq_b",
+]
+DISTILLER_COLUMNS = ["read_id", *TOUCHE_COLUMNS]
+
+PAIR_DTYPES: dict[str, pl.DataType] = {
+    "read_id": pl.Utf8,
+    "chrom_a": pl.Utf8,
+    "pos_a": pl.Int64,
+    "chrom_b": pl.Utf8,
+    "pos_b": pl.Int64,
+    "strand_a": pl.Utf8,
+    "strand_b": pl.Utf8,
+    "read_type": pl.Utf8,
+    "mapq_a": pl.Int16,
+    "mapq_b": pl.Int16,
+}
 
 
 @contextmanager
@@ -32,46 +60,49 @@ def iter_noncomment_lines(handle: TextIO) -> Iterator[tuple[int, str]]:
         yield line_number, stripped
 
 
-def parse_pair_fields(fields: list[str], *, source: str = "auto") -> ContactPair:
-    """Parse distiller/pairtools-style or canonical touche pair fields.
+def _resolve_pair_columns(path: str | Path, source: str) -> list[str]:
+    """Resolve the canonical touche vs. distiller/pairtools column layout.
 
-    Supported data rows:
-    - 10+ columns: read_id, chrom1, pos1, chrom2, pos2, strand1, strand2, type, mapq1, mapq2
-    - 9 columns: chrom1, pos1, chrom2, pos2, strand1, strand2, type, mapq1, mapq2
+    `source="auto"` sniffs the layout from the first data row's field count,
+    matching the CLI's documented `--source` semantics.
     """
 
-    if source not in {"auto", "distiller", "touche"}:
+    if source not in PAIR_SOURCES:
         raise ValueError(f"Unsupported pair source: {source}")
-
-    if source == "touche" or (source == "auto" and len(fields) == 9):
-        offset = 0
-    elif source == "distiller" or (source == "auto" and len(fields) >= 10):
-        offset = 1
-    else:
-        raise ValueError(f"Expected 9 canonical or 10+ distiller columns, found {len(fields)}")
-
-    try:
-        return ContactPair(
-            chrom_a=fields[offset],
-            pos_a=int(fields[offset + 1]),
-            chrom_b=fields[offset + 2],
-            pos_b=int(fields[offset + 3]),
-            strand_a=fields[offset + 4],
-            strand_b=fields[offset + 5],
-            read_type=fields[offset + 6],
-            mapq_a=int(fields[offset + 7]),
-            mapq_b=int(fields[offset + 8]),
-        )
-    except (IndexError, ValueError) as exc:
-        raise ValueError(f"Malformed pair row with {len(fields)} columns") from exc
-
-
-def iter_pairs(
-    path: str | Path, *, source: str = "auto"
-) -> Iterator[tuple[int, ContactPair, list[str]]]:
-    """Yield parsed contact pairs from plain or gzipped text."""
+    if source == "touche":
+        return TOUCHE_COLUMNS
+    if source == "distiller":
+        return DISTILLER_COLUMNS
 
     with open_text(path, "rt") as handle:
-        for line_number, line in iter_noncomment_lines(handle):
-            fields = line.split("\t")
-            yield line_number, parse_pair_fields(fields, source=source), fields
+        for _, line in iter_noncomment_lines(handle):
+            field_count = line.count("\t") + 1
+            break
+        else:
+            return TOUCHE_COLUMNS
+
+    if field_count == 9:
+        return TOUCHE_COLUMNS
+    if field_count >= 10:
+        return DISTILLER_COLUMNS
+    raise ValueError(f"Expected 9 canonical or 10+ distiller columns, found {field_count}")
+
+
+def scan_pairs(path: str | Path, *, source: str = "auto") -> pl.LazyFrame:
+    """Lazily scan a plain or gzip-compressed pairs file.
+
+    Supports the canonical 9-column `touche` layout and the 10+ column
+    `distiller`/pairtools layout (leading `read_id` column); any trailing
+    columns beyond the 10th are ignored.
+    """
+
+    columns = _resolve_pair_columns(path, source)
+    schema = {name: PAIR_DTYPES[name] for name in columns}
+    return pl.scan_csv(
+        path,
+        separator="\t",
+        has_header=False,
+        comment_prefix="#",
+        schema=schema,
+        truncate_ragged_lines=True,
+    )

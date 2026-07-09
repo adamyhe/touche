@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+import polars as pl
+from polars.testing import assert_frame_equal
 
 from touche.anchors import read_bed_anchors
 from touche.apa import aggregate_apa, compute_apa
@@ -52,10 +52,10 @@ class ApaAggregateTests(unittest.TestCase):
             self.assertEqual(set(outputs), {"matrix", "heatmap", "baits_signal", "preys_signal"})
             for path in outputs.values():
                 self.assertTrue(path.exists())
-            matrix = pd.read_csv(outputs["matrix"], index_col=0)
-            self.assertEqual(int(matrix.to_numpy().sum()), 3)
-            bait_signal = pd.read_csv(outputs["baits_signal"], index_col=0)
-            prey_signal = pd.read_csv(outputs["preys_signal"], index_col=0)
+            matrix = pl.read_csv(outputs["matrix"])
+            self.assertEqual(int(matrix.drop("bin_label").to_numpy().sum()), 3)
+            bait_signal = pl.read_csv(outputs["baits_signal"])
+            prey_signal = pl.read_csv(outputs["preys_signal"])
             self.assertEqual(int(bait_signal["contacts"].sum()), 3)
             self.assertEqual(int(prey_signal["contacts"].sum()), 3)
 
@@ -84,7 +84,7 @@ class ApaAggregateTests(unittest.TestCase):
             )
             fig = result.plot()
 
-            self.assertEqual(int(result.matrix.to_numpy().sum()), 1)
+            self.assertEqual(int(result.matrix.drop("bin_label").to_numpy().sum()), 1)
             self.assertEqual(int(result.bait_signal["contacts"].sum()), 1)
             self.assertTrue(hasattr(fig, "savefig"))
 
@@ -92,8 +92,8 @@ class ApaAggregateTests(unittest.TestCase):
 
             plt.close(fig)
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
-    def test_numba_compute_apa_matches_numpy(self) -> None:
+    @unittest.skipUnless(has_numba(), "numba is not installed")
+    def test_compute_apa_matches_expected_matrix_and_signals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             pairs = tmp_path / "pairs.tsv"
@@ -123,25 +123,37 @@ class ApaAggregateTests(unittest.TestCase):
             indexes = build_contact_indexes(pairs, source="touche")
             bait_anchors = read_bed_anchors(baits)
             prey_anchors = read_bed_anchors(preys)
-            kwargs = {
-                "min_distance": 150,
-                "max_distance": 250,
-                "window": 20,
-                "pixels": 2,
-                "shift": 0,
-            }
 
-            numpy_result = compute_apa(
-                indexes, bait_anchors, prey_anchors, backend="numpy", **kwargs
-            )
-            numba_result = compute_apa(
-                indexes, bait_anchors, prey_anchors, backend="numba", **kwargs
+            result = compute_apa(
+                indexes,
+                bait_anchors,
+                prey_anchors,
+                min_distance=150,
+                max_distance=250,
+                window=20,
+                pixels=2,
+                shift=0,
             )
 
-            pd.testing.assert_frame_equal(numba_result.matrix, numpy_result.matrix)
-            pd.testing.assert_frame_equal(numba_result.bait_signal, numpy_result.bait_signal)
-            pd.testing.assert_frame_equal(numba_result.prey_signal, numpy_result.prey_signal)
-            self.assertEqual(np.asarray(numba_result.matrix).sum(), np.asarray(numpy_result.matrix).sum())
+            expected_matrix = pl.DataFrame(
+                {
+                    "bin_label": [20, 10, -10, -20],
+                    "-20": [0, 2, 0, 0],
+                    "-10": [1, 1, 1, 0],
+                    "10": [0, 0, 0, 0],
+                    "20": [0, 0, 0, 0],
+                }
+            )
+            expected_bait_signal = pl.DataFrame(
+                {"bin_label": [-20, -10, 10, 20], "contacts": [2, 3, 0, 0]}
+            )
+            expected_prey_signal = pl.DataFrame(
+                {"bin_label": [-20, -10, 10, 20], "contacts": [0, 1, 3, 1]}
+            )
+
+            assert_frame_equal(result.matrix, expected_matrix)
+            assert_frame_equal(result.bait_signal, expected_bait_signal)
+            assert_frame_equal(result.prey_signal, expected_prey_signal)
 
 
 if __name__ == "__main__":

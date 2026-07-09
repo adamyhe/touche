@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
-from statsmodels.nonparametric.smoothers_lowess import lowess
+import polars as pl
 
-from touche.backends import validate_backend
-from touche.contacts import build_contact_indexes
+from touche.backends import (
+    DEFAULT_FISHER_BACKEND,
+    DEFAULT_LOWESS_BACKEND,
+    require_statsmodels,
+    validate_fisher_backend,
+    validate_lowess_backend,
+)
+from touche.contacts import (
+    build_contact_indexes,
+    build_npz_cache,
+    load_npz_cache,
+    load_npz_cache_manifest,
+)
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.io import open_text
 from touche.models import ContactIndex
-from touche.stats import fisher_greater
+from touche.stats import fisher_greater_batch
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -44,6 +55,18 @@ LOCAL_DECAY_OUTPUT_COLUMNS = [
     "expected_background",
 ]
 
+_LOCAL_DECAY_SCHEMA = {
+    "chr": pl.Utf8,
+    "bait_center": pl.Int64,
+    "prey_center": pl.Int64,
+    "directional_distance": pl.Int64,
+    "p_value": pl.Float64,
+    "observed": pl.Int64,
+    "expected": pl.Float64,
+    "observed_background": pl.Int64,
+    "expected_background": pl.Float64,
+}
+
 
 def call_local_decay(
     baits_path: str | Path,
@@ -57,12 +80,17 @@ def call_local_decay(
     source: str = "auto",
     lowess_window: int = 5_000,
     lowess_delta: float = 16.0,
-    backend: str = "numpy",
-    lowess_backend: str = "statsmodels",
+    lowess_backend: str = DEFAULT_LOWESS_BACKEND,
+    fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
+    n_jobs: int = 1,
+    index_strategy: str = "cache",
+    cache_dir: str | Path | None = None,
+    cache_prefix: str = "contacts",
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Call bait-prey contacts normalized by local distance decay.
 
     This ports the reference ``ContactCaller_microC.py`` workflow without
@@ -74,115 +102,388 @@ def call_local_decay(
         raise ValueError("dist must be positive")
     if cap < 0:
         raise ValueError("cap must be non-negative")
+    if index_strategy not in {"all", "chromosome", "cache"}:
+        raise ValueError("index_strategy must be one of: all, chromosome, cache")
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
         baits = read_center_anchors(baits_path)
         preys = read_center_anchors(preys_path)
-        indexes = build_contact_indexes(pairs_path, source=source, cis_only=True)
-    calls = compute_local_decay(
-        indexes,
-        baits,
-        preys,
-        dist=dist,
-        cap=cap,
-        min_distance=min_distance,
-        lowess_window=lowess_window,
-        lowess_delta=lowess_delta,
-        backend=backend,
-        lowess_backend=lowess_backend,
-        lowess_iterations=lowess_iterations,
-        progress=instrument,
-    )
+    if index_strategy == "cache":
+        cache_dir = _resolve_cache_dir(cache_dir, out_path)
+        with instrument.step("prepare contact cache"):
+            _ensure_local_decay_cache(
+                pairs_path,
+                cache_dir=cache_dir,
+                cache_prefix=cache_prefix,
+                source=source,
+                require_cache=require_cache,
+            )
+        calls = _call_local_decay_from_cache(
+            baits,
+            preys,
+            cache_dir=cache_dir,
+            cache_prefix=cache_prefix,
+            dist=dist,
+            cap=cap,
+            min_distance=min_distance,
+            lowess_window=lowess_window,
+            lowess_delta=lowess_delta,
+            lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
+            lowess_iterations=lowess_iterations,
+            n_jobs=n_jobs,
+            progress=instrument,
+        )
+    elif index_strategy == "chromosome":
+        calls = _call_local_decay_by_chromosome(
+            baits,
+            preys,
+            pairs_path,
+            dist=dist,
+            cap=cap,
+            min_distance=min_distance,
+            source=source,
+            lowess_window=lowess_window,
+            lowess_delta=lowess_delta,
+            lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
+            lowess_iterations=lowess_iterations,
+            n_jobs=n_jobs,
+            progress=instrument,
+        )
+    else:
+        with instrument.step("build contact indexes"):
+            indexes = build_contact_indexes(
+                pairs_path,
+                source=source,
+                cis_only=True,
+                include_metadata=False,
+            )
+        calls = compute_local_decay(
+            indexes,
+            baits,
+            preys,
+            dist=dist,
+            cap=cap,
+            min_distance=min_distance,
+            lowess_window=lowess_window,
+            lowess_delta=lowess_delta,
+            lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
+            lowess_iterations=lowess_iterations,
+            n_jobs=n_jobs,
+            progress=instrument,
+        )
     with instrument.step("write calls"):
-        calls.to_csv(out_path, sep="\t", header=False, index=False)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        calls.write_csv(out_path, include_header=False, separator="\t")
     return calls
+
+
+def _resolve_cache_dir(cache_dir: str | Path | None, out_path: str | Path) -> Path:
+    if cache_dir is not None:
+        return Path(cache_dir)
+    return Path(out_path).parent / "contact_index_cache"
+
+
+def _ensure_local_decay_cache(
+    pairs_path: str | Path,
+    *,
+    cache_dir: str | Path,
+    cache_prefix: str,
+    source: str,
+    require_cache: bool = False,
+) -> None:
+    manifest_path = Path(cache_dir) / f"{cache_prefix}.manifest.json"
+    if manifest_path.exists():
+        return
+    if require_cache:
+        raise FileNotFoundError(
+            f"Required local-decay cache manifest is missing: {manifest_path}. "
+            "Run `touche preprocess build-cache` first or disable require_cache."
+        )
+    build_npz_cache(
+        pairs_path,
+        cache_dir,
+        source=source,
+        prefix=cache_prefix,
+        cis_only=True,
+        include_metadata=False,
+        index_strategy="chromosome",
+    )
+
+
+def _call_local_decay_by_chromosome(
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
+    pairs_path: str | Path,
+    *,
+    dist: int,
+    cap: int,
+    min_distance: int,
+    source: str,
+    lowess_window: int,
+    lowess_delta: float,
+    lowess_backend: str,
+    fisher_backend: str,
+    lowess_iterations: int,
+    n_jobs: int,
+    progress: Instrumentation,
+) -> pl.DataFrame:
+    frames: list[pl.DataFrame] = []
+    chrom_list = baits["chr"].unique(maintain_order=True).to_list()
+    chrom_iter = progress.iter(
+        chrom_list,
+        total=len(chrom_list),
+        desc="local-decay index chromosomes",
+        unit="chrom",
+    )
+    for chrom in chrom_iter:
+        chrom_baits = baits.filter(pl.col("chr") == chrom)
+        chrom_preys = preys.filter(pl.col("chr") == chrom)
+        if chrom_preys.is_empty():
+            continue
+        with progress.step(f"build contact index {chrom}"):
+            indexes = build_contact_indexes(
+                pairs_path,
+                source=source,
+                cis_only=True,
+                include_metadata=False,
+                chromosomes={str(chrom)},
+            )
+        if chrom not in indexes:
+            continue
+        frames.append(
+            compute_local_decay(
+                indexes,
+                chrom_baits,
+                chrom_preys,
+                dist=dist,
+                cap=cap,
+                min_distance=min_distance,
+                lowess_window=lowess_window,
+                lowess_delta=lowess_delta,
+                lowess_backend=lowess_backend,
+                fisher_backend=fisher_backend,
+                lowess_iterations=lowess_iterations,
+                n_jobs=n_jobs,
+                progress=progress,
+            )
+        )
+    if not frames:
+        return pl.DataFrame(schema=_LOCAL_DECAY_SCHEMA)
+    return pl.concat(frames)
+
+
+def _call_local_decay_from_cache(
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
+    *,
+    cache_dir: str | Path | None,
+    cache_prefix: str,
+    dist: int,
+    cap: int,
+    min_distance: int,
+    lowess_window: int,
+    lowess_delta: float,
+    lowess_backend: str,
+    fisher_backend: str,
+    lowess_iterations: int,
+    n_jobs: int,
+    progress: Instrumentation,
+) -> pl.DataFrame:
+    if cache_dir is None:
+        raise ValueError("cache_dir is required when loading local-decay indexes from cache")
+    cache_paths = load_npz_cache_manifest(cache_dir, prefix=cache_prefix)
+    frames: list[pl.DataFrame] = []
+    chrom_list = baits["chr"].unique(maintain_order=True).to_list()
+    chrom_iter = progress.iter(
+        chrom_list,
+        total=len(chrom_list),
+        desc="local-decay cache chromosomes",
+        unit="chrom",
+    )
+    for chrom in chrom_iter:
+        chrom_baits = baits.filter(pl.col("chr") == chrom)
+        chrom_preys = preys.filter(pl.col("chr") == chrom)
+        cache_path = cache_paths.get(str(chrom))
+        if chrom_preys.is_empty() or cache_path is None:
+            continue
+        with progress.step(f"load contact cache {chrom}"):
+            index = load_npz_cache(cache_path, include_metadata=False)
+        frames.append(
+            compute_local_decay(
+                {str(chrom): index},
+                chrom_baits,
+                chrom_preys,
+                dist=dist,
+                cap=cap,
+                min_distance=min_distance,
+                lowess_window=lowess_window,
+                lowess_delta=lowess_delta,
+                lowess_backend=lowess_backend,
+                fisher_backend=fisher_backend,
+                lowess_iterations=lowess_iterations,
+                n_jobs=n_jobs,
+                progress=progress,
+            )
+        )
+    if not frames:
+        return pl.DataFrame(schema=_LOCAL_DECAY_SCHEMA)
+    return pl.concat(frames)
 
 
 def compute_local_decay(
     indexes: dict[str, ContactIndex],
-    baits: pd.DataFrame,
-    preys: pd.DataFrame,
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
     *,
     dist: int = 1_000_000,
     cap: int = 2_000,
     min_distance: int = 5_000,
     lowess_window: int = 5_000,
     lowess_delta: float = 16.0,
-    backend: str = "numpy",
-    lowess_backend: str = "statsmodels",
+    lowess_backend: str = DEFAULT_LOWESS_BACKEND,
+    fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
+    n_jobs: int = 1,
     progress: bool | Instrumentation = False,
     profile: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Call local-decay contacts from in-memory contact indexes and center anchors."""
 
     if dist <= 0:
         raise ValueError("dist must be positive")
     if cap < 0:
         raise ValueError("cap must be non-negative")
-    backend = validate_backend(backend)
-    if lowess_backend not in {"statsmodels", "numba"}:
-        raise ValueError("lowess_backend must be one of: statsmodels, numba")
-    if lowess_backend == "numba":
-        validate_backend("numba")
+    lowess_backend = validate_lowess_backend(lowess_backend)
+    fisher_backend = validate_fisher_backend(fisher_backend)
     if lowess_iterations < 0:
         raise ValueError("lowess_iterations must be non-negative")
+    if n_jobs < 1:
+        raise ValueError("n_jobs must be positive")
 
     instrument = make_instrumentation(progress, profile=profile)
     records: list[dict[str, float | int | str]] = []
-    grouped_baits = list(baits.groupby("chr", sort=False))
-    total_baits = int(sum(len(chrom_baits) for _, chrom_baits in grouped_baits))
-    bait_progress = instrument.iter(
-        range(total_baits),
-        total=total_baits,
-        desc="local-decay baits",
-        unit="bait",
-    )
-    bait_progress_iter = iter(bait_progress)
+    chrom_list = baits["chr"].unique(maintain_order=True).to_list() if baits.height else []
 
-    chrom_iter = instrument.iter(
-        grouped_baits,
-        total=len(grouped_baits),
-        desc="local-decay chromosomes",
-        unit="chrom",
+    # Only show a chromosome-level bar when there's more than one chromosome to
+    # show progress across -- callers that already iterate chromosomes
+    # themselves (e.g. _call_local_decay_from_cache) invoke this once per
+    # chromosome, where a single-item bar would be redundant. The per-chromosome
+    # bait bar below is created fresh (and closed) each iteration so it nests
+    # cleanly under this one instead of fighting it for the same terminal line.
+    chrom_source = chrom_list
+    if len(chrom_list) > 1:
+        chrom_source = instrument.iter(
+            chrom_list,
+            total=len(chrom_list),
+            desc="local-decay chromosomes",
+            unit="chrom",
+        )
+
+    bait_kwargs = dict(
+        dist=dist,
+        cap=cap,
+        min_distance=min_distance,
+        lowess_window=lowess_window,
+        lowess_delta=lowess_delta,
+        lowess_backend=lowess_backend,
+        fisher_backend=fisher_backend,
+        lowess_iterations=lowess_iterations,
     )
-    for chrom, chrom_baits in chrom_iter:
-        chrom_preys = preys.loc[preys["chr"] == chrom].sort_values("center")
-        index = indexes.get(chrom)
-        if index is None or chrom_preys.empty:
-            for _ in chrom_baits["center"]:
-                next(bait_progress_iter, None)
-            continue
-        normalized = _ordered_cis_index(index)
-        prey_centers = chrom_preys["center"].to_numpy(dtype=np.int64)
-        for bait_center in chrom_baits["center"].to_numpy(dtype=np.int64):
-            next(bait_progress_iter, None)
-            start = int(max(0, bait_center - dist))
-            stop = int(bait_center + dist)
-            left = np.searchsorted(prey_centers, start, side="left")
-            right = np.searchsorted(prey_centers, stop, side="right")
-            if left == right:
+
+    # Baits are fully independent (no shared mutable state, no randomness),
+    # so n_jobs > 1 fans each chromosome's baits out across a thread pool --
+    # numba kernels release the GIL while running, so this gets real
+    # parallelism for the compute-heavy portion. Each worker caps its own
+    # numba thread budget (get_num_threads()/set_num_threads() are
+    # thread-local, not a shared global) to avoid n_jobs threads each
+    # spawning their own full-width numba thread pool and oversubscribing
+    # the machine. Futures are harvested in submission order (not
+    # as-completed) so output rows land in the same order as the
+    # sequential path regardless of n_jobs.
+    executor = ThreadPoolExecutor(max_workers=n_jobs) if n_jobs > 1 else None
+    threads_per_job = None
+    if executor is not None:
+        from numba import get_num_threads
+
+        threads_per_job = max(1, get_num_threads() // n_jobs)
+
+    try:
+        for chrom in chrom_source:
+            chrom_baits = baits.filter(pl.col("chr") == chrom)
+            chrom_preys = preys.filter(pl.col("chr") == chrom).sort("center")
+            index = indexes.get(chrom)
+            if index is None or chrom_preys.is_empty():
                 continue
-            candidate_preys = prey_centers[left:right]
-            records.extend(
-                _call_bait_contacts(
-                    normalized,
-                    int(bait_center),
-                    candidate_preys,
-                    dist=dist,
-                    cap=cap,
-                    min_distance=min_distance,
-                    lowess_window=lowess_window,
-                    lowess_delta=lowess_delta,
-                    backend=backend,
-                    lowess_backend=lowess_backend,
-                    lowess_iterations=lowess_iterations,
-                )
-            )
+            normalized = _ordered_cis_index(index)
+            prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
+            bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
 
-    calls = pd.DataFrame.from_records(records, columns=LOCAL_DECAY_OUTPUT_COLUMNS)
-    return calls
+            work_items = []
+            for bait_center in bait_centers:
+                start = int(max(0, bait_center - dist))
+                stop = int(bait_center + dist)
+                left = np.searchsorted(prey_centers, start, side="left")
+                right = np.searchsorted(prey_centers, stop, side="right")
+                if left == right:
+                    continue
+                work_items.append((int(bait_center), prey_centers[left:right]))
+
+            if executor is None:
+                bait_iter = instrument.iter(
+                    work_items,
+                    total=len(work_items),
+                    desc=f"local-decay baits ({chrom})",
+                    unit="bait",
+                    leave=False,
+                )
+                for bait_center, candidate_preys in bait_iter:
+                    records.extend(
+                        _call_bait_contacts(normalized, bait_center, candidate_preys, **bait_kwargs)
+                    )
+            else:
+                futures = [
+                    executor.submit(
+                        _call_bait_contacts_threaded,
+                        normalized,
+                        bait_center,
+                        candidate_preys,
+                        threads_per_job,
+                        bait_kwargs,
+                    )
+                    for bait_center, candidate_preys in work_items
+                ]
+                future_iter = instrument.iter(
+                    futures,
+                    total=len(futures),
+                    desc=f"local-decay baits ({chrom})",
+                    unit="bait",
+                    leave=False,
+                )
+                for future in future_iter:
+                    records.extend(future.result())
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+    return pl.DataFrame(records, schema=_LOCAL_DECAY_SCHEMA)
+
+
+def _call_bait_contacts_threaded(
+    index: ContactIndex,
+    bait_center: int,
+    candidate_preys: np.ndarray,
+    threads_per_job: int,
+    bait_kwargs: dict,
+) -> list[dict[str, float | int | str]]:
+    from numba import set_num_threads
+
+    set_num_threads(threads_per_job)
+    return _call_bait_contacts(index, bait_center, candidate_preys, **bait_kwargs)
 
 
 def assign_pair_types(
@@ -190,45 +491,40 @@ def assign_pair_types(
     functional_path: str | Path,
     nonfunctional_path: str | Path,
     out_path: str | Path,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Assign local-decay contacts to positive, negative, or other pair classes."""
 
-    contacts = pd.read_csv(
-        contacts_path,
-        sep="\t",
-        usecols=[0, 1, 2, 3, 5, 6],
-        names=CONTACT_COLUMNS,
-    )
-    contacts["distance"] = contacts["directional_distance"].abs()
+    raw = pl.read_csv(contacts_path, separator="\t", has_header=False)
+    source_columns = ["column_1", "column_2", "column_3", "column_4", "column_6", "column_7"]
+    contacts = raw.select(source_columns)
+    contacts.columns = CONTACT_COLUMNS
+    contacts = contacts.with_columns(pl.col("directional_distance").abs().alias("distance"))
 
     functional_keys = _read_pair_keys(functional_path)
     nonfunctional_keys = _read_pair_keys(nonfunctional_path)
-    contact_keys = pd.MultiIndex.from_frame(contacts[PAIR_KEY_COLUMNS])
+    key_struct = pl.struct(PAIR_KEY_COLUMNS)
 
-    contacts["PosNeg"] = np.select(
-        [
-            contact_keys.isin(functional_keys),
-            contact_keys.isin(nonfunctional_keys),
-        ],
-        [
-            "positive",
-            "negative",
-        ],
-        default="other",
+    contacts = contacts.with_columns(
+        pl.when(key_struct.is_in(functional_keys.implode()))
+        .then(pl.lit("positive"))
+        .when(key_struct.is_in(nonfunctional_keys.implode()))
+        .then(pl.lit("negative"))
+        .otherwise(pl.lit("other"))
+        .alias("PosNeg")
     )
-    contacts.to_csv(out_path, sep="\t")
+    contacts.write_csv(out_path, separator="\t")
     return contacts
 
 
 def plot_pair_type_distribution(
-    assignments: str | Path | pd.DataFrame,
+    assignments: str | Path | pl.DataFrame,
     out_path: str | Path | None = None,
     *,
     min_contacts: int = 1,
     min_distance: int = 15_000,
     plot_table_out: str | Path | None = None,
     reference_style: bool = True,
-) -> tuple[pd.DataFrame, "Figure"]:
+) -> tuple[pl.DataFrame, "Figure"]:
     """Plot observed/expected contact distributions by assigned pair type."""
 
     import matplotlib
@@ -236,20 +532,19 @@ def plot_pair_type_distribution(
     matplotlib.use("Agg")
     import seaborn as sns
 
-    if isinstance(assignments, pd.DataFrame):
-        contacts = assignments.copy()
+    if isinstance(assignments, pl.DataFrame):
+        contacts = assignments
     else:
-        contacts = pd.read_csv(assignments, sep="\t", index_col=0)
-    contacts.index = range(len(contacts.index))
-    filtered = contacts.loc[
-        (contacts["observed"] >= min_contacts)
-        & (contacts["expected"] >= min_contacts)
-        & (contacts["distance"] >= min_distance)
-    ].copy()
-    filtered["Obs/Exp"] = np.log2(filtered["observed"] / filtered["expected"])
+        contacts = pl.read_csv(assignments, separator="\t")
+
+    filtered = contacts.filter(
+        (pl.col("observed") >= min_contacts)
+        & (pl.col("expected") >= min_contacts)
+        & (pl.col("distance") >= min_distance)
+    ).with_columns((pl.col("observed") / pl.col("expected")).log(2).alias("Obs/Exp"))
 
     if plot_table_out is not None:
-        filtered.to_csv(plot_table_out, sep="\t", index=False)
+        filtered.write_csv(plot_table_out, separator="\t")
 
     if reference_style:
         figsize = (6, 8)
@@ -259,18 +554,16 @@ def plot_pair_type_distribution(
     else:
         figsize = (6, 6)
         palette = "deep"
-        order = sorted(filtered["PosNeg"].dropna().unique())
+        order = sorted(filtered["PosNeg"].drop_nulls().unique().to_list())
         xtick_labels = order
 
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=figsize)
     sns.violinplot(
-        x="PosNeg",
-        y="Obs/Exp",
-        hue="PosNeg",
-        data=filtered,
-        showfliers=False,
+        x=filtered["PosNeg"].to_numpy(),
+        y=filtered["Obs/Exp"].to_numpy(),
+        hue=filtered["PosNeg"].to_numpy(),
         palette=palette,
         order=order,
         hue_order=order,
@@ -288,15 +581,15 @@ def plot_pair_type_distribution(
     return filtered, fig
 
 
-def _read_pair_keys(path: str | Path) -> pd.MultiIndex:
-    data = pd.read_csv(path)
+def _read_pair_keys(path: str | Path) -> pl.Series:
+    data = pl.read_csv(path)
     missing = [column for column in PAIR_KEY_COLUMNS if column not in data.columns]
     if missing:
         raise ValueError(f"Missing required pair key columns in {path}: {', '.join(missing)}")
-    return pd.MultiIndex.from_frame(data[PAIR_KEY_COLUMNS])
+    return data.select(pl.struct(PAIR_KEY_COLUMNS).alias("key"))["key"]
 
 
-def read_center_anchors(path: str | Path) -> pd.DataFrame:
+def read_center_anchors(path: str | Path) -> pl.DataFrame:
     """Read local-decay two-column or BED-like anchors with integer centers."""
 
     rows: list[tuple[str, int]] = []
@@ -314,7 +607,7 @@ def read_center_anchors(path: str | Path) -> pd.DataFrame:
             else:
                 center = int(fields[1])
             rows.append((chrom, center))
-    return pd.DataFrame(rows, columns=["chr", "center"])
+    return pl.DataFrame(rows, schema=["chr", "center"], orient="row")
 
 
 _read_center_anchors = read_center_anchors
@@ -345,8 +638,8 @@ def _call_bait_contacts(
     min_distance: int,
     lowess_window: int,
     lowess_delta: float,
-    backend: str,
     lowess_backend: str,
+    fisher_backend: str,
     lowess_iterations: int,
 ) -> list[dict[str, float | int | str]]:
     in_region = ((bait_center - dist) <= index.pos_a) & (index.pos_a <= (bait_center + dist)) | (
@@ -359,7 +652,14 @@ def _call_bait_contacts(
 
     distances = pos_b - pos_a
     max_distance = int(min(max(int(distances.max()), 1), dist * 2))
-    counts = np.histogram(distances, bins=max_distance, range=(0, max_distance))[0].astype(float)
+    # np.bincount instead of np.histogram: distances are integers with unit
+    # bin width, so this is an exact match (verified against histogram
+    # across edge cases) at a fraction of the cost -- histogram's bin-edge
+    # machinery is unnecessary overhead for an already-integer-valued input.
+    bin_counts = np.bincount(distances[distances <= max_distance], minlength=max_distance + 1)
+    counts = bin_counts[:max_distance].astype(float)
+    if len(bin_counts) > max_distance:
+        counts[-1] += bin_counts[max_distance]
     counts_zero = np.where(counts != 0, 0.0, 1.0)
     zero_model = fit_zero_inflation_model(
         counts_zero,
@@ -386,73 +686,65 @@ def _call_bait_contacts(
     minus = pos_a[(bait_start <= pos_b) & (pos_b <= bait_stop)]
     histogram_bins = len(counts)
 
-    records: list[dict[str, float | int | str]] = []
-    if backend == "numba":
-        observed_values, directional_distances, contact_counts = _local_decay_observed_numba(
-            plus,
-            minus,
-            bait_center,
-            prey_centers,
-            cap=cap,
-            min_distance=min_distance,
-        )
-        iterable = zip(
-            prey_centers,
-            directional_distances,
-            observed_values,
-            contact_counts,
-            strict=True,
-        )
-    else:
-        observed_values = []
-        directional_distances = []
-        contact_counts = []
-        for prey_center in prey_centers:
-            directional_distance = int(prey_center - bait_center)
-            directional_distances.append(directional_distance)
-            if abs(directional_distance) <= min_distance:
-                observed_values.append(0)
-                contact_counts.append(-1)
-                continue
-            contact_positions = plus if directional_distance > 0 else minus
-            prey_start = int(prey_center - cap)
-            prey_stop = int(prey_center + cap)
-            observed_values.append(
-                int(((prey_start <= contact_positions) & (contact_positions <= prey_stop)).sum())
-            )
-            contact_counts.append(len(contact_positions))
-        iterable = zip(prey_centers, directional_distances, observed_values, contact_counts, strict=True)
+    observed_values, directional_distances, contact_counts = _local_decay_observed_numba(
+        plus,
+        minus,
+        bait_center,
+        prey_centers,
+        cap=cap,
+        min_distance=min_distance,
+    )
 
-    for prey_center, directional_distance, observed, contact_count in iterable:
-        directional_distance = int(directional_distance)
-        if abs(directional_distance) <= min_distance:
-            continue
-        strand_distance = abs(directional_distance)
-        exp_start = max(0, int(strand_distance - cap))
-        exp_stop = min(len(bg_pdf) - 1, int(strand_distance + cap))
-        exp_prob = float(bg_pdf[exp_start : exp_stop + 1].sum()) if exp_stop >= exp_start else 0.0
-        expected = float(int(contact_count) * exp_prob)
-        observed = int(observed)
-        p_value = fisher_greater(
-            observed,
-            expected,
-            histogram_bins - observed,
-            histogram_bins - expected,
+    prey_centers = np.asarray(prey_centers, dtype=np.int64)
+    directional_distances = np.asarray(directional_distances, dtype=np.int64)
+    observed_values = np.asarray(observed_values, dtype=np.int64)
+    contact_counts = np.asarray(contact_counts, dtype=np.int64)
+
+    keep = np.abs(directional_distances) > min_distance
+    prey_centers = prey_centers[keep]
+    directional_distances = directional_distances[keep]
+    observed_values = observed_values[keep]
+    contact_counts = contact_counts[keep]
+    if prey_centers.size == 0:
+        return []
+
+    # Windowed sum of bg_pdf via a cumulative-sum lookup, vectorized across all
+    # preys at once instead of a fresh slice-sum + scipy call per prey.
+    strand_distances = np.abs(directional_distances)
+    exp_start = np.maximum(0, strand_distances - cap)
+    exp_stop = np.minimum(len(bg_pdf) - 1, strand_distances + cap)
+    valid_window = exp_stop >= exp_start
+    cumsum = np.concatenate([[0.0], np.cumsum(bg_pdf)])
+    safe_start = np.clip(exp_start, 0, len(bg_pdf))
+    safe_stop = np.clip(exp_stop + 1, 0, len(bg_pdf))
+    exp_prob = np.where(valid_window, cumsum[safe_stop] - cumsum[safe_start], 0.0)
+
+    expected = contact_counts.astype(np.float64) * exp_prob
+    p_values = fisher_greater_batch(
+        observed_values.astype(np.float64),
+        expected,
+        (histogram_bins - observed_values).astype(np.float64),
+        histogram_bins - expected,
+        backend=fisher_backend,
+    )
+
+    chrom = index.chrom if index.chrom.startswith("chr") else f"chr{index.chrom}"
+    return [
+        {
+            "chr": chrom,
+            "bait_center": int(bait_center),
+            "prey_center": int(prey_center),
+            "directional_distance": int(directional_distance),
+            "p_value": float(p_value),
+            "observed": int(observed),
+            "expected": float(expected_value),
+            "observed_background": int(histogram_bins - observed),
+            "expected_background": float(histogram_bins - expected_value),
+        }
+        for prey_center, directional_distance, p_value, observed, expected_value in zip(
+            prey_centers, directional_distances, p_values, observed_values, expected, strict=True
         )
-        records.append(
-            {
-                "chr": _with_chr_prefix(index.chrom),
-                "bait_center": int(bait_center),
-                "prey_center": int(prey_center),
-                "directional_distance": directional_distance,
-                "p_value": p_value,
-                "observed": observed,
-                "expected": expected,
-                "observed_background": histogram_bins - observed,
-                "expected_background": histogram_bins - expected,
-            }
-        )
-    return records
+    ]
 
 
 def _local_decay_observed_numba(
@@ -464,7 +756,7 @@ def _local_decay_observed_numba(
     cap: int,
     min_distance: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    from touche.numba_kernels import local_decay_observed_counts_numba
+    from touche.numba.local_decay import local_decay_observed_counts_numba
 
     return local_decay_observed_counts_numba(
         plus.astype(np.int64, copy=False),
@@ -482,34 +774,49 @@ def fit_zero_inflation_model(
     dist: int = 1_000_000,
     winsize: int = 5_000,
     delta: float = 16.0,
-    backend: str = "statsmodels",
+    backend: str = DEFAULT_LOWESS_BACKEND,
     iterations: int = 3,
 ) -> np.ndarray:
     """Fit the reference zero-inflation LOWESS model."""
 
-    model: list[np.ndarray] = []
     counts = np.asarray(contact_counts_zero, dtype=float)
     target_len = min(dist, len(counts))
     if target_len <= 0:
         return np.asarray([], dtype=float)
     winsize = max(1, min(winsize, target_len))
-    for start in range(0, target_len, winsize):
-        stop = min(start + winsize, target_len)
-        zero_pdf = np.zeros(stop - start, dtype=float)
-        for offset, k in enumerate(range(start, stop)):
-            if k >= 50 and (k + 50) <= (target_len - 1):
-                zero_pdf[offset] = counts[k - 50 : k + 50].sum() / 100.0
-        pos = np.arange(1, len(zero_pdf) + 1, dtype=float)
-        smoothed = _safe_lowess(
-            zero_pdf,
-            pos,
-            frac=0.01,
-            it=iterations,
-            delta=delta,
-            backend=backend,
+
+    # Vectorized windowed-average via a cumulative-sum lookup, replacing an
+    # O(target_len) pure-Python loop (a single-threaded bottleneck regardless
+    # of backend/lowess_backend/fisher_backend, since target_len is `dist` --
+    # up to 1,000,000 -- evaluated once per bait).
+    cumsum = np.concatenate([[0.0], np.cumsum(counts[:target_len])])
+    k = np.arange(target_len)
+    valid = (k >= 50) & (k + 50 <= target_len - 1)
+    lo = np.clip(k - 50, 0, target_len)
+    hi = np.clip(k + 50, 0, target_len)
+    zero_pdf_full = np.where(valid, (cumsum[hi] - cumsum[lo]) / 100.0, 0.0)
+
+    zero_pdf_chunks = [
+        zero_pdf_full[start : min(start + winsize, target_len)]
+        for start in range(0, target_len, winsize)
+    ]
+    if backend == "numba":
+        smoothed_chunks = _lowess_batch_numba(
+            zero_pdf_chunks, frac=0.01, iterations=iterations, delta=delta
         )
-        model.append(0.5 * (1 - smoothed))
-    return np.concatenate(model)
+    else:
+        smoothed_chunks = [
+            _safe_lowess(
+                zero_pdf,
+                np.arange(1, len(zero_pdf) + 1, dtype=float),
+                frac=0.01,
+                it=iterations,
+                delta=delta,
+                backend=backend,
+            )
+            for zero_pdf in zero_pdf_chunks
+        ]
+    return np.concatenate([0.5 * (1 - smoothed) for smoothed in smoothed_chunks])
 
 
 def fit_distance_decay_model(
@@ -520,7 +827,7 @@ def fit_distance_decay_model(
     dist: int = 1_000_000,
     winsize: int = 5_000,
     delta: float = 16.0,
-    backend: str = "statsmodels",
+    backend: str = DEFAULT_LOWESS_BACKEND,
     iterations: int = 3,
 ) -> np.ndarray:
     """Fit the reference distance-decay LOWESS model."""
@@ -530,35 +837,65 @@ def fit_distance_decay_model(
         return np.asarray([], dtype=float)
     counts = np.asarray(contact_counts[:target_len], dtype=float)
     zero = np.asarray(zero_model[:target_len], dtype=float)
-    pos = np.arange(1, target_len + 1, dtype=float)
     winsize = max(1, min(winsize, target_len))
 
     seed_len = min(1_000, target_len)
     bg_model = _safe_lowess(
         counts[:seed_len],
-        pos[:seed_len],
+        np.arange(1, seed_len + 1, dtype=float),
         frac=0.05,
         it=iterations,
         delta=0.0,
         backend=backend,
     )
-    for chunk_index, start in enumerate(range(0, target_len, winsize)):
+    chunk_starts = list(range(0, target_len, winsize))
+    pseudo_chunks = []
+    for start in chunk_starts:
         stop = min(start + winsize, target_len)
         extension_stop = min(stop + 300, target_len)
-        chunk_pos = pos[start:extension_stop]
-        pseudo_counts = counts[start:extension_stop] + zero[start:extension_stop]
-        smoothed = _safe_lowess(
-            pseudo_counts,
-            chunk_pos,
-            frac=0.01,
-            it=iterations,
-            delta=delta,
-            backend=backend,
+        pseudo_chunks.append(counts[start:extension_stop] + zero[start:extension_stop])
+
+    if backend == "numba":
+        # The numba LOWESS kernel assumes implicit evenly-spaced positions
+        # and never reads exog, so the full target_len-sized `pos` array
+        # (up to 1,000,000 elements) that only the statsmodels branch below
+        # needs is skipped entirely on this path.
+        smoothed_chunks = _lowess_batch_numba(
+            pseudo_chunks, frac=0.01, iterations=iterations, delta=delta
         )
-        if len(smoothed) <= 300 or len(bg_model) <= 300:
-            bg_model = smoothed
+    else:
+        pos = np.arange(1, target_len + 1, dtype=float)
+        smoothed_chunks = [
+            _safe_lowess(
+                pseudo_counts,
+                pos[start : start + len(pseudo_counts)],
+                frac=0.01,
+                it=iterations,
+                delta=delta,
+                backend=backend,
+            )
+            for start, pseudo_counts in zip(chunk_starts, pseudo_chunks, strict=True)
+        ]
+
+    # Merge chunk fits into one background model, written into a
+    # pre-allocated buffer instead of `np.concatenate`-ing onto a growing
+    # array each iteration -- that previous approach re-copied the entire
+    # accumulated result on every chunk (O(target_len^2 / winsize) overall,
+    # confirmed dominant once LOWESS chunking itself stopped being the
+    # bottleneck). `write_pos` tracks the same length `bg_model` would have
+    # at each step; every write below targets exactly the range the
+    # original's concatenate would have replaced or appended, so this is the
+    # same merge in the same order, not a different algorithm.
+    buffer = np.empty(len(bg_model) + sum(len(chunk) for chunk in pseudo_chunks), dtype=float)
+    write_pos = len(bg_model)
+    buffer[:write_pos] = bg_model
+
+    for chunk_index, smoothed in enumerate(smoothed_chunks):
+        if len(smoothed) <= 300 or write_pos <= 300:
+            write_pos = len(smoothed)
+            buffer[:write_pos] = smoothed
             continue
-        tail = bg_model[-300:]
+        tail = buffer[write_pos - 300 : write_pos]
         if chunk_index < 1 and len(smoothed) > 1_001:
             head = smoothed[700:1001]
             counts_tail = smoothed[1001:]
@@ -567,9 +904,11 @@ def fit_distance_decay_model(
             counts_tail = smoothed[300:]
         overlap = min(len(tail), len(head))
         merge = (tail[-overlap:] + head[:overlap]) / 2.0
-        bg_model = np.concatenate([bg_model[:-overlap], merge, counts_tail])
+        buffer[write_pos - overlap : write_pos] = merge
+        buffer[write_pos : write_pos + len(counts_tail)] = counts_tail
+        write_pos += len(counts_tail)
 
-    bg_model = np.asarray(bg_model[:target_len], dtype=float)
+    bg_model = np.asarray(buffer[:write_pos][:target_len], dtype=float)
     reads = int((np.asarray(distances) < dist).sum())
     if reads == 0:
         return np.zeros_like(bg_model)
@@ -583,7 +922,7 @@ def _safe_lowess(
     frac: float,
     it: int,
     delta: float,
-    backend: str = "statsmodels",
+    backend: str = DEFAULT_LOWESS_BACKEND,
 ) -> np.ndarray:
     if len(endog) <= 2:
         return np.asarray(endog, dtype=float)
@@ -591,6 +930,9 @@ def _safe_lowess(
         return _lowess_evenly_spaced_numba(endog, frac=frac, it=it, delta=delta)
     if backend != "statsmodels":
         raise ValueError("lowess backend must be one of: statsmodels, numba")
+    require_statsmodels()
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
     return np.asarray(
         lowess(
             endog,
@@ -609,12 +951,30 @@ def _safe_lowess(
 def _lowess_evenly_spaced_numba(
     endog: np.ndarray, *, frac: float, it: int, delta: float
 ) -> np.ndarray:
-    from touche.numba_kernels import lowess_evenly_spaced_numba
+    from touche.numba.local_decay import lowess_evenly_spaced_numba
 
     return lowess_evenly_spaced_numba(
         np.asarray(endog, dtype=np.float64), float(frac), int(it), float(delta)
     )
 
 
-def _with_chr_prefix(chrom: str) -> str:
-    return chrom if chrom.startswith("chr") else f"chr{chrom}"
+def _lowess_batch_numba(
+    chunks: list[np.ndarray], *, frac: float, iterations: int, delta: float
+) -> list[np.ndarray]:
+    """Fit LOWESS on each chunk independently in one batched numba call.
+
+    Numerically identical to calling `_lowess_evenly_spaced_numba` once per
+    chunk (each chunk's fit has no cross-chunk dependency) -- exists only to
+    replace many small `prange` launches with one larger one; see
+    `lowess_evenly_spaced_batched_numba`'s docstring.
+    """
+    from touche.numba.local_decay import lowess_evenly_spaced_batched_numba
+
+    offsets = np.zeros(len(chunks) + 1, dtype=np.int64)
+    if chunks:
+        np.cumsum([len(chunk) for chunk in chunks], out=offsets[1:])
+    flat = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float64)
+    fitted_flat = lowess_evenly_spaced_batched_numba(
+        flat.astype(np.float64, copy=False), offsets, float(frac), int(iterations), float(delta)
+    )
+    return [fitted_flat[offsets[i] : offsets[i + 1]] for i in range(len(chunks))]

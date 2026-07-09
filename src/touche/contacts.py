@@ -2,13 +2,40 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
+from collections.abc import Collection
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
 from touche import __version__
-from touche.io import iter_pairs
+from touche.io import scan_pairs
 from touche.models import ContactIndex
+from touche.pair_stats import compute_pair_stats, write_qc_payload
+
+_METADATA_COLUMNS = ["strand_a", "strand_b", "mapq_a", "mapq_b"]
+
+
+def _strand_code_expr(column: str) -> pl.Expr:
+    return pl.when(pl.col(column) == "+").then(1).otherwise(-1).cast(pl.Int8).alias(column)
+
+
+def _prepared_pairs_lazyframe(
+    pairs_path: str | Path,
+    *,
+    source: str,
+    cis_only: bool,
+    include_metadata: bool,
+) -> pl.LazyFrame:
+    lf = scan_pairs(pairs_path, source=source)
+    if cis_only:
+        lf = lf.filter(pl.col("chrom_a") == pl.col("chrom_b"))
+    columns = ["chrom_a", "pos_a", "pos_b"]
+    if include_metadata:
+        lf = lf.with_columns(_strand_code_expr("strand_a"), _strand_code_expr("strand_b"))
+        columns += _METADATA_COLUMNS
+    return lf.select(columns)
 
 
 def build_contact_indexes(
@@ -16,44 +43,24 @@ def build_contact_indexes(
     *,
     source: str = "auto",
     cis_only: bool = True,
+    include_metadata: bool = True,
+    chromosomes: Collection[str] | None = None,
 ) -> dict[str, ContactIndex]:
     """Build chromosome-sharded numeric indexes from canonical/distiller pairs."""
 
-    builders: dict[str, dict[str, list]] = {}
-    for _, pair, _ in iter_pairs(pairs_path, source=source):
-        if cis_only and pair.chrom_a != pair.chrom_b:
-            continue
-        chrom = pair.chrom_a
-        builder = builders.setdefault(
-            chrom,
-            {
-                "pos_a": [],
-                "pos_b": [],
-                "strand_a": [],
-                "strand_b": [],
-                "mapq_a": [],
-                "mapq_b": [],
-            },
-        )
-        builder["pos_a"].append(pair.pos_a)
-        builder["pos_b"].append(pair.pos_b)
-        builder["strand_a"].append(pair.strand_a)
-        builder["strand_b"].append(pair.strand_b)
-        builder["mapq_a"].append(pair.mapq_a)
-        builder["mapq_b"].append(pair.mapq_b)
+    lf = _prepared_pairs_lazyframe(
+        pairs_path, source=source, cis_only=cis_only, include_metadata=include_metadata
+    )
+    if chromosomes is not None:
+        lf = lf.filter(pl.col("chrom_a").is_in(list(chromosomes)))
 
-    indexes = {}
-    for chrom, builder in builders.items():
-        index = ContactIndex(
-            chrom=chrom,
-            pos_a=np.asarray(builder["pos_a"], dtype=np.int64),
-            pos_b=np.asarray(builder["pos_b"], dtype=np.int64),
-            strand_a=np.asarray(builder["strand_a"], dtype="U1"),
-            strand_b=np.asarray(builder["strand_b"], dtype="U1"),
-            mapq_a=np.asarray(builder["mapq_a"], dtype=np.int16),
-            mapq_b=np.asarray(builder["mapq_b"], dtype=np.int16),
-        ).sorted_by_pos_a()
-        indexes[chrom] = index
+    df = lf.collect(engine="streaming")
+    indexes: dict[str, ContactIndex] = {}
+    for chrom in df["chrom_a"].unique(maintain_order=True).to_list():
+        chrom_df = df.filter(pl.col("chrom_a") == chrom)
+        indexes[chrom] = _contact_index_from_frame(
+            chrom, chrom_df, include_metadata=include_metadata
+        )
     return indexes
 
 
@@ -69,7 +76,6 @@ def write_npz_cache(
 
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
     manifest = {
         "schema_version": 1,
         "touche_version": __version__,
@@ -79,24 +85,16 @@ def write_npz_cache(
         "chromosomes": {},
     }
     saver = np.savez_compressed if compressed else np.savez
+    written: list[Path] = []
     for chrom, index in sorted(indexes.items()):
-        path = cache_dir / f"{prefix}.{_safe_name(chrom)}.npz"
-        saver(
-            path,
-            chrom=np.asarray(index.chrom),
-            pos_a=index.pos_a,
-            pos_b=index.pos_b,
-            strand_a=index.strand_a,
-            strand_b=index.strand_b,
-            mapq_a=index.mapq_a,
-            mapq_b=index.mapq_b,
-            schema_version=np.asarray(1, dtype=np.int16),
-            touche_version=np.asarray(__version__),
+        path = _write_npz_cache_shard(
+            cache_dir,
+            prefix=prefix,
+            index=index,
+            saver=saver,
+            include_metadata=True,
         )
-        manifest["chromosomes"][chrom] = {
-            "path": path.name,
-            "rows": index.size,
-        }
+        manifest["chromosomes"][chrom] = {"path": path.name, "rows": index.size}
         written.append(path)
 
     manifest_path = cache_dir / f"{prefix}.manifest.json"
@@ -107,17 +105,42 @@ def write_npz_cache(
     return written
 
 
-def load_npz_cache(path: str | Path) -> ContactIndex:
+def load_npz_cache(path: str | Path, *, include_metadata: bool = True) -> ContactIndex:
     with np.load(path, allow_pickle=False) as data:
+        pos_a = data["pos_a"]
+        size = int(pos_a.shape[0])
+        has_metadata = all(key in data for key in ("strand_a", "strand_b", "mapq_a", "mapq_b"))
+        if include_metadata and has_metadata:
+            strand_a = data["strand_a"]
+            strand_b = data["strand_b"]
+            mapq_a = data["mapq_a"]
+            mapq_b = data["mapq_b"]
+        else:
+            strand_a = np.zeros(size, dtype=np.int8)
+            strand_b = np.zeros(size, dtype=np.int8)
+            mapq_a = np.zeros(size, dtype=np.int16)
+            mapq_b = np.zeros(size, dtype=np.int16)
         return ContactIndex(
             chrom=str(data["chrom"]),
-            pos_a=data["pos_a"],
+            pos_a=pos_a,
             pos_b=data["pos_b"],
-            strand_a=data["strand_a"],
-            strand_b=data["strand_b"],
-            mapq_a=data["mapq_a"],
-            mapq_b=data["mapq_b"],
+            strand_a=strand_a,
+            strand_b=strand_b,
+            mapq_a=mapq_a,
+            mapq_b=mapq_b,
         )
+
+
+def load_npz_cache_manifest(cache_dir: str | Path, *, prefix: str = "contacts") -> dict[str, Path]:
+    cache_dir = Path(cache_dir)
+    manifest_path = cache_dir / f"{prefix}.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chromosomes = manifest.get("chromosomes", {})
+    return {
+        str(chrom): cache_dir / str(record["path"])
+        for chrom, record in chromosomes.items()
+        if isinstance(record, dict) and "path" in record
+    }
 
 
 def build_npz_cache(
@@ -128,16 +151,235 @@ def build_npz_cache(
     prefix: str = "contacts",
     compressed: bool = False,
     cis_only: bool = True,
+    include_metadata: bool = True,
+    index_strategy: str = "chromosome",
+    qc_out: str | Path | None = None,
+    write_qc: bool = True,
 ) -> list[Path]:
-    indexes = build_contact_indexes(pairs_path, source=source, cis_only=cis_only)
-    return write_npz_cache(
+    if index_strategy not in {"chromosome", "all"}:
+        raise ValueError("index_strategy must be one of: chromosome, all")
+    qc_path = _resolve_qc_out(cache_dir, prefix=prefix, qc_out=qc_out, write_qc=write_qc)
+    if index_strategy == "all":
+        return _build_all_cache(
+            pairs_path,
+            cache_dir,
+            source=source,
+            prefix=prefix,
+            compressed=compressed,
+            cis_only=cis_only,
+            include_metadata=include_metadata,
+            qc_out=qc_path,
+        )
+
+    return _build_sharded_cache_from_spool(
+        pairs_path,
+        cache_dir,
+        source=source,
+        prefix=prefix,
+        compressed=compressed,
+        cis_only=cis_only,
+        include_metadata=include_metadata,
+        qc_out=qc_path,
+    )
+
+
+def _build_all_cache(
+    pairs_path: str | Path,
+    cache_dir: str | Path,
+    *,
+    source: str,
+    prefix: str,
+    compressed: bool,
+    cis_only: bool,
+    include_metadata: bool,
+    qc_out: str | Path | None,
+) -> list[Path]:
+    indexes = build_contact_indexes(
+        pairs_path,
+        source=source,
+        cis_only=cis_only,
+        include_metadata=include_metadata,
+    )
+    written = write_npz_cache(
         indexes,
         cache_dir,
         prefix=prefix,
         compressed=compressed,
         source=pairs_path,
     )
+    return written + _write_optional_cache_qc(qc_out, pairs_path=pairs_path, source=source)
 
 
-def _safe_name(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+def _resolve_qc_out(
+    cache_dir: str | Path,
+    *,
+    prefix: str,
+    qc_out: str | Path | None,
+    write_qc: bool,
+) -> Path | None:
+    if not write_qc:
+        return None
+    if qc_out is not None:
+        return Path(qc_out)
+    return Path(cache_dir) / f"{prefix}.qc.json"
+
+
+def _build_sharded_cache_from_spool(
+    pairs_path: str | Path,
+    cache_dir: str | Path,
+    *,
+    source: str,
+    prefix: str,
+    compressed: bool,
+    cis_only: bool,
+    include_metadata: bool,
+    qc_out: str | Path | None,
+) -> list[Path]:
+    """Build one NPZ shard per chromosome with bounded peak memory.
+
+    The pairs file is scanned exactly once into a local Parquet spool (a
+    streaming write, never holding the full file in the Python heap); every
+    later pass (QC aggregation, per-chromosome shard writes) reads from that
+    fast local spool instead of re-decompressing the source file, and each
+    per-chromosome collect only ever materializes that one chromosome's rows.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="touche-cache-spool-") as spool_dir:
+        spool_path = Path(spool_dir) / "pairs.parquet"
+        raw_columns = [
+            "chrom_a",
+            "chrom_b",
+            "pos_a",
+            "pos_b",
+            "strand_a",
+            "strand_b",
+            "mapq_a",
+            "mapq_b",
+        ]
+        scan_pairs(pairs_path, source=source).select(raw_columns).sink_parquet(spool_path)
+
+        stats = None
+        if qc_out is not None:
+            stats = compute_pair_stats(pl.scan_parquet(spool_path))
+
+        lf = pl.scan_parquet(spool_path)
+        if cis_only:
+            lf = lf.filter(pl.col("chrom_a") == pl.col("chrom_b"))
+        if include_metadata:
+            lf = lf.with_columns(_strand_code_expr("strand_a"), _strand_code_expr("strand_b"))
+            columns = ["chrom_a", "pos_a", "pos_b", *_METADATA_COLUMNS]
+        else:
+            columns = ["chrom_a", "pos_a", "pos_b"]
+        lf = lf.select(columns)
+
+        chromosomes = lf.select("chrom_a").unique().collect(engine="streaming")["chrom_a"].to_list()
+
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        saver = np.savez_compressed if compressed else np.savez
+        manifest = {
+            "schema_version": 1,
+            "touche_version": __version__,
+            "source": str(pairs_path),
+            "prefix": prefix,
+            "compressed": compressed,
+            "chromosomes": {},
+        }
+        written: list[Path] = []
+        for chrom in sorted(chromosomes):
+            chrom_df = lf.filter(pl.col("chrom_a") == chrom).collect(engine="streaming")
+            index = _contact_index_from_frame(chrom, chrom_df, include_metadata=include_metadata)
+            path = _write_npz_cache_shard(
+                cache_dir,
+                prefix=prefix,
+                index=index,
+                saver=saver,
+                include_metadata=include_metadata,
+            )
+            manifest["chromosomes"][chrom] = {"path": path.name, "rows": index.size}
+            written.append(path)
+
+        manifest_path = cache_dir / f"{prefix}.manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        written.append(manifest_path)
+
+        if qc_out is not None:
+            assert stats is not None
+            write_qc_payload(qc_out, stats=stats, source=pairs_path)
+            written.append(Path(qc_out))
+        return written
+
+
+def _write_optional_cache_qc(
+    qc_out: str | Path | None, *, pairs_path: str | Path, source: str
+) -> list[Path]:
+    if qc_out is None:
+        return []
+    columns = ["chrom_a", "chrom_b", "pos_a", "pos_b", "mapq_a", "mapq_b"]
+    lf = scan_pairs(pairs_path, source=source).select(columns)
+    stats = compute_pair_stats(lf)
+    write_qc_payload(qc_out, stats=stats, source=pairs_path)
+    return [Path(qc_out)]
+
+
+def _contact_index_from_frame(
+    chrom: str, frame: pl.DataFrame, *, include_metadata: bool
+) -> ContactIndex:
+    pos_a = frame["pos_a"].to_numpy().astype(np.int64)
+    pos_b = frame["pos_b"].to_numpy().astype(np.int64)
+    size = pos_a.shape[0]
+    if include_metadata:
+        strand_a = frame["strand_a"].to_numpy().astype(np.int8)
+        strand_b = frame["strand_b"].to_numpy().astype(np.int8)
+        mapq_a = frame["mapq_a"].to_numpy().astype(np.int16)
+        mapq_b = frame["mapq_b"].to_numpy().astype(np.int16)
+    else:
+        strand_a = np.zeros(size, dtype=np.int8)
+        strand_b = np.zeros(size, dtype=np.int8)
+        mapq_a = np.zeros(size, dtype=np.int16)
+        mapq_b = np.zeros(size, dtype=np.int16)
+    index = ContactIndex(
+        chrom=chrom,
+        pos_a=pos_a,
+        pos_b=pos_b,
+        strand_a=strand_a,
+        strand_b=strand_b,
+        mapq_a=mapq_a,
+        mapq_b=mapq_b,
+    )
+    if size > 1 and np.any(pos_a[:-1] > pos_a[1:]):
+        return index.sorted_by_pos_a()
+    return index
+
+
+def _write_npz_cache_shard(
+    cache_dir: Path,
+    *,
+    prefix: str,
+    index: ContactIndex,
+    saver,
+    include_metadata: bool,
+) -> Path:
+    safe_chrom = re.sub(r"[^A-Za-z0-9_.-]+", "_", index.chrom)
+    path = cache_dir / f"{prefix}.{safe_chrom}.npz"
+    payload = {
+        "chrom": np.asarray(index.chrom),
+        "pos_a": index.pos_a,
+        "pos_b": index.pos_b,
+        "schema_version": np.asarray(1, dtype=np.int16),
+        "touche_version": np.asarray(__version__),
+        "include_metadata": np.asarray(include_metadata),
+    }
+    if include_metadata:
+        payload.update(
+            {
+                "strand_a": index.strand_a,
+                "strand_b": index.strand_b,
+                "mapq_a": index.mapq_a,
+                "mapq_b": index.mapq_b,
+            }
+        )
+    saver(path, **payload)
+    return path

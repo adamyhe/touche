@@ -761,6 +761,13 @@ dev = ["pytest", "ruff", "mypy"]
 
 Keep the initial skeleton correct and NumPy-based, but plan to add Numba kernels soon after the main CLI/API surface is in place. Numba is a reasonable optional acceleration dependency because the hot paths are pure counting kernels over numeric arrays. Avoid adding `polars`, `pyarrow`, or workflow-engine dependencies until there is a measured bottleneck or operational need that justifies them. Do not add `pyyaml` unless `touche` later starts parsing or rendering workflow configs.
 
+**Update:** the measured bottleneck arrived — a benchmark showed the hand-rolled
+pairs-file parser was 10-50x slower than a `polars`-based lazy reader. `touche`
+has since migrated fully from `pandas` to `polars` as its only dataframe
+library (internal and at the `touche.api` public surface); `pandas` is no
+longer a dependency and `pyarrow` was never needed. See `CLAUDE.md` for the
+current architecture.
+
 Build backend:
 
 - Use Hatchling for packaging.
@@ -812,13 +819,15 @@ Track:
 Current benchmark artifacts:
 
 - `notes/benchmarks/benchmark_numba_kernels.py`: synthetic microbenchmarks for
-  counting kernels, LOWESS variants, and Fisher-test implementations.
-- `notes/benchmarks/benchmark_reference_real_data.py`: real reference-data
-  benchmark pipeline that downloads the upstream example pairs and input files,
-  then profiles preprocessing, local-decay, APA, and EP/background CLI steps with
-  wall time and sampled peak RSS. Added but not run locally yet.
-- `notes/benchmarks/reference-real-data-benchmark.md`: agent-facing usage notes
-  for the real-data benchmark runner.
+  counting kernels and the LOWESS/Fisher backends.
+- `scripts/reference_replication.py`: real reference-data benchmark pipeline
+  that downloads the upstream example pairs and input files, then profiles
+  preprocessing, local-decay, APA, and EP/background CLI steps with wall time
+  and sampled peak RSS, rendering the same reference-comparable plots as the
+  upstream README. Promoted out of `notes/benchmarks/` since it's a runnable
+  replication tool, not just a benchmark log.
+- `scripts/reference_replication.md`: usage notes for the real-data
+  replication runner.
 
 Suggested tolerance policy:
 

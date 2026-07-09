@@ -120,6 +120,9 @@ The summary includes parsed rows, written rows where relevant, cis/trans counts,
 mapq pass/fail counts, per-chromosome counts, and a coarse cis-distance
 histogram.
 
+For large files that will also be cached, use `build-cache`; it writes QC during
+cache construction by default so the compressed pairs file is scanned once.
+
 ### Build NPZ caches
 
 Build chromosome-sharded NPZ caches for repeated analysis:
@@ -135,6 +138,12 @@ uv run touche preprocess build-cache \
 Add `--compressed` to write compressed NPZ shards. The default is uncompressed
 NPZ, which is usually faster to load and avoids turning one cache into a large
 monolithic archive.
+
+The default cache builder emits chromosome-sharded NPZ files and
+`.cache/touche/sample/sample.qc.json` from one streaming pass over the input. Use
+`--qc-out PATH` to choose another QC location, or `--no-qc` to suppress QC
+output. Use `--no-metadata` for faster, smaller position-only caches when the
+downstream command does not need strand or MAPQ arrays.
 
 ## Local Decay
 
@@ -164,8 +173,7 @@ uv run touche local-decay run \
   --functional functional_pairs.tsv \
   --nonfunctional nonfunctional_pairs.tsv \
   --out-dir results/local-decay \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 The run wrapper writes:
@@ -190,8 +198,7 @@ uv run touche local-decay call \
   --preys preys.bed \
   --pairs sample.nodups_30_intra.pairs.gz \
   --out results/local-decay/ContactCaller_microC_output.tsv \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Assign pair types:
@@ -216,16 +223,69 @@ uv run touche local-decay plot \
 Use `--no-reference-style` on `run` or `plot` to use the package's standard
 Matplotlib styling instead of the reference-style plot appearance.
 
-`local-decay call` and `local-decay run` accept `--backend numba`, but the
-current acceleration only covers observed-count helpers. LOWESS fitting remains
-in Python and usually dominates runtime.
+`local-decay call` and `local-decay run`'s observed-count helper always uses
+an accelerated Numba kernel. `--lowess-backend` and `--fisher-backend` are
+separate, still selectable flags (default `numba`) -- see below.
 
-They also expose `--lowess-backend numba` as an experimental smoother. This is
-faster on small synthetic benchmarks and matches the current chunked
-local-decay smoothing wrappers on regression fixtures, but keep the default
-`statsmodels` backend for the most conservative reference-compatible runs. Use
-`--lowess-iterations` to change the number of robust residual reweighting passes;
-lower values are faster but can change expected-contact estimates.
+`local-decay call` and `local-decay run` default to `--index-strategy cache`.
+The cache strategy builds or reuses chromosome-sharded NPZ contact indexes, then
+loads one chromosome shard at a time. If `--cache-dir` is omitted, the cache is
+created under `contact_index_cache/` next to the local-decay output table.
+
+For repeated local-decay runs, build the cache explicitly and reuse it:
+
+```bash
+uv run touche preprocess build-cache \
+  --pairs sample.nodups_30_intra.pairs.gz \
+  --source touche \
+  --cache-dir .cache/touche/sample \
+  --prefix sample \
+  --no-metadata
+
+uv run touche local-decay call \
+  --baits baits.bed \
+  --preys preys.bed \
+  --pairs sample.nodups_30_intra.pairs.gz \
+  --out results/local-decay/ContactCaller_microC_output.tsv \
+  --index-strategy cache \
+  --cache-dir .cache/touche/sample \
+  --cache-prefix sample
+```
+
+Alternative strategies are available for diagnostics:
+
+- `--index-strategy all`: read the pairs file once and hold every chromosome in
+  memory. This is fastest when enough memory is available.
+- `--index-strategy chromosome`: scan the pairs file once per bait chromosome
+  and keep only that chromosome in memory. This avoids persistent cache files,
+  but can be slow for gzipped pairs.
+
+`--lowess-backend numba` (the default) is faster on small synthetic
+benchmarks and matches the current chunked local-decay smoothing wrappers on
+regression fixtures. Use `--lowess-backend statsmodels` for the most
+conservative reference-compatible runs -- this requires the optional
+`legacy` extra (`pip install ep-touche[legacy]` / `uv sync --extra legacy`).
+Use `--lowess-iterations` to change the number of robust residual reweighting
+passes; lower values are faster but can change expected-contact estimates.
+
+`--fisher-backend numba` (the default) replaces `scipy.stats.hypergeom.sf`
+with a `prange`-parallel numba hypergeometric survival function for the
+per-prey Fisher exact test, matching it to within ~1e-8 absolute error rather
+than exactly. That step is single-threaded regardless of `--lowess-backend`,
+so with that set to `numba` it becomes the main reason local-decay doesn't
+saturate available cores; `--fisher-backend numba` addresses that.
+`--fisher-backend scipy` is exact and always available (scipy is a core
+dependency, since `background`'s scatterplot KDE coloring needs it too).
+
+`--jobs`/`-j` (default 1) processes that many baits concurrently in a thread
+pool instead of one at a time. Baits are independent, so this changes
+nothing about the result -- each worker's numba thread budget is
+automatically capped to `cores // jobs` to avoid oversubscription, since
+kernel-level `prange` parallelism (from the backends above) and this
+bait-level parallelism compete for the same cores rather than adding up.
+It's most worth combining with the `numba` backends once per-bait overhead
+outside the parallel kernels (contact filtering, histogram construction) is
+a meaningful share of runtime -- see `notes/numba-implementation-plan.md`.
 
 ## Background
 
@@ -258,8 +318,7 @@ uv run touche background run \
   --min-bg-distance 10000 \
   --max-bg-distance 150000 \
   --out-dir results/background \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 The run wrapper writes per-sample counts under `counts/`, comparison plots under
@@ -280,8 +339,7 @@ uv run touche background count \
   --min-bg-distance 10000 \
   --max-bg-distance 150000 \
   --out results/background/counts/DMSO_EP_and_BG_contacts.tsv \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Run `background count` for each treatment, then compare the count tables:
@@ -299,14 +357,8 @@ uv run touche background compare \
 The `--min-ep-cpb` threshold filters pairs by control EP contacts per billion
 contacts before plotting comparisons.
 
-`background count` and `background run` support `--backend numba` for optional
-accelerated EP/background counting. Install the speed extra first:
-
-```bash
-pip install "ep-touche[fast]"
-```
-
-The default remains `--backend numpy`.
+`background count` and `background run` always use an accelerated Numba
+kernel for EP/background counting.
 
 ## APA
 
@@ -336,8 +388,7 @@ uv run touche apa run \
   --window 10000 \
   --pixels 50 \
   --out-dir results/apa/FLV_vs_DMSO \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Each sample directory contains:
@@ -364,8 +415,7 @@ uv run touche apa aggregate \
   --window 10000 \
   --pixels 50 \
   --out-dir results/apa/DMSO \
-  --source touche \
-  --backend numpy
+  --source touche
 ```
 
 Aggregate the treatment sample the same way, then compare:
@@ -388,8 +438,8 @@ uv run touche apa compare \
 standalone `apa compare` command requires them because it only receives the
 already aggregated APA and signal files.
 
-`apa aggregate` and `apa run` support `--backend numba` for optional accelerated
-APA matrix and 1D signal counting.
+`apa aggregate` and `apa run` always use an accelerated Numba kernel for APA
+matrix and 1D signal counting.
 
 ## Output and manifests
 

@@ -24,13 +24,14 @@ class Instrumentation:
         total: int | None = None,
         desc: str | None = None,
         unit: str = "it",
+        leave: bool = True,
     ) -> Iterable[T]:
         if not self.progress:
             return iterable
 
         from tqdm.auto import tqdm
 
-        return tqdm(iterable, total=total, desc=desc, unit=unit)
+        return tqdm(iterable, total=total, desc=desc, unit=unit, leave=leave)
 
     @contextmanager
     def step(self, name: str) -> Iterator[None]:
