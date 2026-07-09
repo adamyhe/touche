@@ -1,3 +1,14 @@
+"""Numba counting kernels for EP/background pair counting.
+
+`count_ep_background_pairs_numba` is the one `touche.background.compute_ep_and_background`
+always uses -- wrapped by `touche.background._count_ep_background_pairs_numba`,
+which handles dtype casting first. `count_ep_background_pairs_eager_numba` is
+a straightforward (non-deduplicated-branch) reference implementation kept
+only for `notes/benchmarks/benchmark_numba_kernels.py`'s `--compare-kernels`
+comparison against the optimized version below -- not used by any production
+path.
+"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -17,6 +28,7 @@ def count_ep_background_pairs_eager_numba(
     min_bg_distance: int,
     max_bg_distance: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Reference (unoptimized) EP/background pair counter; see module docstring."""
     ep_counts = np.zeros(pair_bait_index.shape[0], dtype=np.int64)
     bg_counts = np.zeros(pair_bait_index.shape[0], dtype=np.int64)
 
@@ -89,6 +101,13 @@ def count_ep_background_pairs_numba(
     min_bg_distance: int,
     max_bg_distance: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Optimized EP/background pair counter; always used by `touche.background.compute_ep_and_background`.
+
+    Numerically exact-equivalent to `count_ep_background_pairs_eager_numba`
+    (verified via `assert_frame_equal` in `tests/test_background_count.py`);
+    the branch structure here just dedupes the a-side/b-side background
+    checks the eager version repeats.
+    """
     ep_counts = np.zeros(pair_bait_index.shape[0], dtype=np.int64)
     bg_counts = np.zeros(pair_bait_index.shape[0], dtype=np.int64)
 

@@ -1,3 +1,9 @@
+"""Lazy scanning of pairs files. Public API: `scan_pairs`, `open_text`, `iter_noncomment_lines`.
+
+`_resolve_pair_columns` is internal -- it backs `scan_pairs`'s `source="auto"`
+sniffing and isn't meant to be called directly.
+"""
+
 from __future__ import annotations
 
 import gzip
@@ -53,6 +59,7 @@ def open_text(path: str | Path, mode: str = "rt") -> Iterator[TextIO]:
 
 
 def iter_noncomment_lines(handle: TextIO) -> Iterator[tuple[int, str]]:
+    """Yield `(1-based line number, stripped line)` pairs, skipping blank lines and `#` comments."""
     for line_number, line in enumerate(handle, start=1):
         stripped = line.rstrip("\n")
         if not stripped or stripped.startswith("#"):

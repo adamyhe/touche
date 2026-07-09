@@ -1,3 +1,14 @@
+"""Aggregate Peak Analysis (APA): pixel-binned contact matrix + 1D anchor signal.
+
+Public API: `ApaResult`, `aggregate_apa` (file-driven wrapper), `compute_apa`
+(in-memory compute), `write_apa_result`, `compare_apa_change`,
+`plot_raw_apa_heatmap`, `plot_apa_change`. Everything prefixed `_` is an
+internal helper for one of those entry points -- in particular
+`_add_chrom_apa_numba`/`_apa_anchor_signal_numba`/`_apa_matrix_numba` wrap the
+Numba counting kernels in `touche.numba.apa`, which `compute_apa` always
+uses (there is no alternate counting path to choose between).
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,6 +38,7 @@ class ApaResult:
     pixels: int
 
     def plot(self, *, reference_style: bool = True) -> "Figure":
+        """Render the pixel-binned matrix as a heatmap; see `plot_raw_apa_heatmap`."""
         return plot_raw_apa_heatmap(
             self.matrix,
             window=self.window,
@@ -35,6 +47,7 @@ class ApaResult:
         )
 
     def write(self, out_dir: str | Path, *, reference_style: bool = True) -> dict[str, Path]:
+        """Write this result using the reference output filenames; see `write_apa_result`."""
         return write_apa_result(self, out_dir, reference_style=reference_style)
 
 
@@ -162,6 +175,12 @@ def _add_chrom_apa_numba(
     window: int,
     pixels: int,
 ) -> None:
+    """Accumulate one chromosome's contribution to `matrix`/`bait_signal`/`prey_signal` in place.
+
+    Baits are filtered to those with at least one prey candidate in
+    `[min_distance, max_distance]` before the (expensive) numba matrix kernel
+    runs, since most baits on a chromosome have none.
+    """
     bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
     bait_strands = _strand_codes(chrom_baits["strand"])
     prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
@@ -254,6 +273,7 @@ def _apa_anchor_signal_numba(
     window: int,
     pixels: int,
 ) -> np.ndarray:
+    """Cast inputs to the dtypes `touche.numba.apa.apa_anchor_signal_numba` expects, then call it."""
     from touche.numba.apa import apa_anchor_signal_numba
 
     return apa_anchor_signal_numba(
@@ -290,6 +310,7 @@ def _apa_matrix_numba(
     window: int,
     pixels: int,
 ) -> np.ndarray:
+    """Cast inputs to the dtypes `touche.numba.apa.apa_matrix_numba` expects, then call it."""
     from numba import get_num_threads
 
     from touche.numba.apa import apa_matrix_numba
@@ -316,6 +337,7 @@ def _apa_matrix_numba(
 
 
 def _strand_codes(strands: pl.Series) -> np.ndarray:
+    """Map a `"+"`/`"-"` strand series to `+1`/`-1`."""
     return np.where(strands.to_numpy() == "-", -1, 1).astype(np.int64)
 
 
@@ -424,6 +446,7 @@ def plot_raw_apa_heatmap(
     pixels: int,
     reference_style: bool = True,
 ) -> "Figure":
+    """Render an APA matrix (from `compute_apa`/`aggregate_apa`) as a heatmap; save to `out` if given."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -449,6 +472,7 @@ def plot_apa_change(
     pixels: int = 50,
     reference_style: bool = True,
 ) -> "Figure":
+    """Render an observed/expected APA-change matrix (from `compare_apa_change`) as a log2 heatmap."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -470,6 +494,7 @@ def plot_apa_change(
 
 
 def _read_signal(path: str | Path) -> pl.DataFrame:
+    """Read a `baits_genome_wide_contacts.csv`/`preys_genome_wide_contacts.csv` file."""
     frame = pl.read_csv(path)
     if "contacts" not in frame.columns:
         raise ValueError(f"Expected a 'contacts' column in {path}")
@@ -477,6 +502,7 @@ def _read_signal(path: str | Path) -> pl.DataFrame:
 
 
 def _matrix_labels_and_values(frame: pl.DataFrame) -> tuple[list[int], list[int], np.ndarray]:
+    """Split an `AggMat.csv`-shaped frame into `(row labels, column labels, value matrix)`."""
     row_labels = [int(v) for v in frame["bin_label"].to_list()]
     col_names = [c for c in frame.columns if c != "bin_label"]
     values = frame.select(col_names).to_numpy().astype(float)
@@ -491,6 +517,11 @@ def _reindex_matrix(
     target_rows: list[int],
     target_cols: list[int],
 ) -> np.ndarray:
+    """Reindex `values` onto `target_rows`/`target_cols`, filling missing labels with NaN.
+
+    Used by `compare_apa_change` when control and treatment matrices were
+    aggregated with slightly different bin labels (e.g. different `window`).
+    """
     if row_labels == target_rows and col_labels == target_cols:
         return values
     row_index = {label: i for i, label in enumerate(row_labels)}
@@ -508,6 +539,7 @@ def _reindex_matrix(
 
 
 def _signal_values_by_label(frame: pl.DataFrame, labels: list[int]) -> np.ndarray:
+    """Look up `frame`'s `contacts` values by `bin_label`, in the order given by `labels`."""
     lookup = dict(zip(frame["bin_label"].to_list(), frame["contacts"].to_list()))
     return np.array([lookup.get(label, np.nan) for label in labels], dtype=float)
 
@@ -515,6 +547,7 @@ def _signal_values_by_label(frame: pl.DataFrame, labels: list[int]) -> np.ndarra
 def _matrix_to_frame(
     row_labels: list[int], col_labels: list[int], values: np.ndarray
 ) -> pl.DataFrame:
+    """Build the `bin_label` + one-column-per-bin `pl.DataFrame` layout APA matrices are stored in."""
     data: dict[str, object] = {"bin_label": row_labels}
     for j, label in enumerate(col_labels):
         data[str(label)] = values[:, j]
@@ -522,23 +555,27 @@ def _matrix_to_frame(
 
 
 def _shifted_positions(index: ContactIndex, *, shift: int) -> tuple[np.ndarray, np.ndarray]:
+    """Shift each read's position `shift` bp in its 5'->3' direction (matching the reference workflow)."""
     pos_a = np.where(_is_plus_strand(index.strand_a), index.pos_a + shift, index.pos_a - shift)
     pos_b = np.where(_is_plus_strand(index.strand_b), index.pos_b + shift, index.pos_b - shift)
     return pos_a.astype(np.int64), pos_b.astype(np.int64)
 
 
 def _is_plus_strand(strands: np.ndarray) -> np.ndarray:
+    """Accept either `ContactIndex`'s `+1`/`-1` codes or raw `"+"`/`"-"` strings."""
     if np.issubdtype(strands.dtype, np.integer):
         return strands > 0
     return strands == "+"
 
 
 def _pixel_labels(window: int, pixels: int) -> list[int]:
+    """Signed bin-center offsets from `-window` to `+window`, e.g. `[-10000, ..., -200, 200, ..., 10000]`."""
     step = window // pixels
     return list(range(-window, 0, step)) + list(range(step, window + 1, step))
 
 
 def _close_figure(fig: "Figure") -> None:
+    """Release a matplotlib figure's memory once it's been saved/embedded."""
     import matplotlib.pyplot as plt
 
     plt.close(fig)

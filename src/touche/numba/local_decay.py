@@ -1,3 +1,12 @@
+"""Numba kernels for local-decay: observed-contact counting and LOWESS smoothing.
+
+`local_decay_observed_counts_numba` is always used by
+`touche.local_decay._call_bait_contacts` -- there's no alternate counting
+path. The `lowess_*` kernels back `lowess_backend="numba"`, a validated
+approximation of the `statsmodels` alternative (see
+`notes/numba-implementation-plan.md`), not a bit-exact equivalent.
+"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -14,6 +23,7 @@ def local_decay_observed_counts_numba(
     cap: int,
     min_distance: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Observed contact count, directional distance, and background pool size for each prey."""
     observed = np.zeros(prey_centers.shape[0], dtype=np.int64)
     directional_distances = np.zeros(prey_centers.shape[0], dtype=np.int64)
     contact_counts = np.zeros(prey_centers.shape[0], dtype=np.int64)
@@ -51,6 +61,13 @@ def lowess_evenly_spaced_numba(
     iterations: int,
     delta: float,
 ) -> np.ndarray:
+    """Robust LOWESS fit assuming implicitly evenly-spaced positions `0..n-1` (no explicit `exog`).
+
+    `delta`-spaced anchor points are fit directly (`_lowess_anchor_indexes`)
+    and the rest interpolated (`_interpolate_lowess_anchors`), mirroring
+    `statsmodels.nonparametric.smoothers_lowess.lowess`'s own `delta`
+    short-circuit for evenly-spaced input.
+    """
     n = endog.shape[0]
     fitted = np.empty(n, dtype=np.float64)
     if n <= 2:
@@ -254,6 +271,7 @@ def lowess_evenly_spaced_batched_numba(
 
 @njit(cache=True)
 def _lowess_anchor_indexes(n: int, delta: float) -> np.ndarray:
+    """Indexes to fit directly: every `delta`-th position, plus `0` and `n - 1`. All `n` if `delta <= 0`."""
     if delta <= 0:
         anchors = np.empty(n, dtype=np.int64)
         for i in range(n):
@@ -286,6 +304,7 @@ def _interpolate_lowess_anchors(
     anchor_fitted: np.ndarray,
     fitted: np.ndarray,
 ) -> None:
+    """Linearly interpolate `fitted` between consecutive anchor points, in place."""
     for anchor_pos in range(anchor_indexes.shape[0] - 1):
         left = anchor_indexes[anchor_pos]
         right = anchor_indexes[anchor_pos + 1]

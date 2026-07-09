@@ -1,3 +1,5 @@
+"""Top-level `touche` CLI entry point: wires each command group's parser together."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +12,7 @@ from touche.cli.preprocess import add_preprocess_parser
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Assemble the `touche` argparse parser with every command group's subcommands attached."""
     parser = argparse.ArgumentParser(prog="touche")
     parser.add_argument("--version", action="version", version=f"touche {__version__}")
 
@@ -22,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse `argv` and dispatch to the matched subcommand's `func` callback."""
     parser = build_parser()
     args = parser.parse_args(argv)
     args.func(args)

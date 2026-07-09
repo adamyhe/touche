@@ -1,3 +1,11 @@
+"""`touche local-decay` subcommands: call, run, assign-pair-types, and plot.
+
+`add_local_decay_parser` is the public entry point called from
+`cli/main.py`. Every `_`-prefixed function below is an argparse `func=`
+callback, not meant to be called directly -- it unpacks `args` and forwards
+to the matching `touche.local_decay`/`touche.pipelines` function.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +18,7 @@ from touche.pipelines import run_local_decay_pipeline
 
 
 def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Register `local-decay call/run/assign-pair-types/plot` on `subparsers`."""
     local_decay = subparsers.add_parser("local-decay", help="Local-decay contact analyses")
     local_decay_sub = local_decay.add_subparsers(dest="local_decay_command", required=True)
 

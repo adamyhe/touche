@@ -1,3 +1,10 @@
+"""Curated notebook-facing re-export surface: `import touche.api as tt`.
+
+Every name here is public and intended for interactive use; add new
+compute/plot functions to both the imports and `__all__` below when they're
+meant to be reachable this way.
+"""
+
 from __future__ import annotations
 
 from touche.anchors import read_bed_anchors

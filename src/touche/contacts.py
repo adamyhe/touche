@@ -1,3 +1,12 @@
+"""Build `ContactIndex` objects from pairs files and cache them as chromosome-sharded NPZ files.
+
+Public API: `build_contact_indexes`, `build_npz_cache`, `load_npz_cache`,
+`load_npz_cache_manifest`, `write_npz_cache`. Everything else (the
+`_build_*`/`_write_*`/`_contact_index_from_frame` helpers) is internal
+plumbing specific to one of the two `index_strategy` code paths in
+`build_npz_cache` -- see CLAUDE.md's "Contact indexing strategies" section.
+"""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +27,7 @@ _METADATA_COLUMNS = ["strand_a", "strand_b", "mapq_a", "mapq_b"]
 
 
 def _strand_code_expr(column: str) -> pl.Expr:
+    """Map a `"+"`/`"-"` strand column to `+1`/`-1` (the numeric convention `ContactIndex` uses)."""
     return pl.when(pl.col(column) == "+").then(1).otherwise(-1).cast(pl.Int8).alias(column)
 
 
@@ -28,6 +38,7 @@ def _prepared_pairs_lazyframe(
     cis_only: bool,
     include_metadata: bool,
 ) -> pl.LazyFrame:
+    """Scan `pairs_path` and select/encode only the columns `build_contact_indexes` needs."""
     lf = scan_pairs(pairs_path, source=source)
     if cis_only:
         lf = lf.filter(pl.col("chrom_a") == pl.col("chrom_b"))
@@ -106,6 +117,11 @@ def write_npz_cache(
 
 
 def load_npz_cache(path: str | Path, *, include_metadata: bool = True) -> ContactIndex:
+    """Load one chromosome shard written by `write_npz_cache`/`build_npz_cache`.
+
+    If `include_metadata` is False, or the shard was written without strand/
+    mapq arrays, those fields are filled with zeros rather than read.
+    """
     with np.load(path, allow_pickle=False) as data:
         pos_a = data["pos_a"]
         size = int(pos_a.shape[0])
@@ -132,6 +148,7 @@ def load_npz_cache(path: str | Path, *, include_metadata: bool = True) -> Contac
 
 
 def load_npz_cache_manifest(cache_dir: str | Path, *, prefix: str = "contacts") -> dict[str, Path]:
+    """Read a cache manifest and return `{chromosome: shard path}`."""
     cache_dir = Path(cache_dir)
     manifest_path = cache_dir / f"{prefix}.manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -156,6 +173,14 @@ def build_npz_cache(
     qc_out: str | Path | None = None,
     write_qc: bool = True,
 ) -> list[Path]:
+    """Build a chromosome-sharded NPZ cache, dispatching to the `index_strategy` code path.
+
+    `index_strategy="all"` reads the whole pairs file into memory at once
+    (`_build_all_cache`); `"chromosome"` (the default) spools to a local
+    Parquet file first and materializes one chromosome at a time
+    (`_build_sharded_cache_from_spool`), bounding peak memory to the largest
+    single chromosome instead of the whole file.
+    """
     if index_strategy not in {"chromosome", "all"}:
         raise ValueError("index_strategy must be one of: chromosome, all")
     qc_path = _resolve_qc_out(cache_dir, prefix=prefix, qc_out=qc_out, write_qc=write_qc)
@@ -194,6 +219,7 @@ def _build_all_cache(
     include_metadata: bool,
     qc_out: str | Path | None,
 ) -> list[Path]:
+    """`index_strategy="all"`: hold every chromosome in memory, then write shards."""
     indexes = build_contact_indexes(
         pairs_path,
         source=source,
@@ -217,6 +243,7 @@ def _resolve_qc_out(
     qc_out: str | Path | None,
     write_qc: bool,
 ) -> Path | None:
+    """Resolve the default `{prefix}.qc.json` path next to the cache, or None if QC is disabled."""
     if not write_qc:
         return None
     if qc_out is not None:
@@ -315,6 +342,7 @@ def _build_sharded_cache_from_spool(
 def _write_optional_cache_qc(
     qc_out: str | Path | None, *, pairs_path: str | Path, source: str
 ) -> list[Path]:
+    """`_build_all_cache`'s QC pass: re-scan `pairs_path` once more and write the QC JSON."""
     if qc_out is None:
         return []
     columns = ["chrom_a", "chrom_b", "pos_a", "pos_b", "mapq_a", "mapq_b"]
@@ -327,6 +355,7 @@ def _write_optional_cache_qc(
 def _contact_index_from_frame(
     chrom: str, frame: pl.DataFrame, *, include_metadata: bool
 ) -> ContactIndex:
+    """Convert one chromosome's collected rows into a `ContactIndex`, sorting by `pos_a` if needed."""
     pos_a = frame["pos_a"].to_numpy().astype(np.int64)
     pos_b = frame["pos_b"].to_numpy().astype(np.int64)
     size = pos_a.shape[0]
@@ -362,6 +391,7 @@ def _write_npz_cache_shard(
     saver,
     include_metadata: bool,
 ) -> Path:
+    """Write one chromosome's `ContactIndex` to `{cache_dir}/{prefix}.{safe_chrom}.npz`."""
     safe_chrom = re.sub(r"[^A-Za-z0-9_.-]+", "_", index.chrom)
     path = cache_dir / f"{prefix}.{safe_chrom}.npz"
     payload = {

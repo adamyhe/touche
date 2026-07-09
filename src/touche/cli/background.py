@@ -1,3 +1,11 @@
+"""`touche background` subcommands: count, compare, and run EP/background workflows.
+
+`add_background_parser` is the public entry point called from `cli/main.py`.
+Every `_`-prefixed function below is an argparse `func=` callback, not meant
+to be called directly -- it unpacks `args` and forwards to the matching
+`touche.background`/`touche.pipelines` function.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +17,7 @@ from touche.pipelines import run_background_pipeline
 
 
 def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Register `background count/compare/run` on `subparsers`."""
     background = subparsers.add_parser("background", help="EP/background contact analyses")
     background_sub = background.add_subparsers(dest="background_command", required=True)
 

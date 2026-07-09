@@ -1,3 +1,5 @@
+"""One-sided Fisher exact test helpers. Public API: `fisher_greater`, `fisher_greater_batch`."""
+
 from __future__ import annotations
 
 import numpy as np

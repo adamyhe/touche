@@ -1,3 +1,11 @@
+"""`touche apa` subcommands: aggregate, compare, and run APA workflows.
+
+`add_apa_parser` is the public entry point called from `cli/main.py`. Every
+`_`-prefixed function below is an argparse `func=` callback, not meant to be
+called directly -- it unpacks `args` and forwards to the matching
+`touche.apa`/`touche.pipelines` function.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +18,7 @@ from touche.pipelines import run_apa_pipeline
 
 
 def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Register `apa aggregate/compare/run` on `subparsers`."""
     apa = subparsers.add_parser("apa", help="Aggregated peak analysis workflows")
     apa_sub = apa.add_subparsers(dest="apa_command", required=True)
 

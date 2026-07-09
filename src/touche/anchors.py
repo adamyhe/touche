@@ -1,3 +1,5 @@
+"""BED anchor file loading. Public API: `read_bed_anchors`."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,3 +1,14 @@
+"""Enhancer-promoter (EP) vs. local-background contact counting and cross-sample comparison.
+
+Public API: `count_ep_and_background` (file-driven wrapper), `compute_ep_and_background`
+(in-memory compute), `compare_background_ratios`, `plot_background_scatter`,
+`parse_named_path`, `parse_named_depth`. Everything prefixed `_` is internal,
+including `_count_ep_background_pairs_numba`, which wraps the Numba counting
+kernel in `touche.numba.background` that `compute_ep_and_background` always
+uses. `_safe_kde` is the one place `scipy.stats.gaussian_kde` is called --
+only for the scatter plot's point-density coloring, not the numeric output.
+"""
+
 from __future__ import annotations
 
 from itertools import combinations
@@ -159,6 +170,7 @@ def _count_ep_background_pairs_numba(
     min_bg_distance: int,
     max_bg_distance: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Cast inputs to the dtypes `touche.numba.background.count_ep_background_pairs_numba` expects."""
     from touche.numba.background import count_ep_background_pairs_numba
 
     return count_ep_background_pairs_numba(
@@ -247,6 +259,7 @@ def plot_background_scatter(
     out_path: str | Path | None = None,
     reference_style: bool = True,
 ) -> "Figure":
+    """Log-log scatter of EP/background ratios for two samples, colored by local point density."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -291,16 +304,19 @@ def plot_background_scatter(
 
 
 def parse_named_path(value: str) -> NamedPath:
+    """Parse a `NAME=PATH` CLI argument, e.g. `--treatment flv=flv_background.tsv`."""
     name, raw_path = _split_name_value(value)
     return NamedPath(name=name, path=Path(raw_path))
 
 
 def parse_named_depth(value: str) -> NamedDepth:
+    """Parse a `NAME=INTEGER` CLI argument, e.g. `--depth flv=200000000`."""
     name, raw_depth = _split_name_value(value)
     return NamedDepth(name=name, depth=int(raw_depth))
 
 
 def _read_background(path: str | Path, sample: str) -> pl.DataFrame:
+    """Read one sample's `count_ep_and_background` TSV output and suffix its columns by `sample`."""
     data = pl.read_csv(path, separator="\t", has_header=False, new_columns=BACKGROUND_COLUMNS)
     data = data.with_columns(
         (pl.col("EP_contacts") / pl.col("BG_contacts")).alias(f"ratio_{sample}")
@@ -314,6 +330,7 @@ def _read_background(path: str | Path, sample: str) -> pl.DataFrame:
 
 
 def _merge_samples(samples: list[NamedPath]) -> pl.DataFrame:
+    """Inner-join every sample's background counts on shared bait/prey pairs."""
     merged = _read_background(samples[0].path, samples[0].name)
     for sample in samples[1:]:
         merged = merged.join(_read_background(sample.path, sample.name), how="inner", on=PAIR_COLUMNS)
@@ -321,12 +338,14 @@ def _merge_samples(samples: list[NamedPath]) -> pl.DataFrame:
 
 
 def _reference_pair_order(control: str, treatments: list[str]) -> list[tuple[str, str]]:
+    """Every `treatment vs. control` pair, plus every `treatment vs. treatment` pair, to plot."""
     pairs = [(control, treatment) for treatment in treatments]
     pairs.extend(combinations(treatments, 2))
     return pairs
 
 
 def _safe_kde(values: np.ndarray) -> np.ndarray:
+    """Gaussian KDE point-density estimate, falling back to uniform color on a degenerate input."""
     if values.shape[1] < 2:
         return np.ones(values.shape[1])
     try:
@@ -336,6 +355,7 @@ def _safe_kde(values: np.ndarray) -> np.ndarray:
 
 
 def _split_name_value(value: str) -> tuple[str, str]:
+    """Split a `NAME=VALUE` CLI argument, shared by `parse_named_path`/`parse_named_depth`."""
     if "=" not in value:
         raise ValueError(f"Expected NAME=VALUE, got {value!r}")
     name, raw_value = value.split("=", 1)
@@ -345,6 +365,7 @@ def _split_name_value(value: str) -> tuple[str, str]:
 
 
 def _close_figure(fig: "Figure") -> None:
+    """Release a matplotlib figure's memory once it's been saved/embedded."""
     import matplotlib.pyplot as plt
 
     plt.close(fig)

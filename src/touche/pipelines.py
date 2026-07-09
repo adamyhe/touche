@@ -1,3 +1,13 @@
+"""End-to-end command-group workflows, each writing a `manifest.json` alongside its outputs.
+
+Public API: `run_local_decay_pipeline`, `run_background_pipeline`,
+`run_apa_pipeline` -- each chains a domain module's file-driven wrappers
+(e.g. call -> assign -> plot for local-decay) and records inputs,
+parameters, outputs, metrics, and timings. `_base_manifest`/`_write_manifest`
+are the shared internal manifest-building helpers; `_close_figure` releases
+a plot's matplotlib figure after saving.
+"""
+
 from __future__ import annotations
 
 import json
@@ -365,6 +375,7 @@ def _base_manifest(
     started: float,
     timings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Assemble the manifest fields common to every pipeline (version, timing, inputs/outputs/metrics)."""
     manifest = {
         "schema_version": 1,
         "touche_version": __version__,
@@ -382,6 +393,7 @@ def _base_manifest(
 
 
 def _write_manifest(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Write the manifest JSON to `path`, recording its own path in the returned dict."""
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest["manifest"] = str(path)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -389,6 +401,7 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _close_figure(fig: Any) -> None:
+    """Release a matplotlib figure's memory once it's been saved."""
     import matplotlib.pyplot as plt
 
     plt.close(fig)

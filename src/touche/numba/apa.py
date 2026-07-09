@@ -1,3 +1,10 @@
+"""Numba counting kernels for APA: the 1D anchor signal and the pairwise pixel matrix.
+
+Both are always used by `touche.apa.compute_apa` -- there's no alternate
+counting path to choose between. Wrapped by `touche.apa._apa_anchor_signal_numba`/
+`_apa_matrix_numba`, which handle dtype casting before calling in here.
+"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -19,6 +26,7 @@ def apa_anchor_signal_numba(
     window: int,
     pixels: int,
 ) -> np.ndarray:
+    """1D pixel-binned contact signal around each anchor in `centers` (bait or prey side)."""
     bins = pixels * 2
     step = window // pixels
     signals = np.zeros((centers.shape[0], bins), dtype=np.int64)
@@ -89,6 +97,7 @@ def apa_matrix_numba(
     pixels: int,
     n_threads: int,
 ) -> np.ndarray:
+    """Pairwise pixel-binned contact matrix (prey bin x bait bin) for the given bait/prey groups."""
     bins = pixels * 2
     step = window // pixels
     # Different pairs can land in the same (prey_bin, bait_bin) cell, so a

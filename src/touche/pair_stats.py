@@ -1,3 +1,10 @@
+"""QC counter accumulation shared by `preprocess qc`, `preprocess summarize`, and cache building.
+
+Public API: `compute_pair_stats`, `write_qc_payload`, `distance_bin`,
+`DISTANCE_BINS`. `_distance_bin_expr` is an internal Polars-expression
+mirror of `distance_bin` used inside lazy aggregations.
+"""
+
 from __future__ import annotations
 
 import json
@@ -19,6 +26,7 @@ DISTANCE_BINS: list[tuple[int, str]] = [
 
 
 def distance_bin(distance: int) -> str:
+    """Label a contact distance using the same buckets as the distance histogram."""
     for upper, label in DISTANCE_BINS:
         if distance < upper:
             return label
@@ -26,6 +34,7 @@ def distance_bin(distance: int) -> str:
 
 
 def _distance_bin_expr(distance: pl.Expr) -> pl.Expr:
+    """`distance_bin`, expressed as a chained `pl.when`/`.then` for use inside a lazy aggregation."""
     expr = pl.when(distance < DISTANCE_BINS[0][0]).then(pl.lit(DISTANCE_BINS[0][1]))
     for upper, label in DISTANCE_BINS[1:]:
         expr = expr.when(distance < upper).then(pl.lit(label))
@@ -87,6 +96,7 @@ def write_qc_payload(
     stats: PairStats,
     source: str | Path,
 ) -> None:
+    """Write `stats` as the versioned JSON payload used by `preprocess qc`/`summarize` and caching."""
     payload = {
         "schema_version": 1,
         "touche_version": __version__,

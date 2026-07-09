@@ -1,3 +1,19 @@
+"""Local-decay bait-prey contact calling, pair-type assignment, and plotting.
+
+Public API: `call_local_decay` (file-driven wrapper, dispatches across the
+three `index_strategy` code paths -- `_call_local_decay_from_cache`,
+`_call_local_decay_by_chromosome`, or `compute_local_decay` directly; see
+CLAUDE.md's "Contact indexing strategies"), `compute_local_decay` (in-memory
+compute), `assign_pair_types`, `plot_pair_type_distribution`,
+`read_center_anchors`, and the two LOWESS model fitters
+`fit_zero_inflation_model`/`fit_distance_decay_model` (exposed because
+`lowess_backend` is a real per-caller choice, unlike counting). Everything
+else prefixed `_` is internal: per-bait counting (`_call_bait_contacts` and
+its numba wrapper `_local_decay_observed_numba`), the LOWESS backend dispatch
+(`_safe_lowess` and its numba wrapper `_lowess_evenly_spaced_numba`/
+`_lowess_batch_numba`), and cache/index bookkeeping.
+"""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -183,6 +199,7 @@ def call_local_decay(
 
 
 def _resolve_cache_dir(cache_dir: str | Path | None, out_path: str | Path) -> Path:
+    """Default to a `contact_index_cache/` directory next to `out_path`."""
     if cache_dir is not None:
         return Path(cache_dir)
     return Path(out_path).parent / "contact_index_cache"
@@ -196,6 +213,7 @@ def _ensure_local_decay_cache(
     source: str,
     require_cache: bool = False,
 ) -> None:
+    """Build the NPZ cache if its manifest is missing, unless `require_cache` demands it exist."""
     manifest_path = Path(cache_dir) / f"{cache_prefix}.manifest.json"
     if manifest_path.exists():
         return
@@ -232,6 +250,12 @@ def _call_local_decay_by_chromosome(
     n_jobs: int,
     progress: Instrumentation,
 ) -> pl.DataFrame:
+    """`index_strategy="chromosome"`: re-scan the pairs file once per bait chromosome.
+
+    Keeps only one chromosome's `ContactIndex` resident at a time and writes
+    no persistent cache files, at the cost of rescanning the (possibly
+    gzipped) pairs file once per chromosome.
+    """
     frames: list[pl.DataFrame] = []
     chrom_list = baits["chr"].unique(maintain_order=True).to_list()
     chrom_iter = progress.iter(
@@ -294,6 +318,11 @@ def _call_local_decay_from_cache(
     n_jobs: int,
     progress: Instrumentation,
 ) -> pl.DataFrame:
+    """`index_strategy="cache"` (the default): load one chromosome-sharded NPZ shard at a time.
+
+    Lowest peak memory of the three strategies, since each shard is read
+    directly off disk instead of being built from a pairs-file scan.
+    """
     if cache_dir is None:
         raise ValueError("cache_dir is required when loading local-decay indexes from cache")
     cache_paths = load_npz_cache_manifest(cache_dir, prefix=cache_prefix)
@@ -480,6 +509,7 @@ def _call_bait_contacts_threaded(
     threads_per_job: int,
     bait_kwargs: dict,
 ) -> list[dict[str, float | int | str]]:
+    """`ThreadPoolExecutor` entry point: cap this worker's numba thread budget, then call `_call_bait_contacts`."""
     from numba import set_num_threads
 
     set_num_threads(threads_per_job)
@@ -582,6 +612,7 @@ def plot_pair_type_distribution(
 
 
 def _read_pair_keys(path: str | Path) -> pl.Series:
+    """Read a functional/nonfunctional pair CSV as a `pl.struct` key series for membership tests."""
     data = pl.read_csv(path)
     missing = [column for column in PAIR_KEY_COLUMNS if column not in data.columns]
     if missing:
@@ -610,10 +641,8 @@ def read_center_anchors(path: str | Path) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=["chr", "center"], orient="row")
 
 
-_read_center_anchors = read_center_anchors
-
-
 def _ordered_cis_index(index: ContactIndex) -> ContactIndex:
+    """Reorient each contact to `(min pos, max pos)` and sort by that position, for windowed lookups."""
     pos_a = np.minimum(index.pos_a, index.pos_b).astype(np.int64, copy=False)
     pos_b = np.maximum(index.pos_a, index.pos_b).astype(np.int64, copy=False)
     order = np.argsort(pos_a, kind="mergesort")
@@ -642,6 +671,10 @@ def _call_bait_contacts(
     fisher_backend: str,
     lowess_iterations: int,
 ) -> list[dict[str, float | int | str]]:
+    """Call one bait's contacts against `prey_centers`: fit local decay, then Fisher-test each prey.
+
+    Returns one output record per prey surviving the `min_distance` filter.
+    """
     in_region = ((bait_center - dist) <= index.pos_a) & (index.pos_a <= (bait_center + dist)) | (
         ((bait_center - dist) <= index.pos_b) & (index.pos_b <= (bait_center + dist))
     )
@@ -756,6 +789,7 @@ def _local_decay_observed_numba(
     cap: int,
     min_distance: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Cast inputs to the dtypes `touche.numba.local_decay.local_decay_observed_counts_numba` expects."""
     from touche.numba.local_decay import local_decay_observed_counts_numba
 
     return local_decay_observed_counts_numba(
@@ -924,6 +958,11 @@ def _safe_lowess(
     delta: float,
     backend: str = DEFAULT_LOWESS_BACKEND,
 ) -> np.ndarray:
+    """Dispatch a LOWESS fit to the numba or statsmodels backend, per `lowess_backend`.
+
+    Short inputs (`len(endog) <= 2`) are returned unchanged -- there's not
+    enough data for either backend's smoother to do anything meaningful.
+    """
     if len(endog) <= 2:
         return np.asarray(endog, dtype=float)
     if backend == "numba":
@@ -951,6 +990,7 @@ def _safe_lowess(
 def _lowess_evenly_spaced_numba(
     endog: np.ndarray, *, frac: float, it: int, delta: float
 ) -> np.ndarray:
+    """Cast inputs to the dtypes `touche.numba.local_decay.lowess_evenly_spaced_numba` expects."""
     from touche.numba.local_decay import lowess_evenly_spaced_numba
 
     return lowess_evenly_spaced_numba(

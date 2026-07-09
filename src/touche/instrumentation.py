@@ -1,3 +1,11 @@
+"""The `Instrumentation` dataclass threaded through compute/pipeline functions.
+
+Public API: `Instrumentation` and `make_instrumentation`. Domain and pipeline
+functions take a `progress=` argument (bool, `Instrumentation`, or `None`)
+and normalize it with `make_instrumentation` so they never need to branch on
+which form was passed.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
@@ -26,6 +34,7 @@ class Instrumentation:
         unit: str = "it",
         leave: bool = True,
     ) -> Iterable[T]:
+        """Wrap `iterable` with a `tqdm` progress bar when `self.progress` is set."""
         if not self.progress:
             return iterable
 
@@ -35,6 +44,7 @@ class Instrumentation:
 
     @contextmanager
     def step(self, name: str) -> Iterator[None]:
+        """Record wall-clock time for the enclosed block as `name` when `self.profile` is set."""
         started = perf_counter()
         try:
             yield
@@ -53,6 +63,11 @@ def make_instrumentation(
     *,
     profile: bool = False,
 ) -> Instrumentation:
+    """Normalize a `progress=` argument (bool/`Instrumentation`/`None`) into an `Instrumentation`.
+
+    If `progress` is already an `Instrumentation`, it's reused in place (so a
+    caller's own `timings` list keeps accumulating) rather than wrapped.
+    """
     if isinstance(progress, Instrumentation):
         if profile:
             progress.profile = True

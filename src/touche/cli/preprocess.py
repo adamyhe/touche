@@ -1,3 +1,11 @@
+"""`touche preprocess` subcommands: filter/convert pairs, QC, and NPZ cache building.
+
+`add_preprocess_parser` is the public entry point called from `cli/main.py`.
+Every `_`-prefixed function below is an argparse `func=` callback, not
+meant to be called directly -- it unpacks `args` and forwards to the
+matching `touche.preprocess`/`touche.contacts` function.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +17,7 @@ from touche.preprocess import convert_pairs, filter_pairs, summarize_pairs, writ
 
 
 def add_preprocess_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Register `preprocess filter-pairs/convert-pairs/qc/summarize/build-cache` on `subparsers`."""
     preprocess = subparsers.add_parser("preprocess", help="Prepare Micro-C pairs for analysis")
     preprocess_sub = preprocess.add_subparsers(dest="preprocess_command", required=True)
 

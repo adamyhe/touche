@@ -1,3 +1,5 @@
+"""Pairs filtering/conversion. Public API: `filter_pairs`, `convert_pairs`, `summarize_pairs`, `write_qc`."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,6 +14,7 @@ _STATS_COLUMNS = ["chrom_a", "chrom_b", "pos_a", "pos_b", "mapq_a", "mapq_b"]
 
 
 def _write_pairs_csv(frame: pl.DataFrame, out_path: str | Path) -> None:
+    """Write a collected pairs frame as tab-separated, gzip-compressed if `out_path` ends in `.gz`."""
     out_path = Path(out_path)
     compression = "gzip" if out_path.suffix == ".gz" else "uncompressed"
     frame.write_csv(out_path, include_header=False, separator="\t", compression=compression)
@@ -70,6 +73,7 @@ def convert_pairs(
 
 
 def summarize_pairs(pairs_path: str | Path, *, source: str = "auto") -> PairStats:
+    """Compute QC stats for a pairs file without writing any output file."""
     lf = scan_pairs(pairs_path, source=source).select(_STATS_COLUMNS)
     return compute_pair_stats(lf)
 
@@ -80,6 +84,7 @@ def write_qc(
     *,
     source: str = "auto",
 ) -> PairStats:
+    """Compute QC stats for a pairs file and write them as the standard QC JSON payload."""
     stats = summarize_pairs(pairs_path, source=source)
     write_qc_payload(out_path, stats=stats, source=pairs_path)
     return stats
