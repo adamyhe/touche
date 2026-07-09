@@ -222,7 +222,7 @@ class LocalDecayTests(unittest.TestCase):
             self.assertEqual(calls.shape, (1, 9))
             self.assertEqual(calls[0, "observed"], 1)
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_numba_compute_local_decay_matches_numpy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -263,7 +263,7 @@ class LocalDecayTests(unittest.TestCase):
 
             assert_frame_equal(numba_calls, numpy_calls)
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_fisher_backend_numba_matches_scipy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -313,7 +313,7 @@ class LocalDecayTests(unittest.TestCase):
                 check_exact=False,
             )
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_numba_lowess_backend_returns_finite_values(self) -> None:
         counts = pl.Series([0, 1, 0, 0, 2, 0, 1, 0, 0, 1] * 20).cast(pl.Float64).to_numpy()
 
@@ -327,7 +327,7 @@ class LocalDecayTests(unittest.TestCase):
         self.assertEqual(smoothed.shape, (100,))
         self.assertTrue(pl.Series(smoothed).is_not_nan().all())
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_numba_lowess_backend_matches_statsmodels_wrappers(self) -> None:
         counts = pl.Series([0, 1, 0, 0, 2, 0, 1, 0, 0, 1] * 200).cast(pl.Float64).to_numpy()
         statsmodels_zero = fit_zero_inflation_model(
@@ -379,7 +379,7 @@ class LocalDecayTests(unittest.TestCase):
             abs_tol=1e-12,
         )
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_batched_lowess_numba_matches_per_chunk_calls(self) -> None:
         """Batching chunks into one prange launch must not change any fitted value.
 
@@ -406,6 +406,33 @@ class LocalDecayTests(unittest.TestCase):
             [lowess_evenly_spaced_numba(chunk, 0.01, 3, 16.0) for chunk in chunks]
         )
         np.testing.assert_array_equal(batched, per_chunk)
+
+    @unittest.skipUnless(has_numba(), "numba is not installed")
+    def test_fit_distance_decay_model_handles_many_small_chunks(self) -> None:
+        """Exercises the merge loop's "replace bg_model entirely" branch.
+
+        fit_distance_decay_model merges per-chunk LOWESS fits into a
+        pre-allocated buffer (replacing a previous np.concatenate-per-chunk
+        approach that was O(target_len^2 / winsize)); a small dist/winsize
+        here keeps chunks near or under the 300-element overlap threshold,
+        so the "replace" branch -- distinct indexing from the normal
+        "blend the last 300 elements" branch -- fires repeatedly.
+        """
+        rng = np.random.default_rng(0)
+        dist = 500
+        counts = rng.poisson(0.3, size=dist).astype(float)
+        zero_model = rng.uniform(0, 0.5, size=dist)
+        distances = rng.integers(0, dist, size=200)
+
+        result = fit_distance_decay_model(
+            counts, zero_model, distances, dist=dist, winsize=100, backend="numba"
+        )
+
+        # The "replace" branch can legitimately end on a short final chunk,
+        # so length isn't pinned to `dist` -- just bounded and non-empty.
+        self.assertGreater(len(result), 0)
+        self.assertLessEqual(len(result), dist)
+        self.assertTrue(pl.Series(result).is_finite().all())
 
     def test_compute_local_decay_rejects_negative_lowess_iterations(self) -> None:
         with self.assertRaisesRegex(ValueError, "lowess_iterations"):

@@ -92,7 +92,7 @@ class ApaAggregateTests(unittest.TestCase):
 
             plt.close(fig)
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_numba_compute_apa_matches_numpy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

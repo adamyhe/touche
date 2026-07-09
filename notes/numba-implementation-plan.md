@@ -653,6 +653,43 @@ approaches the core count:
   in fact the dominant remaining bottleneck. Kernel-level parallelism is
   primary for local-decay again, now that the launch-granularity problem
   behind it is fixed rather than assumed away.
+
+  **Update: re-profiling after the batched-launch fix surfaced a second,
+  unrelated bottleneck -- fixed.** With LOWESS batched, `fit_distance_decay_model`'s
+  *own* code (excluding LOWESS calls) became 52% of total wall time in the
+  same 40-bait profile. Its chunk-merge loop rebuilt `bg_model` via
+  `np.concatenate([bg_model[:-overlap], merge, counts_tail])` once per chunk
+  (~200 times per bait) -- each call re-copies the *entire* accumulated
+  result so far, making the loop O(target_len^2 / winsize) overall, not
+  O(target_len). Scaling-tested in isolation: per-element cost rose from
+  0.004us/elem at `dist=100k` to 0.21us/elem at `dist=2M`, the signature of
+  superlinear growth. This predates the LOWESS batching work and is
+  unrelated to parallelism -- it was always there, just dwarfed by the
+  larger LOWESS overhead until that was fixed. Replaced with a
+  pre-allocated buffer (`write_pos` tracks the same length `bg_model` would
+  have at each step; the "blend last 300 elements" branch overwrites
+  `buffer[write_pos-overlap:write_pos]` and appends `counts_tail` in place,
+  the "replace bg_model entirely" branch overwrites `buffer[:write_pos]`),
+  so every position is written a constant number of times instead of being
+  re-copied on every subsequent chunk -- same merge order and math, pure
+  mechanism change. Verified bit-identical against the pre-fix
+  `np.concatenate` version across 9 configs (non-divisible `winsize`, tiny
+  `dist` that repeatedly hits the "replace" branch, boundary-adjacent sizes
+  near the 300/1,001-element special cases) plus a dedicated regression
+  test (`test_fit_distance_decay_model_handles_many_small_chunks`) pinning
+  down the "replace" branch specifically. ~5.8x on the isolated function at
+  `dist=1_000_000` (0.094s -> 0.016s) and a further ~2x on the full
+  `compute_local_decay` pipeline on top of the LOWESS batching fix (3.8s ->
+  1.9s cProfile wall time on the same 40-bait synthetic benchmark) --
+  combined, ~8.2x faster than before either fix.
+
+  Also confirmed empirically (relevant to the still-deferred item 3 below):
+  `numba.set_num_threads()`/`get_num_threads()` are thread-local, not a
+  racy process-global -- 4 concurrent Python threads each setting a
+  different value each correctly read back their own value. The
+  "cap each worker's numba thread budget" mitigation item 3 relies on is
+  therefore safe to implement without cross-thread interference, if/when
+  outer-level threading is revisited.
 - **APA/background's per-chromosome kernels** have a parallelism degree
   bounded by baits/preys active in that chromosome (APA's anchor kernel) or
   candidate pairs after distance filtering (background) -- both shrink a lot

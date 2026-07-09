@@ -52,7 +52,7 @@ class StatsTests(unittest.TestCase):
                 np.array([1.0]), np.array([2.0]), np.array([3.0]), np.array([-1.0])
             )
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_fisher_greater_batch_numba_matches_scipy(self) -> None:
         rng = np.random.default_rng(0)
 

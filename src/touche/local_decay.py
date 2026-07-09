@@ -828,11 +828,25 @@ def fit_distance_decay_model(
             for start, pseudo_counts in zip(chunk_starts, pseudo_chunks, strict=True)
         ]
 
+    # Merge chunk fits into one background model, written into a
+    # pre-allocated buffer instead of `np.concatenate`-ing onto a growing
+    # array each iteration -- that previous approach re-copied the entire
+    # accumulated result on every chunk (O(target_len^2 / winsize) overall,
+    # confirmed dominant once LOWESS chunking itself stopped being the
+    # bottleneck). `write_pos` tracks the same length `bg_model` would have
+    # at each step; every write below targets exactly the range the
+    # original's concatenate would have replaced or appended, so this is the
+    # same merge in the same order, not a different algorithm.
+    buffer = np.empty(len(bg_model) + sum(len(chunk) for chunk in pseudo_chunks), dtype=float)
+    write_pos = len(bg_model)
+    buffer[:write_pos] = bg_model
+
     for chunk_index, smoothed in enumerate(smoothed_chunks):
-        if len(smoothed) <= 300 or len(bg_model) <= 300:
-            bg_model = smoothed
+        if len(smoothed) <= 300 or write_pos <= 300:
+            write_pos = len(smoothed)
+            buffer[:write_pos] = smoothed
             continue
-        tail = bg_model[-300:]
+        tail = buffer[write_pos - 300 : write_pos]
         if chunk_index < 1 and len(smoothed) > 1_001:
             head = smoothed[700:1001]
             counts_tail = smoothed[1001:]
@@ -841,9 +855,11 @@ def fit_distance_decay_model(
             counts_tail = smoothed[300:]
         overlap = min(len(tail), len(head))
         merge = (tail[-overlap:] + head[:overlap]) / 2.0
-        bg_model = np.concatenate([bg_model[:-overlap], merge, counts_tail])
+        buffer[write_pos - overlap : write_pos] = merge
+        buffer[write_pos : write_pos + len(counts_tail)] = counts_tail
+        write_pos += len(counts_tail)
 
-    bg_model = np.asarray(bg_model[:target_len], dtype=float)
+    bg_model = np.asarray(buffer[:write_pos][:target_len], dtype=float)
     reads = int((np.asarray(distances) < dist).sum())
     if reads == 0:
         return np.zeros_like(bg_model)

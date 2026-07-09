@@ -88,7 +88,7 @@ class BackgroundCountTests(unittest.TestCase):
             self.assertEqual(len(result), 1)
             self.assertEqual(result[0, "EP_contacts"], 1)
 
-    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_numba_background_backend_matches_numpy_counts(self) -> None:
         indexes = {
             "chr1": ContactIndex(
