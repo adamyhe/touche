@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import argparse
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import polars as pl
 from polars.testing import assert_frame_equal, assert_series_equal
 
 from touche.backends import has_numba
+from touche.cli.local_decay import _assign_pair_types
 from touche.contacts import build_contact_indexes, build_npz_cache
 from touche.local_decay import (
     assign_pair_types,
@@ -416,6 +421,46 @@ class LocalDecayTests(unittest.TestCase):
             self.assertEqual(assigned["PosNeg"].to_list(), ["positive", "negative", "other"])
             written = pl.read_csv(out, separator="\t")
             self.assertEqual(written["distance"].to_list(), [100, 100, 100])
+
+    def test_cli_assign_pair_types_prints_sorted_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            contacts = tmp_path / "contacts.tsv"
+            functional = tmp_path / "functional.csv"
+            nonfunctional = tmp_path / "nonfunctional.csv"
+            out = tmp_path / "assigned.tsv"
+            contacts.write_text(
+                "\n".join(
+                    [
+                        "chr1\t100\t200\t100\t0.01\t5\t2\t0\t0",
+                        "chr1\t110\t210\t100\t0.02\t4\t2\t0\t0",
+                        "chr1\t120\t220\t100\t0.03\t3\t2\t0\t0",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            functional.write_text(
+                "target_site.chr,target_promoter.center,target_site.center\n"
+                "chr1,200,100\n",
+                encoding="utf-8",
+            )
+            nonfunctional.write_text(
+                "target_site.chr,target_promoter.center,target_site.center\n"
+                "chr1,210,110\n",
+                encoding="utf-8",
+            )
+
+            args = argparse.Namespace(
+                contacts=contacts, functional=functional, nonfunctional=nonfunctional, out=out
+            )
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                _assign_pair_types(args)
+
+            payload = json.loads(captured.getvalue())
+            self.assertEqual(payload["rows"], 3)
+            self.assertEqual(payload["counts"], {"negative": 1, "other": 1, "positive": 1})
 
     def test_plot_pair_type_distribution_writes_plot_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -190,7 +190,7 @@ def _assign_pair_types(args: argparse.Namespace) -> None:
     print_json(
         {
             "rows": int(len(assignments)),
-            "counts": assignments["PosNeg"].value_counts().sort_index().to_dict(),
+            "counts": dict(assignments["PosNeg"].value_counts().sort("PosNeg").iter_rows()),
             "out": str(args.out),
         }
     )

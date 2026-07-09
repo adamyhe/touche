@@ -76,6 +76,14 @@ def main() -> int:
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument(
+        "--skip-existing-cache",
+        action="store_true",
+        help=(
+            "Skip preprocess build-cache steps whose cache manifest already exists "
+            "under --work-dir from a previous run."
+        ),
+    )
+    parser.add_argument(
         "--download-retries",
         type=int,
         default=6,
@@ -139,7 +147,12 @@ def main() -> int:
         return 0
 
     downloads = reference_downloads(data_dir)
-    cache_steps, cache_paths = build_cache_steps(python=args.python, data_dir=data_dir, output_dir=output_dir)
+    cache_steps, cache_paths = build_cache_steps(
+        python=args.python,
+        data_dir=data_dir,
+        output_dir=output_dir,
+        skip_existing=args.skip_existing_cache,
+    )
     backend_step_lists: dict[str, list[BenchmarkStep]] = {}
     for backend in backends:
         backend_step_lists[backend] = build_backend_steps(
@@ -328,7 +341,7 @@ def reference_downloads(data_dir: Path) -> list[Download]:
 
 
 def build_cache_steps(
-    *, python: str, data_dir: Path, output_dir: Path
+    *, python: str, data_dir: Path, output_dir: Path, skip_existing: bool = False
 ) -> tuple[list[BenchmarkStep], dict[str, Path]]:
     """Steps that don't depend on backend: build NPZ caches shared by every backend run."""
 
@@ -344,6 +357,9 @@ def build_cache_steps(
         cache_out = cache_dir / label
         cache_paths[label] = cache_out
         qc_out = cache_out / f"{label}.qc.json"
+        manifest_out = cache_out / f"{label}.manifest.json"
+        if skip_existing and manifest_out.exists():
+            continue
         steps.append(
             BenchmarkStep(
                 name=f"preprocess-cache-{label}",

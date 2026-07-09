@@ -735,18 +735,27 @@ def fit_zero_inflation_model(
 ) -> np.ndarray:
     """Fit the reference zero-inflation LOWESS model."""
 
-    model: list[np.ndarray] = []
     counts = np.asarray(contact_counts_zero, dtype=float)
     target_len = min(dist, len(counts))
     if target_len <= 0:
         return np.asarray([], dtype=float)
     winsize = max(1, min(winsize, target_len))
+
+    # Vectorized windowed-average via a cumulative-sum lookup, replacing an
+    # O(target_len) pure-Python loop (a single-threaded bottleneck regardless
+    # of backend/lowess_backend/fisher_backend, since target_len is `dist` --
+    # up to 1,000,000 -- evaluated once per bait).
+    cumsum = np.concatenate([[0.0], np.cumsum(counts[:target_len])])
+    k = np.arange(target_len)
+    valid = (k >= 50) & (k + 50 <= target_len - 1)
+    lo = np.clip(k - 50, 0, target_len)
+    hi = np.clip(k + 50, 0, target_len)
+    zero_pdf_full = np.where(valid, (cumsum[hi] - cumsum[lo]) / 100.0, 0.0)
+
+    model: list[np.ndarray] = []
     for start in range(0, target_len, winsize):
         stop = min(start + winsize, target_len)
-        zero_pdf = np.zeros(stop - start, dtype=float)
-        for offset, k in enumerate(range(start, stop)):
-            if k >= 50 and (k + 50) <= (target_len - 1):
-                zero_pdf[offset] = counts[k - 50 : k + 50].sum() / 100.0
+        zero_pdf = zero_pdf_full[start:stop]
         pos = np.arange(1, len(zero_pdf) + 1, dtype=float)
         smoothed = _safe_lowess(
             zero_pdf,

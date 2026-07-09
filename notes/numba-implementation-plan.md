@@ -609,14 +609,42 @@ whether a *single* kernel call's internal parallelism degree already
 approaches the core count:
 
 - **Local-decay's LOWESS kernel** (`lowess_evenly_spaced_numba`) parallelizes
-  over delta-spaced anchor points within *one bait's* histogram -- at
-  realistic settings (`dist=1_000_000`, `delta=16`) that's on the order of
-  tens of thousands of anchors, enough to saturate almost any realistic core
-  count by itself. Kernel-level parallelism should stay primary here; item 3
-  below (outer chromosome/bait threading) is **not** a good fit for
-  local-decay and should not be added on top of it -- doing so would mostly
-  just oversubscribe, since numba is already using every core for whichever
-  bait is in flight.
+  over delta-spaced anchor points, but **not** within one bait's whole
+  `dist`-sized histogram as originally assumed here.
+  `fit_zero_inflation_model`/`fit_distance_decay_model` chunk the fit into
+  `lowess_window`-sized windows (default 5,000) and call `_safe_lowess`
+  separately per chunk -- at realistic settings that's `dist / lowess_window
+  = 200` chunks per model, `400` numba-LOWESS calls per bait (zero-inflation
+  + distance-decay), each with only `lowess_window / lowess_delta ~= 312`
+  anchors -- not "tens of thousands." Profiling (cProfile, 40 synthetic
+  baits, `dist=1_000_000`) confirmed this: `_lowess_evenly_spaced_numba` was
+  74% of total wall time across 16,040 calls, and per-call `prange`
+  launch/synchronization overhead is significant at this granularity --
+  increasing `lowess_window` from 5,000 to 50,000 (200 chunks -> 20 chunks)
+  gave ~2.3x on a synthetic zero-inflation + distance-decay timing (0.369s ->
+  0.158s per bait), well beyond what fewer-but-bigger prange launches alone
+  would predict if launch overhead weren't a real cost. This is the
+  structural reason local-decay keeps showing low average core utilization
+  (observed: 4-8 of 32 cores) even with `backend`/`lowess_backend`/
+  `fisher_backend` all set to `numba` and `NUMBA_NUM_THREADS=32` set
+  explicitly -- most wall-clock is spent in many small, cheap parallel
+  regions rather than one big one. `lowess_window` is already a user-facing
+  parameter (`--lowess-window`), so trying a larger value is a same-day,
+  no-code-change experiment -- but it also changes the LOWESS smoothing
+  window itself, so treat it as a tunable with real numeric consequences (see
+  the CLI's existing "lower values are faster but can change expected-contact
+  estimates" note), not a free performance switch. A structural fix -- fit
+  delta-spaced anchors across the *entire* `target_len` in one `prange` call
+  per bait per model, chunking only for the existing tail-merge/blend logic
+  in `fit_distance_decay_model` -- would restore the "kernel-level
+  parallelism is already enough" assumption this section originally made,
+  but is unimplemented and not risk-free (needs validation that the merge
+  behavior at chunk boundaries is unaffected). Given this, kernel-level
+  parallelism being "primary" for local-decay is no longer a settled
+  conclusion; outer chromosome/bait threading (item 3's *deferred* design) is
+  also not obviously wrong here anymore, since the small-chunk overhead
+  problem shrinks the plausible benefit of relying on kernel-level `prange`
+  alone -- this whole bullet should be treated as open again, not decided.
 - **APA/background's per-chromosome kernels** have a parallelism degree
   bounded by baits/preys active in that chromosome (APA's anchor kernel) or
   candidate pairs after distance filtering (background) -- both shrink a lot
