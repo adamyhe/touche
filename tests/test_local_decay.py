@@ -8,6 +8,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 from polars.testing import assert_frame_equal, assert_series_equal
 
@@ -377,6 +378,34 @@ class LocalDecayTests(unittest.TestCase):
             rel_tol=1e-12,
             abs_tol=1e-12,
         )
+
+    @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    def test_batched_lowess_numba_matches_per_chunk_calls(self) -> None:
+        """Batching chunks into one prange launch must not change any fitted value.
+
+        fit_zero_inflation_model/fit_distance_decay_model call a batched numba
+        kernel (one parallel launch over all of a bait's LOWESS chunks)
+        instead of one small parallel launch per chunk purely for speed --
+        this pins down that the two are numerically identical, not just close,
+        per the project's no-numeric-deviation policy.
+        """
+        from touche.numba_kernels import lowess_evenly_spaced_batched_numba, lowess_evenly_spaced_numba
+
+        rng = np.random.default_rng(0)
+        chunk_lengths = [5000, 5000, 3000, 1, 2, 5300, 0]
+        chunks = [
+            rng.poisson(0.4, size=n).astype(np.float64) if n > 0 else np.zeros(0, dtype=np.float64)
+            for n in chunk_lengths
+        ]
+        offsets = np.zeros(len(chunks) + 1, dtype=np.int64)
+        np.cumsum([len(chunk) for chunk in chunks], out=offsets[1:])
+        flat = np.concatenate(chunks)
+
+        batched = lowess_evenly_spaced_batched_numba(flat, offsets, 0.01, 3, 16.0)
+        per_chunk = np.concatenate(
+            [lowess_evenly_spaced_numba(chunk, 0.01, 3, 16.0) for chunk in chunks]
+        )
+        np.testing.assert_array_equal(batched, per_chunk)
 
     def test_compute_local_decay_rejects_negative_lowess_iterations(self) -> None:
         with self.assertRaisesRegex(ValueError, "lowess_iterations"):

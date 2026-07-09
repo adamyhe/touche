@@ -619,32 +619,40 @@ approaches the core count:
   anchors -- not "tens of thousands." Profiling (cProfile, 40 synthetic
   baits, `dist=1_000_000`) confirmed this: `_lowess_evenly_spaced_numba` was
   74% of total wall time across 16,040 calls, and per-call `prange`
-  launch/synchronization overhead is significant at this granularity --
-  increasing `lowess_window` from 5,000 to 50,000 (200 chunks -> 20 chunks)
-  gave ~2.3x on a synthetic zero-inflation + distance-decay timing (0.369s ->
-  0.158s per bait), well beyond what fewer-but-bigger prange launches alone
-  would predict if launch overhead weren't a real cost. This is the
-  structural reason local-decay keeps showing low average core utilization
-  (observed: 4-8 of 32 cores) even with `backend`/`lowess_backend`/
-  `fisher_backend` all set to `numba` and `NUMBA_NUM_THREADS=32` set
-  explicitly -- most wall-clock is spent in many small, cheap parallel
-  regions rather than one big one. `lowess_window` is already a user-facing
-  parameter (`--lowess-window`), so trying a larger value is a same-day,
-  no-code-change experiment -- but it also changes the LOWESS smoothing
-  window itself, so treat it as a tunable with real numeric consequences (see
-  the CLI's existing "lower values are faster but can change expected-contact
-  estimates" note), not a free performance switch. A structural fix -- fit
-  delta-spaced anchors across the *entire* `target_len` in one `prange` call
-  per bait per model, chunking only for the existing tail-merge/blend logic
-  in `fit_distance_decay_model` -- would restore the "kernel-level
-  parallelism is already enough" assumption this section originally made,
-  but is unimplemented and not risk-free (needs validation that the merge
-  behavior at chunk boundaries is unaffected). Given this, kernel-level
-  parallelism being "primary" for local-decay is no longer a settled
-  conclusion; outer chromosome/bait threading (item 3's *deferred* design) is
-  also not obviously wrong here anymore, since the small-chunk overhead
-  problem shrinks the plausible benefit of relying on kernel-level `prange`
-  alone -- this whole bullet should be treated as open again, not decided.
+  launch/synchronization overhead was significant at this granularity. This
+  was the structural reason local-decay kept showing low average core
+  utilization (observed: 4-8 of 32 cores) even with `backend`/
+  `lowess_backend`/`fisher_backend` all set to `numba` and
+  `NUMBA_NUM_THREADS=32` set explicitly -- most wall-clock was spent in many
+  small, cheap parallel regions rather than one big one.
+
+  **Update: fixed via a batched-launch kernel, not a chunking-behavior
+  change.** Per the project's no-numeric-deviation policy, increasing
+  `lowess_window` was ruled out as "the fix" (it's a real user-facing tunable
+  that changes the smoothing bandwidth, not a free performance switch), and
+  restructuring the actual chunk boundaries/merge algorithm was ruled out too
+  (that's the algorithm, likely mirroring the reference's own chunked
+  approach, not a performance artifact). Instead, `numba_kernels.py` gained
+  `lowess_evenly_spaced_batched_numba` (`prange` over chunks, each chunk
+  fit sequentially via a new `_lowess_fit_chunk_sequential` helper extracted
+  from the original per-chunk logic) and `local_decay.py` gained
+  `_lowess_batch_numba`, used by `fit_zero_inflation_model`/
+  `fit_distance_decay_model` (numba backend only; `statsmodels` is
+  unchanged) to fit all of a bait's chunks in one launch instead of one
+  launch per chunk. Because each chunk's fit has no cross-chunk dependency
+  (only the *merge* step, which stays untouched and sequential in Python,
+  depends on other chunks), reordering anchor/residual/robustness-weight
+  loops from `prange` to `range` cannot change any computed value -- verified
+  bit-identical (`np.array_equal`, not just close) against the pre-batching
+  implementation across 6 configs (non-divisible `winsize`, `iterations=0`,
+  `target_len < winsize`, etc.) plus a dedicated kernel-level regression test
+  (`test_batched_lowess_numba_matches_per_chunk_calls`). Measured ~4x on a
+  realistic per-bait timing (`dist=1_000_000`, default `winsize=5_000`:
+  0.389s -> 0.096s) and ~4.2x on the full `compute_local_decay` pipeline
+  (40 synthetic baits: 15.9s -> 3.8s cProfile wall time), confirming this was
+  in fact the dominant remaining bottleneck. Kernel-level parallelism is
+  primary for local-decay again, now that the launch-granularity problem
+  behind it is fixed rather than assumed away.
 - **APA/background's per-chromosome kernels** have a parallelism degree
   bounded by baits/preys active in that chromosome (APA's anchor kernel) or
   candidate pairs after distance filtering (background) -- both shrink a lot

@@ -752,21 +752,27 @@ def fit_zero_inflation_model(
     hi = np.clip(k + 50, 0, target_len)
     zero_pdf_full = np.where(valid, (cumsum[hi] - cumsum[lo]) / 100.0, 0.0)
 
-    model: list[np.ndarray] = []
-    for start in range(0, target_len, winsize):
-        stop = min(start + winsize, target_len)
-        zero_pdf = zero_pdf_full[start:stop]
-        pos = np.arange(1, len(zero_pdf) + 1, dtype=float)
-        smoothed = _safe_lowess(
-            zero_pdf,
-            pos,
-            frac=0.01,
-            it=iterations,
-            delta=delta,
-            backend=backend,
+    zero_pdf_chunks = [
+        zero_pdf_full[start : min(start + winsize, target_len)]
+        for start in range(0, target_len, winsize)
+    ]
+    if backend == "numba":
+        smoothed_chunks = _lowess_batch_numba(
+            zero_pdf_chunks, frac=0.01, iterations=iterations, delta=delta
         )
-        model.append(0.5 * (1 - smoothed))
-    return np.concatenate(model)
+    else:
+        smoothed_chunks = [
+            _safe_lowess(
+                zero_pdf,
+                np.arange(1, len(zero_pdf) + 1, dtype=float),
+                frac=0.01,
+                it=iterations,
+                delta=delta,
+                backend=backend,
+            )
+            for zero_pdf in zero_pdf_chunks
+        ]
+    return np.concatenate([0.5 * (1 - smoothed) for smoothed in smoothed_chunks])
 
 
 def fit_distance_decay_model(
@@ -799,19 +805,31 @@ def fit_distance_decay_model(
         delta=0.0,
         backend=backend,
     )
-    for chunk_index, start in enumerate(range(0, target_len, winsize)):
+    chunk_starts = list(range(0, target_len, winsize))
+    pseudo_chunks = []
+    for start in chunk_starts:
         stop = min(start + winsize, target_len)
         extension_stop = min(stop + 300, target_len)
-        chunk_pos = pos[start:extension_stop]
-        pseudo_counts = counts[start:extension_stop] + zero[start:extension_stop]
-        smoothed = _safe_lowess(
-            pseudo_counts,
-            chunk_pos,
-            frac=0.01,
-            it=iterations,
-            delta=delta,
-            backend=backend,
+        pseudo_chunks.append(counts[start:extension_stop] + zero[start:extension_stop])
+
+    if backend == "numba":
+        smoothed_chunks = _lowess_batch_numba(
+            pseudo_chunks, frac=0.01, iterations=iterations, delta=delta
         )
+    else:
+        smoothed_chunks = [
+            _safe_lowess(
+                pseudo_counts,
+                pos[start : start + len(pseudo_counts)],
+                frac=0.01,
+                it=iterations,
+                delta=delta,
+                backend=backend,
+            )
+            for start, pseudo_counts in zip(chunk_starts, pseudo_chunks, strict=True)
+        ]
+
+    for chunk_index, smoothed in enumerate(smoothed_chunks):
         if len(smoothed) <= 300 or len(bg_model) <= 300:
             bg_model = smoothed
             continue
@@ -871,3 +889,25 @@ def _lowess_evenly_spaced_numba(
     return lowess_evenly_spaced_numba(
         np.asarray(endog, dtype=np.float64), float(frac), int(it), float(delta)
     )
+
+
+def _lowess_batch_numba(
+    chunks: list[np.ndarray], *, frac: float, iterations: int, delta: float
+) -> list[np.ndarray]:
+    """Fit LOWESS on each chunk independently in one batched numba call.
+
+    Numerically identical to calling `_lowess_evenly_spaced_numba` once per
+    chunk (each chunk's fit has no cross-chunk dependency) -- exists only to
+    replace many small `prange` launches with one larger one; see
+    `lowess_evenly_spaced_batched_numba`'s docstring.
+    """
+    from touche.numba_kernels import lowess_evenly_spaced_batched_numba
+
+    offsets = np.zeros(len(chunks) + 1, dtype=np.int64)
+    if chunks:
+        np.cumsum([len(chunk) for chunk in chunks], out=offsets[1:])
+    flat = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float64)
+    fitted_flat = lowess_evenly_spaced_batched_numba(
+        flat.astype(np.float64, copy=False), offsets, float(frac), int(iterations), float(delta)
+    )
+    return [fitted_flat[offsets[i] : offsets[i + 1]] for i in range(len(chunks))]

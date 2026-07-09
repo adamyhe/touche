@@ -405,6 +405,128 @@ def lowess_evenly_spaced_numba(
 
 
 @njit(cache=True)
+def _lowess_fit_chunk_sequential(
+    endog: np.ndarray, frac: float, iterations: int, delta: float, fitted: np.ndarray
+) -> None:
+    """Fit one LOWESS chunk into `fitted`, sequentially (no `prange`).
+
+    Same anchor/residual/robustness-weight formulas as
+    `lowess_evenly_spaced_numba`, just with `range` instead of `prange` --
+    every one of those loops only ever reads/writes its own array slot (no
+    cross-anchor or cross-element accumulation), so this cannot change any
+    computed value versus the parallel version; it only changes who is
+    allowed to run it concurrently. Meant to be called once per chunk from
+    inside `lowess_evenly_spaced_batched_numba`'s outer `prange` -- per-chunk
+    work is already the unit of parallelism there, and nesting another
+    `prange` inside it would just be silently serialized by numba anyway.
+    """
+    n = endog.shape[0]
+    if n <= 2:
+        for i in range(n):
+            fitted[i] = endog[i]
+        return
+
+    window = int(np.ceil(frac * n))
+    if window < 2:
+        window = 2
+    if window > n:
+        window = n
+
+    anchor_indexes = _lowess_anchor_indexes(n, delta)
+    anchor_fitted = np.empty(anchor_indexes.shape[0], dtype=np.float64)
+    robust = np.ones(n, dtype=np.float64)
+    for iteration in range(iterations + 1):
+        for anchor_pos in range(anchor_indexes.shape[0]):
+            i = anchor_indexes[anchor_pos]
+            left = i - (window // 2)
+            if left < 0:
+                left = 0
+            if left + window > n:
+                left = n - window
+            right = left + window
+            max_dist = i - left
+            right_dist = right - 1 - i
+            if right_dist > max_dist:
+                max_dist = right_dist
+            if max_dist <= 0:
+                fitted[i] = endog[i]
+                continue
+
+            sw = 0.0
+            swx = 0.0
+            swy = 0.0
+            swxx = 0.0
+            swxy = 0.0
+            for j in range(left, right):
+                scaled = abs(j - i) / max_dist
+                base = 1.0 - scaled * scaled * scaled
+                weight = base * base * base * robust[j]
+                x = j - i
+                y = endog[j]
+                sw += weight
+                swx += weight * x
+                swy += weight * y
+                swxx += weight * x * x
+                swxy += weight * x * y
+
+            denom = (sw * swxx) - (swx * swx)
+            if abs(denom) < 1e-12:
+                anchor_fitted[anchor_pos] = swy / sw if sw > 0 else endog[i]
+            else:
+                anchor_fitted[anchor_pos] = ((swy * swxx) - (swx * swxy)) / denom
+
+        _interpolate_lowess_anchors(anchor_indexes, anchor_fitted, fitted)
+
+        if iteration == iterations:
+            break
+
+        residuals = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            residuals[i] = abs(endog[i] - fitted[i])
+        median_residual = np.median(residuals)
+        if median_residual <= 0:
+            break
+        cutoff = 6.0 * median_residual
+        for i in range(n):
+            scaled_residual = residuals[i] / cutoff
+            if scaled_residual >= 1.0:
+                robust[i] = 0.0
+            else:
+                weight = 1.0 - scaled_residual * scaled_residual
+                robust[i] = weight * weight
+
+
+@njit(cache=True, parallel=True)
+def lowess_evenly_spaced_batched_numba(
+    endog_flat: np.ndarray,
+    offsets: np.ndarray,
+    frac: float,
+    iterations: int,
+    delta: float,
+) -> np.ndarray:
+    """Fit LOWESS independently on each `endog_flat[offsets[c]:offsets[c+1]]` chunk.
+
+    Numerically identical to calling `lowess_evenly_spaced_numba` once per
+    chunk -- each chunk's fit has no cross-chunk dependency, so this only
+    changes the parallelism granularity (one `prange` launch over chunks,
+    instead of one small `prange` launch per chunk over that chunk's
+    anchors). Exists because local-decay's LOWESS chunking (`lowess_window`,
+    default 5,000 of a `dist`-sized array) makes each individual chunk's
+    anchor count too small for `prange` launch overhead to pay for itself --
+    see notes/numba-implementation-plan.md.
+    """
+    fitted_flat = np.empty(endog_flat.shape[0], dtype=np.float64)
+    n_chunks = offsets.shape[0] - 1
+    for chunk_index in prange(n_chunks):
+        start = offsets[chunk_index]
+        stop = offsets[chunk_index + 1]
+        _lowess_fit_chunk_sequential(
+            endog_flat[start:stop], frac, iterations, delta, fitted_flat[start:stop]
+        )
+    return fitted_flat
+
+
+@njit(cache=True)
 def _lowess_anchor_indexes(n: int, delta: float) -> np.ndarray:
     if delta <= 0:
         anchors = np.empty(n, dtype=np.int64)
