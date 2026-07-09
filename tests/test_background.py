@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 from touche.background import (
     compare_background_ratios,
@@ -66,7 +66,7 @@ class BackgroundCompareTests(unittest.TestCase):
                 self.assertTrue(path.exists())
 
     def test_plot_background_scatter_returns_figure_without_writing(self) -> None:
-        data = pd.DataFrame(
+        data = pl.DataFrame(
             {
                 "ratio_DMSO": [1.0, 2.0],
                 "ratio_FLV": [1.5, 2.5],

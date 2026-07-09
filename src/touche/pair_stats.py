@@ -1,111 +1,83 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from touche import __version__
-from touche.io import ParsedPairRecord
-from touche.models import ContactPair, PairStats
+import polars as pl
 
-PairStatsAccumulator = dict[str, object]
+from touche import __version__
+from touche.models import PairStats
+
+DISTANCE_BINS: list[tuple[int, str]] = [
+    (1_000, "<1kb"),
+    (10_000, "1kb-10kb"),
+    (100_000, "10kb-100kb"),
+    (1_000_000, "100kb-1Mb"),
+    (10_000_000, "1Mb-10Mb"),
+]
 
 
 def distance_bin(distance: int) -> str:
-    bins = [
-        (1_000, "<1kb"),
-        (10_000, "1kb-10kb"),
-        (100_000, "10kb-100kb"),
-        (1_000_000, "100kb-1Mb"),
-        (10_000_000, "1Mb-10Mb"),
-    ]
-    for upper, label in bins:
+    for upper, label in DISTANCE_BINS:
         if distance < upper:
             return label
     return ">=10Mb"
 
 
-def new_pair_stats() -> PairStatsAccumulator:
-    return {
-        "total_rows": 0,
-        "parsed_rows": 0,
-        "written_rows": 0,
-        "cis_rows": 0,
-        "trans_rows": 0,
-        "mapq_pass_rows": 0,
-        "mapq_fail_rows": 0,
-        "per_chromosome": Counter(),
-        "distance_histogram": Counter(),
-    }
+def _distance_bin_expr(distance: pl.Expr) -> pl.Expr:
+    expr = pl.when(distance < DISTANCE_BINS[0][0]).then(pl.lit(DISTANCE_BINS[0][1]))
+    for upper, label in DISTANCE_BINS[1:]:
+        expr = expr.when(distance < upper).then(pl.lit(label))
+    return expr.otherwise(pl.lit(">=10Mb"))
 
 
-def observe_contact_pair(
-    stats: PairStatsAccumulator, pair: ContactPair, *, min_mapq: int = 30
-) -> None:
-    observe_pair_values(
-        stats,
-        chrom_a=pair.chrom_a,
-        pos_a=pair.pos_a,
-        chrom_b=pair.chrom_b,
-        pos_b=pair.pos_b,
-        mapq_a=pair.mapq_a,
-        mapq_b=pair.mapq_b,
-        min_mapq=min_mapq,
+def compute_pair_stats(
+    lf: pl.LazyFrame, *, min_mapq: int = 30, written_rows: int = 0
+) -> PairStats:
+    """Compute QC stats from a lazy frame of pairs.
+
+    `lf` must have `chrom_a`/`chrom_b`/`pos_a`/`pos_b`/`mapq_a`/`mapq_b` columns.
+    Aggregations run against the lazy plan with the streaming engine so peak
+    memory is bounded by the number of distinct chromosomes/distance buckets,
+    not the row count.
+    """
+
+    lf = lf.with_columns(
+        (pl.col("chrom_a") == pl.col("chrom_b")).alias("is_cis"),
+        ((pl.col("mapq_a") >= min_mapq) & (pl.col("mapq_b") >= min_mapq)).alias("mapq_pass"),
+    )
+    totals = (
+        lf.select(
+            pl.len().alias("total_rows"),
+            pl.col("is_cis").sum().alias("cis_rows"),
+            (~pl.col("is_cis")).sum().alias("trans_rows"),
+            pl.col("mapq_pass").sum().alias("mapq_pass_rows"),
+            (~pl.col("mapq_pass")).sum().alias("mapq_fail_rows"),
+        )
+        .collect(engine="streaming")
+        .row(0, named=True)
     )
 
-
-def observe_parsed_pair(
-    stats: PairStatsAccumulator, record: ParsedPairRecord, *, min_mapq: int = 30
-) -> None:
-    observe_pair_values(
-        stats,
-        chrom_a=record.chrom_a,
-        pos_a=record.pos_a,
-        chrom_b=record.chrom_b,
-        pos_b=record.pos_b,
-        mapq_a=record.mapq_a,
-        mapq_b=record.mapq_b,
-        min_mapq=min_mapq,
+    cis_lf = lf.filter(pl.col("is_cis")).with_columns(
+        _distance_bin_expr((pl.col("pos_b") - pl.col("pos_a")).abs()).alias("distance_bin")
     )
+    per_chrom = cis_lf.group_by("chrom_a").agg(pl.len().alias("n")).collect(engine="streaming")
+    per_chromosome = dict(sorted(zip(per_chrom["chrom_a"].to_list(), per_chrom["n"].to_list())))
 
+    hist = cis_lf.group_by("distance_bin").agg(pl.len().alias("n")).collect(engine="streaming")
+    distance_histogram = dict(zip(hist["distance_bin"].to_list(), hist["n"].to_list()))
 
-def observe_pair_values(
-    stats: PairStatsAccumulator,
-    *,
-    chrom_a: str,
-    pos_a: int,
-    chrom_b: str,
-    pos_b: int,
-    mapq_a: int,
-    mapq_b: int,
-    min_mapq: int = 30,
-) -> None:
-    stats["total_rows"] += 1
-    stats["parsed_rows"] += 1
-    if chrom_a == chrom_b:
-        stats["cis_rows"] += 1
-        stats["per_chromosome"][chrom_a] += 1
-        stats["distance_histogram"][distance_bin(abs(pos_b - pos_a))] += 1
-    else:
-        stats["trans_rows"] += 1
-    if mapq_a >= min_mapq and mapq_b >= min_mapq:
-        stats["mapq_pass_rows"] += 1
-    else:
-        stats["mapq_fail_rows"] += 1
-
-
-def freeze_pair_stats(stats: PairStatsAccumulator) -> PairStats:
     return PairStats(
-        total_rows=int(stats["total_rows"]),
-        parsed_rows=int(stats["parsed_rows"]),
-        written_rows=int(stats["written_rows"]),
-        cis_rows=int(stats["cis_rows"]),
-        trans_rows=int(stats["trans_rows"]),
-        mapq_pass_rows=int(stats["mapq_pass_rows"]),
-        mapq_fail_rows=int(stats["mapq_fail_rows"]),
-        per_chromosome=dict(sorted(stats["per_chromosome"].items())),
-        distance_histogram=dict(stats["distance_histogram"]),
+        total_rows=int(totals["total_rows"]),
+        parsed_rows=int(totals["total_rows"]),
+        written_rows=written_rows,
+        cis_rows=int(totals["cis_rows"]),
+        trans_rows=int(totals["trans_rows"]),
+        mapq_pass_rows=int(totals["mapq_pass_rows"]),
+        mapq_fail_rows=int(totals["mapq_fail_rows"]),
+        per_chromosome=per_chromosome,
+        distance_histogram=distance_histogram,
     )
 
 

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 from touche.apa import compare_apa_change, plot_apa_change
 
@@ -22,14 +22,16 @@ class ApaCompareTests(unittest.TestCase):
             out = tmp_path / "change.svg"
             matrix_out = tmp_path / "change.csv"
 
-            pd.DataFrame([[10, 20], [30, 40]], index=[-1, 1], columns=[-1, 1]).to_csv(control_apa)
-            pd.DataFrame([[20, 40], [60, 80]], index=[-1, 1], columns=[-1, 1]).to_csv(
+            pl.DataFrame({"bin_label": [-1, 1], "-1": [10, 30], "1": [20, 40]}).write_csv(
+                control_apa
+            )
+            pl.DataFrame({"bin_label": [-1, 1], "-1": [20, 60], "1": [40, 80]}).write_csv(
                 treatment_apa
             )
-            pd.DataFrame({"contacts": [10, 10]}, index=[-1, 1]).to_csv(control_baits)
-            pd.DataFrame({"contacts": [10, 10]}, index=[-1, 1]).to_csv(control_preys)
-            pd.DataFrame({"contacts": [20, 20]}, index=[-1, 1]).to_csv(treatment_baits)
-            pd.DataFrame({"contacts": [20, 20]}, index=[-1, 1]).to_csv(treatment_preys)
+            pl.DataFrame({"bin_label": [-1, 1], "contacts": [10, 10]}).write_csv(control_baits)
+            pl.DataFrame({"bin_label": [-1, 1], "contacts": [10, 10]}).write_csv(control_preys)
+            pl.DataFrame({"bin_label": [-1, 1], "contacts": [20, 20]}).write_csv(treatment_baits)
+            pl.DataFrame({"bin_label": [-1, 1], "contacts": [20, 20]}).write_csv(treatment_preys)
 
             matrix = compare_apa_change(
                 control_apa,
@@ -46,13 +48,14 @@ class ApaCompareTests(unittest.TestCase):
                 pixels=1,
             )
 
-            self.assertEqual(matrix.shape, (2, 2))
-            self.assertTrue((matrix == 1.0).all().all())
+            values = matrix.drop("bin_label").to_numpy()
+            self.assertEqual(values.shape, (2, 2))
+            self.assertTrue((values == 1.0).all())
             self.assertTrue(out.exists())
             self.assertTrue(matrix_out.exists())
 
     def test_plot_apa_change_returns_figure_without_writing(self) -> None:
-        matrix = pd.DataFrame([[1.0, 2.0], [2.0, 1.0]], index=[-1, 1], columns=[-1, 1])
+        matrix = pl.DataFrame({"bin_label": [-1, 1], "-1": [1.0, 2.0], "1": [2.0, 1.0]})
 
         fig = plot_apa_change(matrix, window=1_000, pixels=1)
 

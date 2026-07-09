@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
+import polars as pl
+from polars.testing import assert_frame_equal
 
 from touche.anchors import read_bed_anchors
 from touche.backends import has_numba
@@ -52,11 +53,13 @@ class BackgroundCountTests(unittest.TestCase):
             )
 
             self.assertEqual(len(result), 1)
-            self.assertEqual(result.iloc[0]["EP_contacts"], 1)
-            self.assertEqual(result.iloc[0]["BG_contacts"], 2)
-            written = pd.read_csv(out, sep="\t", names=["chr", "bait", "prey", "ep", "bg"])
-            self.assertEqual(written.iloc[0]["ep"], 1)
-            self.assertEqual(written.iloc[0]["bg"], 2)
+            self.assertEqual(result[0, "EP_contacts"], 1)
+            self.assertEqual(result[0, "BG_contacts"], 2)
+            written = pl.read_csv(
+                out, separator="\t", has_header=False, new_columns=["chr", "bait", "prey", "ep", "bg"]
+            )
+            self.assertEqual(written[0, "ep"], 1)
+            self.assertEqual(written[0, "bg"], 2)
 
     def test_compute_ep_and_background_accepts_in_memory_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -83,7 +86,7 @@ class BackgroundCountTests(unittest.TestCase):
             )
 
             self.assertEqual(len(result), 1)
-            self.assertEqual(result.iloc[0]["EP_contacts"], 1)
+            self.assertEqual(result[0, "EP_contacts"], 1)
 
     @unittest.skipUnless(has_numba(), "numba extra is not installed")
     def test_numba_background_backend_matches_numpy_counts(self) -> None:
@@ -98,7 +101,7 @@ class BackgroundCountTests(unittest.TestCase):
                 mapq_b=np.asarray([30] * 7, dtype=np.int64),
             )
         }
-        baits = pd.DataFrame(
+        baits = pl.DataFrame(
             {
                 "chr": ["chr1", "chr1"],
                 "start": [95, 495],
@@ -107,7 +110,7 @@ class BackgroundCountTests(unittest.TestCase):
                 "center": [100, 500],
             }
         )
-        preys = pd.DataFrame(
+        preys = pl.DataFrame(
             {
                 "chr": ["chr1", "chr1"],
                 "start": [295, 695],
@@ -127,14 +130,14 @@ class BackgroundCountTests(unittest.TestCase):
         numpy_result = compute_ep_and_background(indexes, baits, preys, backend="numpy", **kwargs)
         numba_result = compute_ep_and_background(indexes, baits, preys, backend="numba", **kwargs)
 
-        pd.testing.assert_frame_equal(numba_result, numpy_result)
+        assert_frame_equal(numba_result, numpy_result)
 
     def test_invalid_background_backend_raises(self) -> None:
         with self.assertRaisesRegex(ValueError, "backend"):
             compute_ep_and_background(
                 {},
-                pd.DataFrame(columns=["chr", "center"]),
-                pd.DataFrame(columns=["chr", "center"]),
+                pl.DataFrame(schema=["chr", "center"]),
+                pl.DataFrame(schema=["chr", "center"]),
                 min_distance=150,
                 max_distance=250,
                 window=10,

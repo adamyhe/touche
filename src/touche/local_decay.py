@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from touche.backends import validate_backend
@@ -49,6 +49,18 @@ LOCAL_DECAY_OUTPUT_COLUMNS = [
     "expected_background",
 ]
 
+_LOCAL_DECAY_SCHEMA = {
+    "chr": pl.Utf8,
+    "bait_center": pl.Int64,
+    "prey_center": pl.Int64,
+    "directional_distance": pl.Int64,
+    "p_value": pl.Float64,
+    "observed": pl.Int64,
+    "expected": pl.Float64,
+    "observed_background": pl.Int64,
+    "expected_background": pl.Float64,
+}
+
 
 def call_local_decay(
     baits_path: str | Path,
@@ -71,7 +83,7 @@ def call_local_decay(
     require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Call bait-prey contacts normalized by local distance decay.
 
     This ports the reference ``ContactCaller_microC.py`` workflow without
@@ -156,7 +168,7 @@ def call_local_decay(
     with instrument.step("write calls"):
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        calls.to_csv(out_path, sep="\t", header=False, index=False)
+        calls.write_csv(out_path, include_header=False, separator="\t")
     return calls
 
 
@@ -194,8 +206,8 @@ def _ensure_local_decay_cache(
 
 
 def _call_local_decay_by_chromosome(
-    baits: pd.DataFrame,
-    preys: pd.DataFrame,
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
     pairs_path: str | Path,
     *,
     dist: int,
@@ -208,18 +220,19 @@ def _call_local_decay_by_chromosome(
     lowess_backend: str,
     lowess_iterations: int,
     progress: Instrumentation,
-) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    grouped_baits = list(baits.groupby("chr", sort=False))
+) -> pl.DataFrame:
+    frames: list[pl.DataFrame] = []
+    chrom_list = baits["chr"].unique(maintain_order=True).to_list()
     chrom_iter = progress.iter(
-        grouped_baits,
-        total=len(grouped_baits),
+        chrom_list,
+        total=len(chrom_list),
         desc="local-decay index chromosomes",
         unit="chrom",
     )
-    for chrom, chrom_baits in chrom_iter:
-        chrom_preys = preys.loc[preys["chr"] == chrom]
-        if chrom_preys.empty:
+    for chrom in chrom_iter:
+        chrom_baits = baits.filter(pl.col("chr") == chrom)
+        chrom_preys = preys.filter(pl.col("chr") == chrom)
+        if chrom_preys.is_empty():
             continue
         with progress.step(f"build contact index {chrom}"):
             indexes = build_contact_indexes(
@@ -248,13 +261,13 @@ def _call_local_decay_by_chromosome(
             )
         )
     if not frames:
-        return pd.DataFrame(columns=LOCAL_DECAY_OUTPUT_COLUMNS)
-    return pd.concat(frames, ignore_index=True)
+        return pl.DataFrame(schema=_LOCAL_DECAY_SCHEMA)
+    return pl.concat(frames)
 
 
 def _call_local_decay_from_cache(
-    baits: pd.DataFrame,
-    preys: pd.DataFrame,
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
     *,
     cache_dir: str | Path | None,
     cache_prefix: str,
@@ -267,22 +280,23 @@ def _call_local_decay_from_cache(
     lowess_backend: str,
     lowess_iterations: int,
     progress: Instrumentation,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     if cache_dir is None:
         raise ValueError("cache_dir is required when loading local-decay indexes from cache")
     cache_paths = load_npz_cache_manifest(cache_dir, prefix=cache_prefix)
-    frames: list[pd.DataFrame] = []
-    grouped_baits = list(baits.groupby("chr", sort=False))
+    frames: list[pl.DataFrame] = []
+    chrom_list = baits["chr"].unique(maintain_order=True).to_list()
     chrom_iter = progress.iter(
-        grouped_baits,
-        total=len(grouped_baits),
+        chrom_list,
+        total=len(chrom_list),
         desc="local-decay cache chromosomes",
         unit="chrom",
     )
-    for chrom, chrom_baits in chrom_iter:
-        chrom_preys = preys.loc[preys["chr"] == chrom]
+    for chrom in chrom_iter:
+        chrom_baits = baits.filter(pl.col("chr") == chrom)
+        chrom_preys = preys.filter(pl.col("chr") == chrom)
         cache_path = cache_paths.get(str(chrom))
-        if chrom_preys.empty or cache_path is None:
+        if chrom_preys.is_empty() or cache_path is None:
             continue
         with progress.step(f"load contact cache {chrom}"):
             index = load_npz_cache(cache_path, include_metadata=False)
@@ -303,14 +317,14 @@ def _call_local_decay_from_cache(
             )
         )
     if not frames:
-        return pd.DataFrame(columns=LOCAL_DECAY_OUTPUT_COLUMNS)
-    return pd.concat(frames, ignore_index=True)
+        return pl.DataFrame(schema=_LOCAL_DECAY_SCHEMA)
+    return pl.concat(frames)
 
 
 def compute_local_decay(
     indexes: dict[str, ContactIndex],
-    baits: pd.DataFrame,
-    preys: pd.DataFrame,
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
     *,
     dist: int = 1_000_000,
     cap: int = 2_000,
@@ -322,7 +336,7 @@ def compute_local_decay(
     lowess_iterations: int = 3,
     progress: bool | Instrumentation = False,
     profile: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Call local-decay contacts from in-memory contact indexes and center anchors."""
 
     if dist <= 0:
@@ -339,8 +353,8 @@ def compute_local_decay(
 
     instrument = make_instrumentation(progress, profile=profile)
     records: list[dict[str, float | int | str]] = []
-    grouped_baits = list(baits.groupby("chr", sort=False))
-    total_baits = int(sum(len(chrom_baits) for _, chrom_baits in grouped_baits))
+    chrom_list = baits["chr"].unique(maintain_order=True).to_list() if baits.height else []
+    total_baits = baits.height
     bait_progress = instrument.iter(
         range(total_baits),
         total=total_baits,
@@ -350,21 +364,22 @@ def compute_local_decay(
     bait_progress_iter = iter(bait_progress)
 
     chrom_iter = instrument.iter(
-        grouped_baits,
-        total=len(grouped_baits),
+        chrom_list,
+        total=len(chrom_list),
         desc="local-decay chromosomes",
         unit="chrom",
     )
-    for chrom, chrom_baits in chrom_iter:
-        chrom_preys = preys.loc[preys["chr"] == chrom].sort_values("center")
+    for chrom in chrom_iter:
+        chrom_baits = baits.filter(pl.col("chr") == chrom)
+        chrom_preys = preys.filter(pl.col("chr") == chrom).sort("center")
         index = indexes.get(chrom)
-        if index is None or chrom_preys.empty:
-            for _ in chrom_baits["center"]:
+        if index is None or chrom_preys.is_empty():
+            for _ in range(chrom_baits.height):
                 next(bait_progress_iter, None)
             continue
         normalized = _ordered_cis_index(index)
-        prey_centers = chrom_preys["center"].to_numpy(dtype=np.int64)
-        for bait_center in chrom_baits["center"].to_numpy(dtype=np.int64):
+        prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
+        for bait_center in chrom_baits["center"].to_numpy().astype(np.int64):
             next(bait_progress_iter, None)
             start = int(max(0, bait_center - dist))
             stop = int(bait_center + dist)
@@ -389,8 +404,7 @@ def compute_local_decay(
                 )
             )
 
-    calls = pd.DataFrame.from_records(records, columns=LOCAL_DECAY_OUTPUT_COLUMNS)
-    return calls
+    return pl.DataFrame(records, schema=_LOCAL_DECAY_SCHEMA)
 
 
 def assign_pair_types(
@@ -398,45 +412,40 @@ def assign_pair_types(
     functional_path: str | Path,
     nonfunctional_path: str | Path,
     out_path: str | Path,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Assign local-decay contacts to positive, negative, or other pair classes."""
 
-    contacts = pd.read_csv(
-        contacts_path,
-        sep="\t",
-        usecols=[0, 1, 2, 3, 5, 6],
-        names=CONTACT_COLUMNS,
-    )
-    contacts["distance"] = contacts["directional_distance"].abs()
+    raw = pl.read_csv(contacts_path, separator="\t", has_header=False)
+    source_columns = ["column_1", "column_2", "column_3", "column_4", "column_6", "column_7"]
+    contacts = raw.select(source_columns)
+    contacts.columns = CONTACT_COLUMNS
+    contacts = contacts.with_columns(pl.col("directional_distance").abs().alias("distance"))
 
     functional_keys = _read_pair_keys(functional_path)
     nonfunctional_keys = _read_pair_keys(nonfunctional_path)
-    contact_keys = pd.MultiIndex.from_frame(contacts[PAIR_KEY_COLUMNS])
+    key_struct = pl.struct(PAIR_KEY_COLUMNS)
 
-    contacts["PosNeg"] = np.select(
-        [
-            contact_keys.isin(functional_keys),
-            contact_keys.isin(nonfunctional_keys),
-        ],
-        [
-            "positive",
-            "negative",
-        ],
-        default="other",
+    contacts = contacts.with_columns(
+        pl.when(key_struct.is_in(functional_keys.implode()))
+        .then(pl.lit("positive"))
+        .when(key_struct.is_in(nonfunctional_keys.implode()))
+        .then(pl.lit("negative"))
+        .otherwise(pl.lit("other"))
+        .alias("PosNeg")
     )
-    contacts.to_csv(out_path, sep="\t")
+    contacts.write_csv(out_path, separator="\t")
     return contacts
 
 
 def plot_pair_type_distribution(
-    assignments: str | Path | pd.DataFrame,
+    assignments: str | Path | pl.DataFrame,
     out_path: str | Path | None = None,
     *,
     min_contacts: int = 1,
     min_distance: int = 15_000,
     plot_table_out: str | Path | None = None,
     reference_style: bool = True,
-) -> tuple[pd.DataFrame, "Figure"]:
+) -> tuple[pl.DataFrame, "Figure"]:
     """Plot observed/expected contact distributions by assigned pair type."""
 
     import matplotlib
@@ -444,20 +453,19 @@ def plot_pair_type_distribution(
     matplotlib.use("Agg")
     import seaborn as sns
 
-    if isinstance(assignments, pd.DataFrame):
-        contacts = assignments.copy()
+    if isinstance(assignments, pl.DataFrame):
+        contacts = assignments
     else:
-        contacts = pd.read_csv(assignments, sep="\t", index_col=0)
-    contacts.index = range(len(contacts.index))
-    filtered = contacts.loc[
-        (contacts["observed"] >= min_contacts)
-        & (contacts["expected"] >= min_contacts)
-        & (contacts["distance"] >= min_distance)
-    ].copy()
-    filtered["Obs/Exp"] = np.log2(filtered["observed"] / filtered["expected"])
+        contacts = pl.read_csv(assignments, separator="\t")
+
+    filtered = contacts.filter(
+        (pl.col("observed") >= min_contacts)
+        & (pl.col("expected") >= min_contacts)
+        & (pl.col("distance") >= min_distance)
+    ).with_columns((pl.col("observed") / pl.col("expected")).log(2).alias("Obs/Exp"))
 
     if plot_table_out is not None:
-        filtered.to_csv(plot_table_out, sep="\t", index=False)
+        filtered.write_csv(plot_table_out, separator="\t")
 
     if reference_style:
         figsize = (6, 8)
@@ -467,17 +475,16 @@ def plot_pair_type_distribution(
     else:
         figsize = (6, 6)
         palette = "deep"
-        order = sorted(filtered["PosNeg"].dropna().unique())
+        order = sorted(filtered["PosNeg"].drop_nulls().unique().to_list())
         xtick_labels = order
 
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=figsize)
     sns.violinplot(
-        x="PosNeg",
-        y="Obs/Exp",
-        hue="PosNeg",
-        data=filtered,
+        x=filtered["PosNeg"].to_numpy(),
+        y=filtered["Obs/Exp"].to_numpy(),
+        hue=filtered["PosNeg"].to_numpy(),
         showfliers=False,
         palette=palette,
         order=order,
@@ -496,15 +503,15 @@ def plot_pair_type_distribution(
     return filtered, fig
 
 
-def _read_pair_keys(path: str | Path) -> pd.MultiIndex:
-    data = pd.read_csv(path)
+def _read_pair_keys(path: str | Path) -> pl.Series:
+    data = pl.read_csv(path)
     missing = [column for column in PAIR_KEY_COLUMNS if column not in data.columns]
     if missing:
         raise ValueError(f"Missing required pair key columns in {path}: {', '.join(missing)}")
-    return pd.MultiIndex.from_frame(data[PAIR_KEY_COLUMNS])
+    return data.select(pl.struct(PAIR_KEY_COLUMNS).alias("key"))["key"]
 
 
-def read_center_anchors(path: str | Path) -> pd.DataFrame:
+def read_center_anchors(path: str | Path) -> pl.DataFrame:
     """Read local-decay two-column or BED-like anchors with integer centers."""
 
     rows: list[tuple[str, int]] = []
@@ -522,7 +529,7 @@ def read_center_anchors(path: str | Path) -> pd.DataFrame:
             else:
                 center = int(fields[1])
             rows.append((chrom, center))
-    return pd.DataFrame(rows, columns=["chr", "center"])
+    return pl.DataFrame(rows, schema=["chr", "center"], orient="row")
 
 
 _read_center_anchors = read_center_anchors
@@ -649,7 +656,7 @@ def _call_bait_contacts(
         )
         records.append(
             {
-                "chr": _with_chr_prefix(index.chrom),
+                "chr": index.chrom if index.chrom.startswith("chr") else f"chr{index.chrom}",
                 "bait_center": int(bait_center),
                 "prey_center": int(prey_center),
                 "directional_distance": directional_distance,
@@ -822,7 +829,3 @@ def _lowess_evenly_spaced_numba(
     return lowess_evenly_spaced_numba(
         np.asarray(endog, dtype=np.float64), float(frac), int(it), float(delta)
     )
-
-
-def _with_chr_prefix(chrom: str) -> str:
-    return chrom if chrom.startswith("chr") else f"chr{chrom}"

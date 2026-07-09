@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Adam He" }]
 dependencies = [
   "numpy",
-  "pandas",
+  "polars",
   "scipy",
   "statsmodels",
   "matplotlib",
@@ -23,7 +23,6 @@ dependencies = [
 
 [project.optional-dependencies]
 fast = ["numba"]
-io = ["polars", "pyarrow"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "mypy"]

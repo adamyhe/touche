@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
 import json
-import os
-import signal
-import subprocess
 import sys
-import threading
 import time
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from _report import (
+    BenchmarkResult,
+    BenchmarkStep,
+    result_to_record,
+    run_profiled_step,
+    write_profile_report,
+)
+
+from touche.backends import has_numba
 
 REFERENCE_RAW_BASE = "https://raw.githubusercontent.com/Danko-Lab/E-P_contacts/main/Input_files"
 GEO_BASE = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE206nnn/GSE206131/suppl"
@@ -33,34 +37,13 @@ MESC_BAITS = "dREG_based_promoters_with_STARTseq_based_maxTSS_mm10_200bp_centere
 MESC_PREYS = "dREG_based_TREs_with_STARTseq_based_maxTSS_mm10_200bp_centered_on_maxTSS_chr_start_end_strand.bed"
 
 
-@dataclass(frozen=True, slots=True)
 class Download:
-    name: str
-    url: str
-    path: Path
+    __slots__ = ("name", "url", "path")
 
-
-@dataclass(frozen=True, slots=True)
-class BenchmarkStep:
-    name: str
-    group: str
-    command: list[str]
-    outputs: list[Path] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class BenchmarkResult:
-    name: str
-    group: str
-    command: list[str]
-    returncode: int
-    signal_name: str | None
-    elapsed_seconds: float
-    peak_rss_mb: float | None
-    stdout_log: str
-    stderr_log: str
-    outputs: dict[str, int | None]
-    command_json: Any | None = None
+    def __init__(self, name: str, url: str, path: Path) -> None:
+        self.name = name
+        self.url = url
+        self.path = path
 
 
 def main() -> int:
@@ -72,7 +55,15 @@ def main() -> int:
     )
     parser.add_argument("--work-dir", type=Path, default=Path("benchmark/reference-real-data"))
     parser.add_argument("--python", default=sys.executable, help="Python executable for -m touche")
-    parser.add_argument("--backend", choices=["numpy", "numba"], default="numpy")
+    parser.add_argument(
+        "--backend",
+        choices=["numpy", "numba", "both"],
+        default="both",
+        help=(
+            "Which backend(s) to benchmark. 'both' (default) runs numpy and numba side by "
+            "side and adds a speedup report; falls back to numpy-only if numba isn't installed."
+        ),
+    )
     parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="statsmodels")
     parser.add_argument("--lowess-iterations", type=int, default=3)
     parser.add_argument("--poll-interval", type=float, default=0.25)
@@ -113,22 +104,40 @@ def main() -> int:
     for path in [data_dir, output_dir, logs_dir]:
         path.mkdir(parents=True, exist_ok=True)
 
+    backends = resolve_backends(args.backend)
+
     if args.plot_only:
         result_dicts = read_results_jsonl(results_jsonl)
         if not args.no_report:
-            write_profile_report(result_dicts, report_dir=report_dir)
+            speedup_pairs = speedup_pairs_from_records(result_dicts, backends)
+            plot_gallery = plot_gallery_from_records(result_dicts)
+            write_profile_report(
+                result_dicts,
+                report_dir=report_dir,
+                speedup_pairs=speedup_pairs,
+                plot_gallery=plot_gallery,
+            )
         return 0
 
     downloads = reference_downloads(data_dir)
-    steps = reference_steps(
-        python=args.python,
-        data_dir=data_dir,
-        output_dir=output_dir,
-        backend=args.backend,
-        lowess_backend=args.lowess_backend,
-        lowess_iterations=args.lowess_iterations,
-        progress=args.progress,
-    )
+    cache_steps, cache_paths = build_cache_steps(python=args.python, data_dir=data_dir, output_dir=output_dir)
+    backend_step_lists: dict[str, list[BenchmarkStep]] = {}
+    for backend in backends:
+        backend_step_lists[backend] = build_backend_steps(
+            python=args.python,
+            data_dir=data_dir,
+            output_dir=output_dir / backend if len(backends) > 1 else output_dir,
+            backend=backend,
+            k562_cache_dir=cache_paths["k562"],
+            lowess_backend=args.lowess_backend,
+            lowess_iterations=args.lowess_iterations,
+            progress=args.progress,
+            name_suffix=f"-{backend}" if len(backends) > 1 else "",
+        )
+    steps = list(cache_steps)
+    for backend in backends:
+        steps.extend(backend_step_lists[backend])
+
     if args.steps:
         requested = set(args.steps)
         known = {step.name for step in steps}
@@ -138,7 +147,7 @@ def main() -> int:
         steps = [step for step in steps if step.name in requested]
 
     if args.dry_run:
-        print_plan(downloads, steps)
+        print_plan(downloads, steps, backends)
         return 0
 
     download_records: list[dict[str, Any]] = []
@@ -153,7 +162,7 @@ def main() -> int:
             results_jsonl=results_jsonl,
         )
         return 0
-    validate_benchmark_cache_requirements(steps, output_dir)
+    validate_benchmark_cache_requirements(steps, cache_paths)
 
     results: list[BenchmarkResult] = []
     with results_jsonl.open("w", encoding="utf-8") as handle:
@@ -180,7 +189,7 @@ def main() -> int:
             results.append(result)
             handle.write(json.dumps(asdict(result), sort_keys=True) + "\n")
             handle.flush()
-            missing_outputs = missing_output_paths(result_to_record(result))
+            missing_outputs = missing_output_paths_local(result_to_record(result))
             missing_output_failure = (
                 args.fail_on_missing_output and result.returncode == 0 and missing_outputs
             )
@@ -190,7 +199,7 @@ def main() -> int:
                     f"{', '.join(missing_outputs)}",
                     file=sys.stderr,
                 )
-            if result.returncode != 0 and not args.keep_going:
+            if (result.returncode != 0 or missing_output_failure) and not args.keep_going:
                 write_manifest(
                     manifest_json,
                     args=args,
@@ -199,25 +208,8 @@ def main() -> int:
                     results_jsonl=results_jsonl,
                 )
                 if not args.no_report:
-                    write_profile_report(
-                        [result_to_record(item) for item in results],
-                        report_dir=report_dir,
-                    )
-                return result.returncode
-            if missing_output_failure and not args.keep_going:
-                write_manifest(
-                    manifest_json,
-                    args=args,
-                    downloads=download_records,
-                    results=results,
-                    results_jsonl=results_jsonl,
-                )
-                if not args.no_report:
-                    write_profile_report(
-                        [result_to_record(item) for item in results],
-                        report_dir=report_dir,
-                    )
-                return 2
+                    write_final_report(results, backends, report_dir=report_dir, no_report=False)
+                return result.returncode if result.returncode != 0 else 2
 
     write_manifest(
         manifest_json,
@@ -226,9 +218,69 @@ def main() -> int:
         results=results,
         results_jsonl=results_jsonl,
     )
-    if not args.no_report:
-        write_profile_report([result_to_record(item) for item in results], report_dir=report_dir)
+    write_final_report(results, backends, report_dir=report_dir, no_report=args.no_report)
     return 0
+
+
+def resolve_backends(requested: str) -> list[str]:
+    if requested in {"numpy", "numba"}:
+        return [requested]
+    if not has_numba():
+        print(
+            "numba is not installed; falling back to numpy-only "
+            "(install with `uv sync --extra fast` to get a numpy vs. numba comparison)",
+            file=sys.stderr,
+        )
+        return ["numpy"]
+    return ["numpy", "numba"]
+
+
+def write_final_report(
+    results: list[BenchmarkResult], backends: list[str], *, report_dir: Path, no_report: bool
+) -> None:
+    if no_report:
+        return
+    records = [result_to_record(item) for item in results]
+    speedup_pairs = speedup_pairs_from_records(records, backends)
+    plot_gallery = plot_gallery_from_records(records)
+    write_profile_report(
+        records, report_dir=report_dir, speedup_pairs=speedup_pairs, plot_gallery=plot_gallery
+    )
+
+
+def speedup_pairs_from_records(
+    records: list[dict[str, Any]], backends: list[str]
+) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    if "numpy" not in backends or "numba" not in backends:
+        return []
+    by_name = {record.get("name"): record for record in records}
+    pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for name, record in by_name.items():
+        if not isinstance(name, str) or not name.endswith("-numpy"):
+            continue
+        base = name[: -len("-numpy")]
+        numba_record = by_name.get(f"{base}-numba")
+        if numba_record is not None:
+            pairs.append((base, record, numba_record))
+    return pairs
+
+
+def plot_gallery_from_records(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+    gallery: list[dict[str, str]] = []
+    for record in records:
+        outputs = record.get("outputs") or {}
+        if not isinstance(outputs, dict):
+            continue
+        for output_path, size in outputs.items():
+            if isinstance(size, int) and size > 0 and output_path.endswith(".svg"):
+                gallery.append(
+                    {
+                        "title": f"{record.get('name', '')}: {Path(output_path).name}",
+                        "group": str(record.get("group", "")),
+                        "src_svg": output_path,
+                    }
+                )
+    return gallery
 
 
 def reference_downloads(data_dir: Path) -> list[Download]:
@@ -251,43 +303,22 @@ def reference_downloads(data_dir: Path) -> list[Download]:
     ]
 
 
-def reference_steps(
-    *,
-    python: str,
-    data_dir: Path,
-    output_dir: Path,
-    backend: str,
-    lowess_backend: str,
-    lowess_iterations: int,
-    progress: bool,
-) -> list[BenchmarkStep]:
-    input_dir = data_dir / "Input_files"
-    k562_pairs = data_dir / K562_PAIRS
-    dmso_pairs = data_dir / DMSO_PAIRS
-    flv_pairs = data_dir / FLV_PAIRS
-    trp_pairs = data_dir / TRP_PAIRS
-    baits_local = input_dir / LOCAL_DECAY_BAITS
-    preys_local = input_dir / LOCAL_DECAY_PREYS
-    functional = input_dir / LOCAL_DECAY_FUNCTIONAL
-    nonfunctional = input_dir / LOCAL_DECAY_NONFUNCTIONAL
-    baits_mesc = input_dir / MESC_BAITS
-    preys_mesc = input_dir / MESC_PREYS
-    common_profile = ["--profile", *(("--progress",) if progress else ())]
+def build_cache_steps(
+    *, python: str, data_dir: Path, output_dir: Path
+) -> tuple[list[BenchmarkStep], dict[str, Path]]:
+    """Steps that don't depend on backend: build NPZ caches shared by every backend run."""
 
-    local_dir = output_dir / "local-decay"
-    apa_dir = output_dir / "apa"
-    background_dir = output_dir / "background"
     cache_dir = output_dir / "caches"
-    k562_cache_dir = cache_dir / "k562"
-
     steps: list[BenchmarkStep] = []
+    cache_paths: dict[str, Path] = {}
     for label, pairs in [
-        ("k562", k562_pairs),
-        ("dmso", dmso_pairs),
-        ("flv", flv_pairs),
-        ("trp", trp_pairs),
+        ("k562", data_dir / K562_PAIRS),
+        ("dmso", data_dir / DMSO_PAIRS),
+        ("flv", data_dir / FLV_PAIRS),
+        ("trp", data_dir / TRP_PAIRS),
     ]:
         cache_out = cache_dir / label
+        cache_paths[label] = cache_out
         qc_out = cache_out / f"{label}.qc.json"
         steps.append(
             BenchmarkStep(
@@ -310,6 +341,39 @@ def reference_steps(
                 outputs=[cache_out, qc_out],
             )
         )
+    return steps, cache_paths
+
+
+def build_backend_steps(
+    *,
+    python: str,
+    data_dir: Path,
+    output_dir: Path,
+    backend: str,
+    k562_cache_dir: Path,
+    lowess_backend: str,
+    lowess_iterations: int,
+    progress: bool,
+    name_suffix: str,
+) -> list[BenchmarkStep]:
+    input_dir = data_dir / "Input_files"
+    dmso_pairs = data_dir / DMSO_PAIRS
+    flv_pairs = data_dir / FLV_PAIRS
+    trp_pairs = data_dir / TRP_PAIRS
+    k562_pairs = data_dir / K562_PAIRS
+    baits_local = input_dir / LOCAL_DECAY_BAITS
+    preys_local = input_dir / LOCAL_DECAY_PREYS
+    functional = input_dir / LOCAL_DECAY_FUNCTIONAL
+    nonfunctional = input_dir / LOCAL_DECAY_NONFUNCTIONAL
+    baits_mesc = input_dir / MESC_BAITS
+    preys_mesc = input_dir / MESC_PREYS
+    common_profile = ["--profile", *(("--progress",) if progress else ())]
+
+    local_dir = output_dir / "local-decay"
+    apa_dir = output_dir / "apa"
+    background_dir = output_dir / "background"
+
+    steps: list[BenchmarkStep] = []
 
     local_calls = local_dir / "ContactCaller_microC_output.tsv"
     local_assignments = (
@@ -320,7 +384,7 @@ def reference_steps(
     steps.extend(
         [
             BenchmarkStep(
-                name="local-decay-call",
+                name=f"local-decay-call{name_suffix}",
                 group="local-decay",
                 command=touche_cmd(
                     python,
@@ -356,7 +420,7 @@ def reference_steps(
                 outputs=[local_calls],
             ),
             BenchmarkStep(
-                name="local-decay-assign-pair-types",
+                name=f"local-decay-assign-pair-types{name_suffix}",
                 group="local-decay",
                 command=touche_cmd(
                     python,
@@ -374,7 +438,7 @@ def reference_steps(
                 outputs=[local_assignments],
             ),
             BenchmarkStep(
-                name="local-decay-plot",
+                name=f"local-decay-plot{name_suffix}",
                 group="local-decay",
                 command=touche_cmd(
                     python,
@@ -405,7 +469,7 @@ def reference_steps(
         sample_dir = apa_outputs[label]
         steps.append(
             BenchmarkStep(
-                name=f"apa-aggregate-{label}",
+                name=f"apa-aggregate-{label}{name_suffix}",
                 group="apa",
                 command=touche_cmd(
                     python,
@@ -444,7 +508,7 @@ def reference_steps(
         compare_dir = apa_dir / f"{label.upper()}_vs_DMSO"
         steps.append(
             BenchmarkStep(
-                name=f"apa-compare-{label}-vs-dmso",
+                name=f"apa-compare-{label}-vs-dmso{name_suffix}",
                 group="apa",
                 command=touche_cmd(
                     python,
@@ -487,7 +551,7 @@ def reference_steps(
     for label, pairs in [("dmso", dmso_pairs), ("flv", flv_pairs), ("trp", trp_pairs)]:
         steps.append(
             BenchmarkStep(
-                name=f"background-count-{label}",
+                name=f"background-count-{label}{name_suffix}",
                 group="background",
                 command=touche_cmd(
                     python,
@@ -520,7 +584,7 @@ def reference_steps(
         )
     steps.append(
         BenchmarkStep(
-            name="background-compare",
+            name=f"background-compare{name_suffix}",
             group="background",
             command=touche_cmd(
                 python,
@@ -548,16 +612,18 @@ def reference_steps(
     return steps
 
 
-def validate_benchmark_cache_requirements(steps: list[BenchmarkStep], output_dir: Path) -> None:
+def validate_benchmark_cache_requirements(steps: list[BenchmarkStep], cache_paths: dict[str, Path]) -> None:
     step_names = {step.name for step in steps}
-    if "local-decay-call" not in step_names or "preprocess-cache-k562" in step_names:
+    if not any(name.startswith("local-decay-call") for name in step_names):
         return
-    manifest_path = output_dir / "caches" / "k562" / "k562.manifest.json"
+    if any(name == "preprocess-cache-k562" for name in step_names):
+        return
+    manifest_path = cache_paths["k562"] / "k562.manifest.json"
     if manifest_path.exists():
         return
     raise SystemExit(
         "local-decay-call benchmarks require the K562 NPZ cache. "
-        "Run with `--steps preprocess-cache-k562 local-decay-call` first, "
+        "Run with `--steps preprocess-cache-k562 local-decay-call ...` first, "
         "or run preprocess-cache-k562 in an earlier benchmark invocation."
     )
 
@@ -570,8 +636,9 @@ def download_reference_inputs(downloads: list[Download]) -> list[dict[str, Any]]
     records: list[dict[str, Any]] = []
     for item in downloads:
         item.path.parent.mkdir(parents=True, exist_ok=True)
+        started_present = item.path.exists()
         started = time.perf_counter()
-        if not item.path.exists():
+        if not started_present:
             download_file(item.url, item.path)
         elapsed = time.perf_counter() - started
         records.append(
@@ -582,7 +649,7 @@ def download_reference_inputs(downloads: list[Download]) -> list[dict[str, Any]]
                 "bytes": item.path.stat().st_size,
                 "sha256": sha256_file(item.path),
                 "elapsed_seconds": round(elapsed, 6),
-                "already_present": elapsed < 0.001,
+                "already_present": started_present,
             }
         )
     return records
@@ -600,159 +667,11 @@ def download_file(url: str, path: Path) -> None:
     tmp_path.replace(path)
 
 
-def run_profiled_step(
-    step: BenchmarkStep,
-    *,
-    logs_dir: Path,
-    poll_interval: float,
-    live_stderr: bool = False,
-) -> BenchmarkResult:
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    stdout_log = logs_dir / f"{step.name}.stdout"
-    stderr_log = logs_dir / f"{step.name}.stderr"
-    for output in step.outputs:
-        output.parent.mkdir(parents=True, exist_ok=True)
-
-    started = time.perf_counter()
-    peak_rss_kb: int | None = None
-    with stdout_log.open("w", encoding="utf-8") as stdout_handle:
-        with stderr_log.open("w", encoding="utf-8") as stderr_handle:
-            process = subprocess.Popen(
-                step.command,
-                stdout=stdout_handle,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
-            stderr_thread = threading.Thread(
-                target=tee_stream,
-                args=(process.stderr, stderr_handle),
-                kwargs={"live": live_stderr},
-                daemon=True,
-            )
-            stderr_thread.start()
-            while process.poll() is None:
-                rss_kb = process_tree_rss_kb(process.pid)
-                if rss_kb is not None:
-                    peak_rss_kb = max(peak_rss_kb or 0, rss_kb)
-                time.sleep(poll_interval)
-            stderr_thread.join()
-            final_rss_kb = process_tree_rss_kb(process.pid)
-            if final_rss_kb is not None:
-                peak_rss_kb = max(peak_rss_kb or 0, final_rss_kb)
-            returncode = process.returncode
-
-    elapsed = time.perf_counter() - started
-    return BenchmarkResult(
-        name=step.name,
-        group=step.group,
-        command=step.command,
-        returncode=int(returncode),
-        signal_name=return_signal_name(returncode),
-        elapsed_seconds=round(elapsed, 6),
-        peak_rss_mb=round(peak_rss_kb / 1024, 3) if peak_rss_kb is not None else None,
-        stdout_log=str(stdout_log),
-        stderr_log=str(stderr_log),
-        outputs={str(output): path_size(output) for output in step.outputs},
-        command_json=read_stdout_json(stdout_log),
-    )
-
-
-def tee_stream(stream, log_handle, *, live: bool) -> None:
-    if stream is None:
-        return
-    while True:
-        chunk = stream.read(1)
-        if chunk == "":
-            break
-        log_handle.write(chunk)
-        log_handle.flush()
-        if live:
-            sys.stderr.write(chunk)
-            sys.stderr.flush()
-
-
-def return_signal_name(returncode: int) -> str | None:
-    if returncode >= 0:
-        return None
-    signal_number = -returncode
-    try:
-        return signal.Signals(signal_number).name
-    except ValueError:
-        return f"signal {signal_number}"
-
-
-def process_tree_rss_kb(pid: int) -> int | None:
-    pids = [pid, *child_pids(pid)]
-    values: list[int] = []
-    for current_pid in pids:
-        value = process_rss_kb(current_pid)
-        if value is not None:
-            values.append(value)
-    if not values:
-        return None
-    return sum(values)
-
-
-def child_pids(pid: int) -> list[int]:
-    try:
-        completed = subprocess.run(
-            ["pgrep", "-P", str(pid)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, PermissionError):
+def missing_output_paths_local(record: dict[str, Any]) -> list[str]:
+    outputs = record.get("outputs") or {}
+    if not isinstance(outputs, dict):
         return []
-    children = [int(value) for value in completed.stdout.split() if value.isdigit()]
-    descendants: list[int] = []
-    for child in children:
-        descendants.extend(child_pids(child))
-    return [*children, *descendants]
-
-
-def process_rss_kb(pid: int) -> int | None:
-    try:
-        completed = subprocess.run(
-            ["ps", "-o", "rss=", "-p", str(pid)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, PermissionError):
-        return None
-    value = completed.stdout.strip()
-    if not value:
-        return None
-    try:
-        return int(value.splitlines()[-1].strip())
-    except ValueError:
-        return None
-
-
-def path_size(path: Path) -> int | None:
-    if not path.exists():
-        return None
-    if path.is_file():
-        return path.stat().st_size
-    total = 0
-    for root, _, files in os.walk(path):
-        for name in files:
-            total += (Path(root) / name).stat().st_size
-    return total
-
-
-def read_stdout_json(path: Path) -> Any | None:
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return None
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+    return [path for path, size in outputs.items() if size is None]
 
 
 def sha256_file(path: Path) -> str:
@@ -763,9 +682,12 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def print_plan(downloads: list[Download], steps: list[BenchmarkStep]) -> None:
+def print_plan(downloads: list[Download], steps: list[BenchmarkStep], backends: list[str]) -> None:
     payload = {
-        "downloads": [asdict(item) | {"path": str(item.path)} for item in downloads],
+        "backends": backends,
+        "downloads": [
+            {"name": item.name, "url": item.url, "path": str(item.path)} for item in downloads
+        ],
         "steps": [
             {
                 "name": step.name,
@@ -790,7 +712,7 @@ def write_manifest(
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "argv": sys.argv,
                 "work_dir": str(args.work_dir),
                 "backend": args.backend,
@@ -822,298 +744,6 @@ def read_results_jsonl(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise SystemExit(f"Malformed JSONL record in {path} line {line_number}") from exc
     return records
-
-
-def result_to_record(result: BenchmarkResult) -> dict[str, Any]:
-    return asdict(result)
-
-
-def write_profile_report(records: list[dict[str, Any]], *, report_dir: Path) -> None:
-    report_dir.mkdir(parents=True, exist_ok=True)
-    mpl_config_dir = report_dir / ".matplotlib-cache"
-    mpl_config_dir.mkdir(parents=True, exist_ok=True)
-    xdg_cache_dir = report_dir / ".cache"
-    xdg_cache_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
-    os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache_dir))
-    summary_rows = [summary_row(record) for record in records]
-    timing_rows = profile_timing_rows(records)
-
-    write_csv(report_dir / "summary.csv", summary_rows)
-    if timing_rows:
-        write_csv(report_dir / "command-timings.csv", timing_rows)
-    write_markdown_summary(report_dir / "summary.md", summary_rows, timing_rows)
-    write_html_index(report_dir / "index.html", timing_rows=bool(timing_rows))
-
-    plot_metric(
-        summary_rows,
-        metric="elapsed_seconds",
-        title="Wall Time by Benchmark Step",
-        xlabel="seconds",
-        out=report_dir / "wall-time.svg",
-    )
-    plot_metric(
-        [row for row in summary_rows if row["peak_rss_mb"] != ""],
-        metric="peak_rss_mb",
-        title="Peak RSS by Benchmark Step",
-        xlabel="MiB",
-        out=report_dir / "peak-rss.svg",
-    )
-    plot_metric(
-        [row for row in summary_rows if row["output_mb"] != ""],
-        metric="output_mb",
-        title="Output Size by Benchmark Step",
-        xlabel="MiB",
-        out=report_dir / "output-size.svg",
-    )
-    if timing_rows:
-        plot_profile_timings(timing_rows, out=report_dir / "command-timings.svg")
-
-
-def summary_row(record: dict[str, Any]) -> dict[str, Any]:
-    outputs = record.get("outputs") or {}
-    if not isinstance(outputs, dict):
-        outputs = {}
-    output_bytes = sum(size for size in outputs.values() if isinstance(size, int))
-    missing_outputs = missing_output_paths(record)
-    zero_byte_outputs = zero_byte_output_paths(record)
-    command_json = record.get("command_json") if isinstance(record.get("command_json"), dict) else {}
-    rows = command_json.get("rows")
-    return {
-        "name": record.get("name", ""),
-        "group": record.get("group", ""),
-        "returncode": record.get("returncode", ""),
-        "signal_name": record.get("signal_name") or signal_name_from_record(record) or "",
-        "elapsed_seconds": record.get("elapsed_seconds", ""),
-        "peak_rss_mb": record.get("peak_rss_mb") or "",
-        "output_mb": round(output_bytes / (1024 * 1024), 3),
-        "output_count": len(outputs),
-        "missing_outputs": len(missing_outputs),
-        "missing_output_paths": "; ".join(missing_outputs),
-        "zero_byte_outputs": len(zero_byte_outputs),
-        "zero_byte_output_paths": "; ".join(zero_byte_outputs),
-        "rows": rows if rows is not None else "",
-        "stdout_log": record.get("stdout_log", ""),
-        "stderr_log": record.get("stderr_log", ""),
-    }
-
-
-def missing_output_paths(record: dict[str, Any]) -> list[str]:
-    outputs = record.get("outputs") or {}
-    if not isinstance(outputs, dict):
-        return []
-    return [path for path, size in outputs.items() if size is None]
-
-
-def zero_byte_output_paths(record: dict[str, Any]) -> list[str]:
-    outputs = record.get("outputs") or {}
-    if not isinstance(outputs, dict):
-        return []
-    return [path for path, size in outputs.items() if size == 0]
-
-
-def signal_name_from_record(record: dict[str, Any]) -> str | None:
-    returncode = record.get("returncode")
-    if not isinstance(returncode, int):
-        return None
-    return return_signal_name(returncode)
-
-
-def profile_timing_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for record in records:
-        command_json = record.get("command_json")
-        if not isinstance(command_json, dict):
-            continue
-        timings = command_json.get("timings")
-        if not isinstance(timings, list):
-            continue
-        for timing in timings:
-            if not isinstance(timing, dict):
-                continue
-            rows.append(
-                {
-                    "step": record.get("name", ""),
-                    "group": record.get("group", ""),
-                    "timing_step": timing.get("step", ""),
-                    "elapsed_seconds": timing.get("elapsed_seconds", ""),
-                }
-            )
-    return rows
-
-
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_markdown_summary(
-    path: Path, summary_rows: list[dict[str, Any]], timing_rows: list[dict[str, Any]]
-) -> None:
-    lines = [
-        "# Reference benchmark profile",
-        "",
-        "## Overview",
-        "",
-        "| Step | Group | Status | Signal | Wall time (s) | Peak RSS (MiB) | Output (MiB) | Outputs | Missing | Empty | Rows |",
-        "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for row in summary_rows:
-        lines.append(
-            "| {name} | {group} | {returncode} | {signal_name} | {elapsed_seconds} | {peak_rss_mb} | {output_mb} | {output_count} | {missing_outputs} | {zero_byte_outputs} | {rows} |".format(
-                **row
-            )
-        )
-
-    if timing_rows:
-        lines.extend(
-            [
-                "",
-                "## CLI Profile Timings",
-                "",
-                "| Step | Group | Internal step | Wall time (s) |",
-                "| --- | --- | --- | ---: |",
-            ]
-        )
-        for row in timing_rows:
-            lines.append(
-                "| {step} | {group} | {timing_step} | {elapsed_seconds} |".format(**row)
-            )
-
-    lines.extend(
-        [
-            "",
-            "## Figures",
-            "",
-            "- [Wall time](wall-time.svg)",
-            "- [Peak RSS](peak-rss.svg)",
-            "- [Output size](output-size.svg)",
-        ]
-    )
-    if timing_rows:
-        lines.append("- [CLI profile timings](command-timings.svg)")
-    missing_rows = [row for row in summary_rows if row["missing_outputs"]]
-    if missing_rows:
-        lines.extend(["", "## Missing Outputs", ""])
-        for row in missing_rows:
-            lines.append(f"- `{row['name']}`")
-            for output_path in str(row["missing_output_paths"]).split("; "):
-                if output_path:
-                    lines.append(f"  - `{output_path}`")
-    zero_rows = [row for row in summary_rows if row["zero_byte_outputs"]]
-    if zero_rows:
-        lines.extend(["", "## Zero-Byte Outputs", ""])
-        for row in zero_rows:
-            lines.append(f"- `{row['name']}`")
-            for output_path in str(row["zero_byte_output_paths"]).split("; "):
-                if output_path:
-                    lines.append(f"  - `{output_path}`")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def write_html_index(path: Path, *, timing_rows: bool) -> None:
-    timing_image = (
-        '<h2>CLI Profile Timings</h2><img src="command-timings.svg" alt="CLI profile timings">'
-        if timing_rows
-        else ""
-    )
-    path.write_text(
-        "\n".join(
-            [
-                "<!doctype html>",
-                '<html lang="en">',
-                "<head>",
-                '<meta charset="utf-8">',
-                "<title>touche reference benchmark profile</title>",
-                "<style>",
-                "body{font-family:system-ui,sans-serif;margin:2rem;max-width:1200px}",
-                "img{display:block;max-width:100%;margin:1rem 0 2rem}",
-                "a{color:#075985}",
-                "</style>",
-                "</head>",
-                "<body>",
-                "<h1>touche reference benchmark profile</h1>",
-                '<p><a href="summary.md">Markdown summary</a> | <a href="summary.csv">CSV summary</a></p>',
-                '<h2>Wall Time</h2><img src="wall-time.svg" alt="Wall time by benchmark step">',
-                '<h2>Peak RSS</h2><img src="peak-rss.svg" alt="Peak RSS by benchmark step">',
-                '<h2>Output Size</h2><img src="output-size.svg" alt="Output size by benchmark step">',
-                timing_image,
-                "</body>",
-                "</html>",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-
-def plot_metric(
-    rows: list[dict[str, Any]],
-    *,
-    metric: str,
-    title: str,
-    xlabel: str,
-    out: Path,
-) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    if not rows:
-        return
-    labels = [str(row["name"]) for row in rows]
-    values = [float(row[metric]) for row in rows]
-    colors = [group_color(str(row["group"])) for row in rows]
-    height = max(4.0, 0.36 * len(rows) + 1.2)
-    fig, ax = plt.subplots(figsize=(11, height))
-    positions = range(len(rows))
-    ax.barh(list(positions), values, color=colors)
-    ax.set_yticks(list(positions), labels)
-    ax.invert_yaxis()
-    ax.set_xlabel(xlabel)
-    ax.set_title(title)
-    ax.grid(axis="x", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(out)
-    plt.close(fig)
-
-
-def plot_profile_timings(rows: list[dict[str, Any]], *, out: Path) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    labels = [f"{row['step']}: {row['timing_step']}" for row in rows]
-    values = [float(row["elapsed_seconds"]) for row in rows]
-    colors = [group_color(str(row["group"])) for row in rows]
-    height = max(4.0, 0.32 * len(rows) + 1.2)
-    fig, ax = plt.subplots(figsize=(12, height))
-    positions = range(len(rows))
-    ax.barh(list(positions), values, color=colors)
-    ax.set_yticks(list(positions), labels)
-    ax.invert_yaxis()
-    ax.set_xlabel("seconds")
-    ax.set_title("Nested CLI --profile Timings")
-    ax.grid(axis="x", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(out)
-    plt.close(fig)
-
-
-def group_color(group: str) -> str:
-    return {
-        "preprocess": "#3b82f6",
-        "local-decay": "#ef4444",
-        "apa": "#22c55e",
-        "background": "#a855f7",
-    }.get(group, "#64748b")
 
 
 if __name__ == "__main__":

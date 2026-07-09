@@ -6,29 +6,31 @@ profiles the full `touche` workflow on those inputs.
 
 ## What It Measures
 
-The default run profiles these full-data steps:
+The default run (`--backend both`) profiles the four backend-independent
+`preprocess-cache-*` steps once, then every downstream step **twice** — once
+with `--backend numpy` and once with `--backend numba` (suffixed
+`-numpy`/`-numba`) — so the report can show a numba-vs-numpy speedup per step.
+If the `fast` extra isn't installed, it automatically falls back to a
+numpy-only run with unsuffixed step names (pass `--backend numpy` or
+`--backend numba` explicitly to force a single-backend run instead, e.g. for
+fast debugging).
 
-- `preprocess-cache-k562`
-- `preprocess-cache-dmso`
-- `preprocess-cache-flv`
-- `preprocess-cache-trp`
-- `local-decay-call`
-- `local-decay-assign-pair-types`
-- `local-decay-plot`
-- `apa-aggregate-dmso`
-- `apa-aggregate-flv`
-- `apa-aggregate-trp`
-- `apa-compare-flv-vs-dmso`
-- `apa-compare-trp-vs-dmso`
-- `background-count-dmso`
-- `background-count-flv`
-- `background-count-trp`
+Full step list with `--backend both`:
+
+- `preprocess-cache-k562`, `preprocess-cache-dmso`, `preprocess-cache-flv`,
+  `preprocess-cache-trp` (backend-independent, run once)
+- `local-decay-call`, `local-decay-assign-pair-types`, `local-decay-plot`
+- `apa-aggregate-dmso`, `apa-aggregate-flv`, `apa-aggregate-trp`
+- `apa-compare-flv-vs-dmso`, `apa-compare-trp-vs-dmso`
+- `background-count-dmso`, `background-count-flv`, `background-count-trp`
 - `background-compare`
 
+each with a `-numpy` and `-numba` suffix (except the cache steps).
+
 `local-decay-call` uses the K562 chromosome-sharded NPZ cache created by
-`preprocess-cache-k562`. The benchmark passes `--require-cache`, so cache
-construction is measured only in `preprocess-cache-k562` and is not hidden
-inside the timed local-decay call.
+`preprocess-cache-k562`, shared by both backend runs. The benchmark passes
+`--require-cache`, so cache construction is measured only in
+`preprocess-cache-k562` and is not hidden inside the timed local-decay call.
 
 Each `preprocess-cache-*` step also writes the default sample QC JSON beside the
 cache manifest, so preprocessing scans each compressed pairs file once instead
@@ -70,22 +72,21 @@ Download inputs only:
 uv run python notes/benchmarks/benchmark_reference_real_data.py --download-only
 ```
 
-Run the full benchmark:
+Run the full benchmark (numpy vs. numba side by side, if `fast` is installed):
 
 ```bash
-uv run python notes/benchmarks/benchmark_reference_real_data.py \
+uv run --extra fast python notes/benchmarks/benchmark_reference_real_data.py \
   --skip-download \
   --progress \
   --fail-on-missing-output
 ```
 
-Run the full benchmark with optional accelerated kernels:
+Run only one backend (faster, useful for debugging a single path):
 
 ```bash
-uv run --extra fast python notes/benchmarks/benchmark_reference_real_data.py \
+uv run python notes/benchmarks/benchmark_reference_real_data.py \
   --skip-download \
-  --backend numba \
-  --lowess-backend numba \
+  --backend numpy \
   --progress \
   --fail-on-missing-output
 ```
@@ -107,21 +108,29 @@ benchmark/reference-real-data/
 The runner writes:
 
 - `data/`: downloaded input files.
-- `outputs/`: command outputs and NPZ caches.
+- `outputs/`: command outputs and NPZ caches. With `--backend both`,
+  backend-specific outputs live under `outputs/numpy/` and `outputs/numba/`;
+  the shared caches stay at `outputs/caches/`.
 - `logs/*.stdout` and `logs/*.stderr`: per-step subprocess output.
 - `benchmark-results.jsonl`: one profiled result per step.
 - `benchmark-manifest.json`: downloads, checksums, settings, and all step results.
-- `report/summary.md`: human-readable result table.
-- `report/summary.csv`: spreadsheet-friendly result table.
-- `report/index.html`: browser-readable report page.
-- `report/wall-time.svg`: per-step wall-time chart.
-- `report/peak-rss.svg`: per-step peak-memory chart.
-- `report/output-size.svg`: per-step output-size chart.
+- `report/summary.md`: human-readable result table, plus a speedup table when
+  both backends ran.
+- `report/summary.csv`, `report/speedup.csv`: spreadsheet-friendly tables.
+- `report/index.html`: browser-readable report page, including a **Generated
+  Plots** gallery embedding every SVG a step produced (APA heatmaps, the
+  local-decay violin plot, background scatter plots) grouped by workflow —
+  open this to visually compare touche's output against the published
+  Danko-lab reference figures.
+- `report/wall-time.svg`, `report/peak-rss.svg`, `report/cpu-percent.svg`,
+  `report/output-size.svg`: per-step charts.
+- `report/speedup.svg`: numba-vs-numpy speedup per step, when both ran.
 - `report/command-timings.*`: nested CLI `--profile` timings when available.
 
 Each result records command arguments, return code, signal name for negative
-return codes such as `SIGKILL`, wall time, sampled peak RSS, expected output
-sizes, and parsed CLI JSON when stdout contains JSON.
+return codes such as `SIGKILL`, wall time, sampled peak RSS, CPU time/percent
+(via `resource.getrusage(RUSAGE_CHILDREN)` deltas), expected output sizes, and
+parsed CLI JSON when stdout contains JSON.
 
 ## Interpreting Failures
 
@@ -147,14 +156,19 @@ cache-backed local-decay after inputs are already downloaded:
 ```bash
 uv run python notes/benchmarks/benchmark_reference_real_data.py \
   --skip-download \
+  --backend numpy \
   --steps preprocess-cache-k562 local-decay-call \
   --fail-on-missing-output
 ```
+
+With `--backend both` (the default), step names are suffixed — use
+`local-decay-call-numpy`/`local-decay-call-numba` with `--steps` instead.
 
 Use `--keep-going` to continue after failed steps. Use `--progress` to pass
 `--progress` to profiled `touche` commands and stream their stderr progress bars
 live in the terminal while still saving per-step stderr logs. Use `--report-dir`
 to change report location, and `--no-report` to skip report generation.
 
-Peak RSS is sampled with `ps` while each subprocess runs. The default poll
-interval is `0.25` seconds.
+Peak RSS is sampled with `ps` while each subprocess runs; CPU time/percent is
+computed from `resource.getrusage(RUSAGE_CHILDREN)` deltas around each
+subprocess. The default RSS poll interval is `0.25` seconds.

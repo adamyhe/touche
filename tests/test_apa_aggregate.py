@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+import polars as pl
+from polars.testing import assert_frame_equal
 
 from touche.anchors import read_bed_anchors
 from touche.apa import aggregate_apa, compute_apa
@@ -52,10 +52,10 @@ class ApaAggregateTests(unittest.TestCase):
             self.assertEqual(set(outputs), {"matrix", "heatmap", "baits_signal", "preys_signal"})
             for path in outputs.values():
                 self.assertTrue(path.exists())
-            matrix = pd.read_csv(outputs["matrix"], index_col=0)
-            self.assertEqual(int(matrix.to_numpy().sum()), 3)
-            bait_signal = pd.read_csv(outputs["baits_signal"], index_col=0)
-            prey_signal = pd.read_csv(outputs["preys_signal"], index_col=0)
+            matrix = pl.read_csv(outputs["matrix"])
+            self.assertEqual(int(matrix.drop("bin_label").to_numpy().sum()), 3)
+            bait_signal = pl.read_csv(outputs["baits_signal"])
+            prey_signal = pl.read_csv(outputs["preys_signal"])
             self.assertEqual(int(bait_signal["contacts"].sum()), 3)
             self.assertEqual(int(prey_signal["contacts"].sum()), 3)
 
@@ -84,7 +84,7 @@ class ApaAggregateTests(unittest.TestCase):
             )
             fig = result.plot()
 
-            self.assertEqual(int(result.matrix.to_numpy().sum()), 1)
+            self.assertEqual(int(result.matrix.drop("bin_label").to_numpy().sum()), 1)
             self.assertEqual(int(result.bait_signal["contacts"].sum()), 1)
             self.assertTrue(hasattr(fig, "savefig"))
 
@@ -138,10 +138,13 @@ class ApaAggregateTests(unittest.TestCase):
                 indexes, bait_anchors, prey_anchors, backend="numba", **kwargs
             )
 
-            pd.testing.assert_frame_equal(numba_result.matrix, numpy_result.matrix)
-            pd.testing.assert_frame_equal(numba_result.bait_signal, numpy_result.bait_signal)
-            pd.testing.assert_frame_equal(numba_result.prey_signal, numpy_result.prey_signal)
-            self.assertEqual(np.asarray(numba_result.matrix).sum(), np.asarray(numpy_result.matrix).sum())
+            assert_frame_equal(numba_result.matrix, numpy_result.matrix)
+            assert_frame_equal(numba_result.bait_signal, numpy_result.bait_signal)
+            assert_frame_equal(numba_result.prey_signal, numpy_result.prey_signal)
+            self.assertEqual(
+                numba_result.matrix.drop("bin_label").to_numpy().sum(),
+                numpy_result.matrix.drop("bin_label").to_numpy().sum(),
+            )
 
 
 if __name__ == "__main__":

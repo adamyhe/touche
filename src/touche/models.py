@@ -7,36 +7,6 @@ import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
-class ContactPair:
-    """Canonical 9-column contact pair used by touche workflows."""
-
-    chrom_a: str
-    pos_a: int
-    chrom_b: str
-    pos_b: int
-    strand_a: str
-    strand_b: str
-    read_type: str
-    mapq_a: int
-    mapq_b: int
-
-    def as_tsv(self) -> str:
-        return "\t".join(
-            [
-                self.chrom_a,
-                str(self.pos_a),
-                self.chrom_b,
-                str(self.pos_b),
-                self.strand_a,
-                self.strand_b,
-                self.read_type,
-                str(self.mapq_a),
-                str(self.mapq_b),
-            ]
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ContactIndex:
     """In-memory numeric contact index for one chromosome."""
 
@@ -63,14 +33,6 @@ class ContactIndex:
             mapq_a=self.mapq_a[order],
             mapq_b=self.mapq_b[order],
         )
-
-
-@dataclass(frozen=True, slots=True)
-class FilterSettings:
-    min_mapq: int = 30
-    cis_only: bool = True
-    keep_read_id: bool = False
-    source: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)
