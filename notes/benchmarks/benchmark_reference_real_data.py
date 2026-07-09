@@ -71,6 +71,13 @@ def main() -> int:
     )
     parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="statsmodels")
     parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="scipy")
+    parser.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=1,
+        help="local-decay call --jobs -- baits to process concurrently (default: 1, sequential).",
+    )
     parser.add_argument("--lowess-iterations", type=int, default=3)
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument("--skip-download", action="store_true")
@@ -163,6 +170,7 @@ def main() -> int:
             k562_cache_dir=cache_paths["k562"],
             lowess_backend=args.lowess_backend,
             fisher_backend=args.fisher_backend,
+            jobs=args.jobs,
             lowess_iterations=args.lowess_iterations,
             progress=args.progress,
             name_suffix=f"-{backend}" if len(backends) > 1 else "",
@@ -393,6 +401,7 @@ def build_backend_steps(
     k562_cache_dir: Path,
     lowess_backend: str,
     fisher_backend: str,
+    jobs: int,
     lowess_iterations: int,
     progress: bool,
     name_suffix: str,
@@ -456,6 +465,8 @@ def build_backend_steps(
                     lowess_backend,
                     "--fisher-backend",
                     fisher_backend,
+                    "--jobs",
+                    str(jobs),
                     "--lowess-iterations",
                     str(lowess_iterations),
                     *common_profile,
@@ -816,6 +827,7 @@ def write_manifest(
                 "backend": args.backend,
                 "lowess_backend": args.lowess_backend,
                 "fisher_backend": args.fisher_backend,
+                "jobs": args.jobs,
                 "lowess_iterations": args.lowess_iterations,
                 "downloads": downloads,
                 "results_jsonl": str(results_jsonl),

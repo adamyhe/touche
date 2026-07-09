@@ -124,6 +124,18 @@ addresses that at the cost of p-values that match scipy to within ~1e-8
 absolute error rather than exactly (see
 `notes/numba-implementation-plan.md` for the validation methodology).
 
+`compute_local_decay(..., n_jobs=N)` processes up to `N` baits concurrently
+in a thread pool instead of one at a time (default `n_jobs=1`, sequential).
+Baits are independent, so this is exact -- not an approximation -- as long
+as `N` doesn't oversubscribe available cores: each worker's own numba
+thread budget is capped to `cores // n_jobs` automatically, but kernel-level
+`prange` parallelism (from `backend`/`lowess_backend`/`fisher_backend`) and
+this bait-level parallelism are not additive, they compete for the same
+cores. Worth combining with the `numba` backends above once per-bait
+overhead (contact filtering, histogram construction) is a meaningful share
+of runtime relative to the kernels themselves -- see
+`notes/numba-implementation-plan.md` for when that's the case.
+
 Pair-type plotting accepts an in-memory dataframe or an assignments file:
 
 ```python

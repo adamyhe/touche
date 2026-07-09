@@ -277,6 +277,16 @@ saturate available cores; `--fisher-backend numba` addresses that, at the
 cost of p-values that match scipy to within ~1e-8 absolute error rather than
 exactly.
 
+`--jobs`/`-j` (default 1) processes that many baits concurrently in a thread
+pool instead of one at a time. Baits are independent, so this changes
+nothing about the result -- each worker's numba thread budget is
+automatically capped to `cores // jobs` to avoid oversubscription, since
+kernel-level `prange` parallelism (from the backends above) and this
+bait-level parallelism compete for the same cores rather than adding up.
+It's most worth combining with the `numba` backends once per-bait overhead
+outside the parallel kernels (contact filtering, histogram construction) is
+a meaningful share of runtime -- see `notes/numba-implementation-plan.md`.
+
 ## Background
 
 `touche background` counts enhancer-promoter contacts and local background

@@ -690,6 +690,75 @@ approaches the core count:
   "cap each worker's numba thread budget" mitigation item 3 relies on is
   therefore safe to implement without cross-thread interference, if/when
   outer-level threading is revisited.
+
+  **Update: re-profiling at real-data scale (not the 40-bait/500k-contact
+  synthetic benchmark above) showed the picture flips again.** At 500
+  baits / 3M contacts, `_lowess_batch_numba` (genuine parallel work) was
+  only 32% of wall time; the other 66% was a long tail of individually-fast
+  but single-threaded numpy calls (`_call_bait_contacts`'s own code --
+  mostly `in_region` contact filtering -- plus `fit_zero_inflation_model`'s
+  own code, `np.histogram`, `astype`, `np.arange`, `np.clip`, etc.), none
+  of them one big fixable inefficiency the way the LOWESS chunking and
+  merge-loop bugs were. Two more targeted fixes from that list:
+  - `np.histogram(distances, bins=max_distance, range=(0, max_distance))`
+    in `_call_bait_contacts` replaced with `np.bincount` -- distances are
+    already integers with unit bin width, so histogram's bin-edge
+    machinery is pure overhead for this input; verified exact match
+    (including the "value exactly at max_distance" boundary case
+    histogram right-closes its last bin on) across 5 edge cases. ~6.3x on
+    that operation in isolation.
+  - `fit_distance_decay_model` built a full `target_len`-sized (up to
+    1,000,000-element) `pos = np.arange(...)` unconditionally, but the
+    numba LOWESS kernel never reads `exog`/`pos` at all (implicit
+    evenly-spaced positions) -- only the tiny `seed_len<=1000` slice and
+    the `statsmodels` branch ever needed it. Now built lazily, only when
+    `backend != "numba"`.
+
+  Both verified bit-identical against the pre-fix code via `git stash`
+  (rerunning the exact same inputs through both versions, avoiding
+  hand-reconstruction transcription risk) across 4 `fit_distance_decay_model`
+  configs plus one full `compute_local_decay` pipeline run. Modest
+  combined impact on their own (~1.15x at the 500-bait/3M-contact scale --
+  correctly so, since they were secondary items in that profile, not the
+  dominant cost).
+
+  **The real lever at this scale is outer-level (bait) threading, done
+  below -- and it's a different case from item 3's APA/background design,
+  not the same one revisited.** Unlike APA/background's per-chromosome
+  kernels (where the *kernel* itself has a parallelism degree that shrinks
+  for small chromosomes), local-decay's remaining single-threaded time
+  here is spread across many small numpy calls with no single kernel to
+  make bigger -- there's nothing left to batch into one `prange` launch the
+  way the LOWESS chunking was. Baits are independent (no shared mutable
+  state, no randomness), so running several concurrently and letting the
+  OS schedule their numpy-heavy pipelines across different cores is the
+  correct tool here, not a premature one.
+
+  **Status: implemented.** `compute_local_decay` gained `n_jobs: int = 1`,
+  threaded through `call_local_decay`/`run_local_decay_pipeline` and a
+  `--jobs`/`-j` CLI flag on `local-decay call`/`run`. `n_jobs > 1` fans each
+  chromosome's baits out across a `ThreadPoolExecutor`; each worker calls
+  `numba.set_num_threads(cores // n_jobs)` before its own `_call_bait_contacts`
+  call (safe per the thread-local confirmation above), and futures are
+  harvested in submission order rather than as-completed so output rows
+  land in the same order as the sequential path regardless of `n_jobs`.
+  Because baits have no cross-bait dependency, this is exact rather than
+  approximate: verified bit-identical (`assert_frame_equal`, all columns
+  including `p_value`) between `n_jobs=1` and `n_jobs=4` on a 12-bait
+  synthetic fixture, plus a dedicated regression test
+  (`test_compute_local_decay_n_jobs_matches_sequential`). Measured on a
+  200-bait/1.5M-contact synthetic benchmark (10-core machine): 9.3s at
+  `n_jobs=1` down to 5.0s at `n_jobs=8` (~1.85x) -- diminishing beyond
+  `n_jobs=4` on that machine specifically, because capping each worker's
+  numba thread budget to `cores // n_jobs` trades kernel-level parallelism
+  away as `n_jobs` grows (at `n_jobs=8` on 10 cores, `threads_per_job=1`,
+  meaning the LOWESS kernel's own `prange` parallelism is nearly
+  eliminated). The right `n_jobs` is therefore a genuine tuning question,
+  not a "bigger is always better" knob -- it trades kernel-level
+  parallelism for bait-level parallelism, and the optimum depends on core
+  count and the per-bait glue-vs-kernel time ratio for the workload at
+  hand. `NUMBA_NUM_THREADS` still controls the total core budget both
+  levels compete for.
 - **APA/background's per-chromosome kernels** have a parallelism degree
   bounded by baits/preys active in that chromosome (APA's anchor kernel) or
   candidate pairs after distance filtering (background) -- both shrink a lot

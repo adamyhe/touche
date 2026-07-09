@@ -43,6 +43,13 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         choices=["scipy", "numba"],
         default=DEFAULT_FISHER_BACKEND,
     )
+    call_parser.add_argument(
+        "--jobs",
+        "-j",
+        default=1,
+        type=int,
+        help="Number of baits to process concurrently (default: 1, sequential).",
+    )
     add_instrumentation_args(call_parser)
     call_parser.set_defaults(func=_call_local_decay)
 
@@ -77,6 +84,13 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         "--fisher-backend",
         choices=["scipy", "numba"],
         default=DEFAULT_FISHER_BACKEND,
+    )
+    run_parser.add_argument(
+        "--jobs",
+        "-j",
+        default=1,
+        type=int,
+        help="Number of baits to process concurrently (default: 1, sequential).",
     )
     add_instrumentation_args(run_parser)
     run_parser.add_argument("--plot-min-contacts", default=1, type=int)
@@ -132,6 +146,7 @@ def _call_local_decay(args: argparse.Namespace) -> None:
         lowess_backend=args.lowess_backend,
         fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
+        n_jobs=args.jobs,
         index_strategy=args.index_strategy,
         cache_dir=args.cache_dir,
         cache_prefix=args.cache_prefix,
@@ -168,6 +183,7 @@ def _run_local_decay(args: argparse.Namespace) -> None:
         lowess_backend=args.lowess_backend,
         fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
+        n_jobs=args.jobs,
         index_strategy=args.index_strategy,
         cache_dir=args.cache_dir,
         cache_prefix=args.cache_prefix,

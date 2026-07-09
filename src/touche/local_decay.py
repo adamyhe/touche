@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -85,6 +86,7 @@ def call_local_decay(
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
+    n_jobs: int = 1,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,
     cache_prefix: str = "contacts",
@@ -134,6 +136,7 @@ def call_local_decay(
             lowess_backend=lowess_backend,
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
+            n_jobs=n_jobs,
             progress=instrument,
         )
     elif index_strategy == "chromosome":
@@ -151,6 +154,7 @@ def call_local_decay(
             lowess_backend=lowess_backend,
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
+            n_jobs=n_jobs,
             progress=instrument,
         )
     else:
@@ -174,6 +178,7 @@ def call_local_decay(
             lowess_backend=lowess_backend,
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
+            n_jobs=n_jobs,
             progress=instrument,
         )
     with instrument.step("write calls"):
@@ -231,6 +236,7 @@ def _call_local_decay_by_chromosome(
     lowess_backend: str,
     fisher_backend: str,
     lowess_iterations: int,
+    n_jobs: int,
     progress: Instrumentation,
 ) -> pl.DataFrame:
     frames: list[pl.DataFrame] = []
@@ -270,6 +276,7 @@ def _call_local_decay_by_chromosome(
                 lowess_backend=lowess_backend,
                 fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
+                n_jobs=n_jobs,
                 progress=progress,
             )
         )
@@ -293,6 +300,7 @@ def _call_local_decay_from_cache(
     lowess_backend: str,
     fisher_backend: str,
     lowess_iterations: int,
+    n_jobs: int,
     progress: Instrumentation,
 ) -> pl.DataFrame:
     if cache_dir is None:
@@ -328,6 +336,7 @@ def _call_local_decay_from_cache(
                 lowess_backend=lowess_backend,
                 fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
+                n_jobs=n_jobs,
                 progress=progress,
             )
         )
@@ -350,6 +359,7 @@ def compute_local_decay(
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
+    n_jobs: int = 1,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
@@ -364,6 +374,8 @@ def compute_local_decay(
     fisher_backend = validate_fisher_backend(fisher_backend)
     if lowess_iterations < 0:
         raise ValueError("lowess_iterations must be non-negative")
+    if n_jobs < 1:
+        raise ValueError("n_jobs must be positive")
 
     instrument = make_instrumentation(progress, profile=profile)
     records: list[dict[str, float | int | str]] = []
@@ -384,48 +396,107 @@ def compute_local_decay(
             unit="chrom",
         )
 
-    for chrom in chrom_source:
-        chrom_baits = baits.filter(pl.col("chr") == chrom)
-        chrom_preys = preys.filter(pl.col("chr") == chrom).sort("center")
-        index = indexes.get(chrom)
-        if index is None or chrom_preys.is_empty():
-            continue
-        normalized = _ordered_cis_index(index)
-        prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
-        bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
-        bait_iter = instrument.iter(
-            bait_centers,
-            total=len(bait_centers),
-            desc=f"local-decay baits ({chrom})",
-            unit="bait",
-            leave=False,
-        )
-        for bait_center in bait_iter:
-            start = int(max(0, bait_center - dist))
-            stop = int(bait_center + dist)
-            left = np.searchsorted(prey_centers, start, side="left")
-            right = np.searchsorted(prey_centers, stop, side="right")
-            if left == right:
+    bait_kwargs = dict(
+        dist=dist,
+        cap=cap,
+        min_distance=min_distance,
+        lowess_window=lowess_window,
+        lowess_delta=lowess_delta,
+        backend=backend,
+        lowess_backend=lowess_backend,
+        fisher_backend=fisher_backend,
+        lowess_iterations=lowess_iterations,
+    )
+
+    # Baits are fully independent (no shared mutable state, no randomness),
+    # so n_jobs > 1 fans each chromosome's baits out across a thread pool --
+    # numba kernels release the GIL while running, so this gets real
+    # parallelism for the compute-heavy portion. Each worker caps its own
+    # numba thread budget (get_num_threads()/set_num_threads() are
+    # thread-local, not a shared global) to avoid n_jobs threads each
+    # spawning their own full-width numba thread pool and oversubscribing
+    # the machine. Futures are harvested in submission order (not
+    # as-completed) so output rows land in the same order as the
+    # sequential path regardless of n_jobs.
+    executor = ThreadPoolExecutor(max_workers=n_jobs) if n_jobs > 1 else None
+    threads_per_job = None
+    if executor is not None:
+        from numba import get_num_threads
+
+        threads_per_job = max(1, get_num_threads() // n_jobs)
+
+    try:
+        for chrom in chrom_source:
+            chrom_baits = baits.filter(pl.col("chr") == chrom)
+            chrom_preys = preys.filter(pl.col("chr") == chrom).sort("center")
+            index = indexes.get(chrom)
+            if index is None or chrom_preys.is_empty():
                 continue
-            candidate_preys = prey_centers[left:right]
-            records.extend(
-                _call_bait_contacts(
-                    normalized,
-                    int(bait_center),
-                    candidate_preys,
-                    dist=dist,
-                    cap=cap,
-                    min_distance=min_distance,
-                    lowess_window=lowess_window,
-                    lowess_delta=lowess_delta,
-                    backend=backend,
-                    lowess_backend=lowess_backend,
-                    fisher_backend=fisher_backend,
-                    lowess_iterations=lowess_iterations,
+            normalized = _ordered_cis_index(index)
+            prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
+            bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
+
+            work_items = []
+            for bait_center in bait_centers:
+                start = int(max(0, bait_center - dist))
+                stop = int(bait_center + dist)
+                left = np.searchsorted(prey_centers, start, side="left")
+                right = np.searchsorted(prey_centers, stop, side="right")
+                if left == right:
+                    continue
+                work_items.append((int(bait_center), prey_centers[left:right]))
+
+            if executor is None:
+                bait_iter = instrument.iter(
+                    work_items,
+                    total=len(work_items),
+                    desc=f"local-decay baits ({chrom})",
+                    unit="bait",
+                    leave=False,
                 )
-            )
+                for bait_center, candidate_preys in bait_iter:
+                    records.extend(
+                        _call_bait_contacts(normalized, bait_center, candidate_preys, **bait_kwargs)
+                    )
+            else:
+                futures = [
+                    executor.submit(
+                        _call_bait_contacts_threaded,
+                        normalized,
+                        bait_center,
+                        candidate_preys,
+                        threads_per_job,
+                        bait_kwargs,
+                    )
+                    for bait_center, candidate_preys in work_items
+                ]
+                future_iter = instrument.iter(
+                    futures,
+                    total=len(futures),
+                    desc=f"local-decay baits ({chrom})",
+                    unit="bait",
+                    leave=False,
+                )
+                for future in future_iter:
+                    records.extend(future.result())
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     return pl.DataFrame(records, schema=_LOCAL_DECAY_SCHEMA)
+
+
+def _call_bait_contacts_threaded(
+    index: ContactIndex,
+    bait_center: int,
+    candidate_preys: np.ndarray,
+    threads_per_job: int,
+    bait_kwargs: dict,
+) -> list[dict[str, float | int | str]]:
+    from numba import set_num_threads
+
+    set_num_threads(threads_per_job)
+    return _call_bait_contacts(index, bait_center, candidate_preys, **bait_kwargs)
 
 
 def assign_pair_types(
@@ -595,7 +666,14 @@ def _call_bait_contacts(
 
     distances = pos_b - pos_a
     max_distance = int(min(max(int(distances.max()), 1), dist * 2))
-    counts = np.histogram(distances, bins=max_distance, range=(0, max_distance))[0].astype(float)
+    # np.bincount instead of np.histogram: distances are integers with unit
+    # bin width, so this is an exact match (verified against histogram
+    # across edge cases) at a fraction of the cost -- histogram's bin-edge
+    # machinery is unnecessary overhead for an already-integer-valued input.
+    bin_counts = np.bincount(distances[distances <= max_distance], minlength=max_distance + 1)
+    counts = bin_counts[:max_distance].astype(float)
+    if len(bin_counts) > max_distance:
+        counts[-1] += bin_counts[max_distance]
     counts_zero = np.where(counts != 0, 0.0, 1.0)
     zero_model = fit_zero_inflation_model(
         counts_zero,
@@ -792,13 +870,12 @@ def fit_distance_decay_model(
         return np.asarray([], dtype=float)
     counts = np.asarray(contact_counts[:target_len], dtype=float)
     zero = np.asarray(zero_model[:target_len], dtype=float)
-    pos = np.arange(1, target_len + 1, dtype=float)
     winsize = max(1, min(winsize, target_len))
 
     seed_len = min(1_000, target_len)
     bg_model = _safe_lowess(
         counts[:seed_len],
-        pos[:seed_len],
+        np.arange(1, seed_len + 1, dtype=float),
         frac=0.05,
         it=iterations,
         delta=0.0,
@@ -812,10 +889,15 @@ def fit_distance_decay_model(
         pseudo_chunks.append(counts[start:extension_stop] + zero[start:extension_stop])
 
     if backend == "numba":
+        # The numba LOWESS kernel assumes implicit evenly-spaced positions
+        # and never reads exog, so the full target_len-sized `pos` array
+        # (up to 1,000,000 elements) that only the statsmodels branch below
+        # needs is skipped entirely on this path.
         smoothed_chunks = _lowess_batch_numba(
             pseudo_chunks, frac=0.01, iterations=iterations, delta=delta
         )
     else:
+        pos = np.arange(1, target_len + 1, dtype=float)
         smoothed_chunks = [
             _safe_lowess(
                 pseudo_counts,

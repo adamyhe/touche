@@ -443,6 +443,66 @@ class LocalDecayTests(unittest.TestCase):
                 lowess_iterations=-1,
             )
 
+    def test_compute_local_decay_rejects_non_positive_n_jobs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "n_jobs"):
+            compute_local_decay(
+                {},
+                pl.DataFrame(schema=["chr", "center"]),
+                pl.DataFrame(schema=["chr", "center"]),
+                n_jobs=0,
+            )
+
+    @unittest.skipUnless(has_numba(), "numba is not installed")
+    def test_compute_local_decay_n_jobs_matches_sequential(self) -> None:
+        """Threading across baits must not change output order or values.
+
+        Baits are processed by a ThreadPoolExecutor when n_jobs > 1, but
+        each is a pure function of its own inputs (no shared mutable state,
+        no randomness), and futures are harvested in submission order -- so
+        the result should be identical to n_jobs=1, not just close.
+        """
+        rng = np.random.default_rng(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baits = tmp_path / "baits.tsv"
+            preys = tmp_path / "preys.tsv"
+            pairs = tmp_path / "pairs.tsv"
+
+            n_baits = 12
+            bait_centers = np.arange(20_000, 20_000 + n_baits * 15_000, 15_000)
+            baits.write_text(
+                "\n".join(f"chr1\t{c}" for c in bait_centers) + "\n", encoding="utf-8"
+            )
+            prey_centers = np.concatenate([bait_centers - 6_000, bait_centers + 6_000])
+            preys.write_text(
+                "\n".join(f"chr1\t{c}" for c in prey_centers) + "\n", encoding="utf-8"
+            )
+            pair_lines = []
+            for center in bait_centers:
+                for offset in rng.integers(-4_000, 4_000, size=20):
+                    a = int(center + offset)
+                    b = int(a + rng.integers(1_000, 8_000))
+                    pair_lines.append(f"chr1\t{a}\tchr1\t{b}\t+\t-\tUU\t30\t30")
+            pairs.write_text("\n".join(pair_lines) + "\n", encoding="utf-8")
+
+            indexes = build_contact_indexes(pairs, source="touche")
+            bait_anchors = read_center_anchors(baits)
+            prey_anchors = read_center_anchors(preys)
+            kwargs = {
+                "dist": 10_000,
+                "cap": 500,
+                "min_distance": 500,
+                "lowess_window": 500,
+                "backend": "numba",
+                "lowess_backend": "numba",
+                "fisher_backend": "numba",
+            }
+
+            sequential = compute_local_decay(indexes, bait_anchors, prey_anchors, n_jobs=1, **kwargs)
+            threaded = compute_local_decay(indexes, bait_anchors, prey_anchors, n_jobs=4, **kwargs)
+
+            assert_frame_equal(threaded, sequential)
+
     def test_assign_pair_types_uses_functional_and_nonfunctional_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

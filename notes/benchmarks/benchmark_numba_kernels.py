@@ -65,6 +65,13 @@ def main_orchestrate(argv: list[str]) -> int:
     parser.add_argument("--compare-kernels", action="store_true")
     parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="statsmodels")
     parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="scipy")
+    parser.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=1,
+        help="local-decay n_jobs -- baits to process concurrently (default: 1, sequential).",
+    )
     parser.add_argument("--lowess-iterations", type=int, default=3)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--dry-run", action="store_true")
@@ -97,6 +104,7 @@ def main_orchestrate(argv: list[str]) -> int:
         repeats=args.repeats,
         lowess_backend=args.lowess_backend,
         fisher_backend=args.fisher_backend,
+        jobs=args.jobs,
         lowess_iterations=args.lowess_iterations,
         compare_kernels=args.compare_kernels and "numba" in backends,
     )
@@ -152,6 +160,7 @@ def build_steps(
     repeats: int,
     lowess_backend: str,
     fisher_backend: str,
+    jobs: int,
     lowess_iterations: int,
     compare_kernels: bool,
 ) -> list[BenchmarkStep]:
@@ -177,6 +186,8 @@ def build_steps(
                     lowess_backend,
                     "--fisher-backend",
                     fisher_backend,
+                    "--jobs",
+                    str(jobs),
                     "--lowess-iterations",
                     str(lowess_iterations),
                 ]
@@ -295,6 +306,7 @@ def main_run_single(argv: list[str]) -> int:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--lowess-backend", default="statsmodels", choices=["statsmodels", "numba"])
     parser.add_argument("--fisher-backend", default="scipy", choices=["scipy", "numba"])
+    parser.add_argument("--jobs", "-j", type=int, default=1)
     parser.add_argument("--lowess-iterations", type=int, default=3)
     args = parser.parse_args(argv)
 
@@ -325,6 +337,7 @@ def main_run_single(argv: list[str]) -> int:
                 repeats=args.repeats,
                 lowess_backend=args.lowess_backend,
                 fisher_backend=args.fisher_backend,
+                n_jobs=args.jobs,
                 lowess_iterations=args.lowess_iterations,
             )
 
@@ -374,6 +387,7 @@ def run_local_decay_single(
     repeats: int,
     lowess_backend: str,
     fisher_backend: str,
+    n_jobs: int,
     lowess_iterations: int,
 ) -> dict[str, Any]:
     local_baits = baits.select(["chr", "center"])
@@ -389,6 +403,7 @@ def run_local_decay_single(
         "lowess_window": 500,
         "lowess_backend": lowess_backend,
         "fisher_backend": fisher_backend,
+        "n_jobs": n_jobs,
         "lowess_iterations": lowess_iterations,
     }
     result = compute_local_decay(
