@@ -24,79 +24,173 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
     count_parser = background_sub.add_parser(
         "count",
         help="Count EP contacts and local background contacts for bait/prey pairs",
+        description=(
+            "Count enhancer-promoter contacts and local background contacts for one "
+            "sample. Use background run to count multiple samples and compare them."
+        ),
     )
-    count_parser.add_argument("--pairs", required=True, type=Path)
-    count_parser.add_argument("--baits", required=True, type=Path)
-    count_parser.add_argument("--preys", required=True, type=Path)
-    count_parser.add_argument("--out", required=True, type=Path)
-    count_parser.add_argument("--min-distance", required=True, type=int)
-    count_parser.add_argument("--max-distance", required=True, type=int)
-    count_parser.add_argument("--window", required=True, type=int)
-    count_parser.add_argument("--min-bg-distance", required=True, type=int)
-    count_parser.add_argument("--max-bg-distance", required=True, type=int)
-    count_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
+    count_parser.add_argument("--pairs", required=True, type=Path, help="Input pairs file for one sample.")
+    count_parser.add_argument("--baits", required=True, type=Path, help="BED-like promoter/bait anchors.")
+    count_parser.add_argument("--preys", required=True, type=Path, help="BED-like enhancer/prey anchors.")
+    count_parser.add_argument("--out", required=True, type=Path, help="Output count TSV path.")
+    count_parser.add_argument(
+        "--min-distance",
+        required=True,
+        type=int,
+        help="Minimum bait-prey center distance to count as a candidate pair.",
+    )
+    count_parser.add_argument(
+        "--max-distance",
+        required=True,
+        type=int,
+        help="Maximum bait-prey center distance to count as a candidate pair.",
+    )
+    count_parser.add_argument(
+        "--window",
+        required=True,
+        type=int,
+        help="Half-window around each bait/prey center used for EP contact counts.",
+    )
+    count_parser.add_argument(
+        "--min-bg-distance",
+        required=True,
+        type=int,
+        help="Inner distance from an anchor center for local background windows.",
+    )
+    count_parser.add_argument(
+        "--max-bg-distance",
+        required=True,
+        type=int,
+        help="Outer distance from an anchor center for local background windows.",
+    )
+    count_parser.add_argument(
+        "--source",
+        choices=["auto", "distiller", "touche"],
+        default="auto",
+        help="Input pairs layout.",
+    )
     add_instrumentation_args(count_parser)
     count_parser.set_defaults(func=_count_background)
 
     compare_parser = background_sub.add_parser(
         "compare",
         help="Compare EP/background ratios across control and treatment samples",
+        description="Join per-sample background count tables and write comparison plots/tables.",
     )
-    compare_parser.add_argument("--control", required=True, help="Control sample as NAME=PATH")
+    compare_parser.add_argument(
+        "--control",
+        required=True,
+        help="Control count table as NAME=PATH, for example DMSO=counts/DMSO.tsv.",
+    )
     compare_parser.add_argument(
         "--treatments",
         required=True,
         nargs="+",
-        help="Treatment samples as NAME=PATH",
+        help="Treatment count tables as NAME=PATH values, for example FLV=counts/FLV.tsv.",
     )
     compare_parser.add_argument(
         "--depths",
         required=True,
         nargs="+",
-        help="Sequencing depths as NAME=INTEGER",
+        help="Sequencing depths as NAME=INTEGER values for control and treatments.",
     )
-    compare_parser.add_argument("--min-ep-cpb", default=8.0, type=float)
-    compare_parser.add_argument("--out-dir", type=Path)
-    compare_parser.add_argument("--table-out", type=Path)
+    compare_parser.add_argument(
+        "--min-ep-cpb",
+        default=8.0,
+        type=float,
+        help="Minimum EP contacts per billion contacts required for plotting/comparison.",
+    )
+    compare_parser.add_argument("--out-dir", type=Path, help="Directory for comparison SVG plots.")
+    compare_parser.add_argument("--table-out", type=Path, help="Optional merged comparison TSV output.")
     compare_parser.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Use reference-style plot formatting.",
     )
     compare_parser.set_defaults(func=_compare_background)
 
     run_parser = background_sub.add_parser(
         "run",
         help="Run per-sample EP/background counting and comparisons",
+        description=(
+            "Count EP/background contacts for control and treatment pairs files, compare "
+            "normalized ratios, write plots/tables, and record a manifest."
+        ),
     )
-    run_parser.add_argument("--control", required=True, help="Control sample as NAME=PAIRS")
+    run_parser.add_argument(
+        "--control",
+        required=True,
+        help="Control sample pairs file as NAME=PAIRS, for example DMSO=dmso.pairs.gz.",
+    )
     run_parser.add_argument(
         "--treatments",
         required=True,
         nargs="+",
-        help="Treatment samples as NAME=PAIRS",
+        help="Treatment sample pairs files as NAME=PAIRS values.",
     )
     run_parser.add_argument(
         "--depths",
         required=True,
         nargs="+",
-        help="Sequencing depths as NAME=INTEGER",
+        help="Sequencing depths as NAME=INTEGER values for control and treatments.",
     )
-    run_parser.add_argument("--baits", required=True, type=Path)
-    run_parser.add_argument("--preys", required=True, type=Path)
-    run_parser.add_argument("--out-dir", required=True, type=Path)
-    run_parser.add_argument("--min-distance", required=True, type=int)
-    run_parser.add_argument("--max-distance", required=True, type=int)
-    run_parser.add_argument("--window", required=True, type=int)
-    run_parser.add_argument("--min-bg-distance", required=True, type=int)
-    run_parser.add_argument("--max-bg-distance", required=True, type=int)
-    run_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
-    run_parser.add_argument("--min-ep-cpb", default=8.0, type=float)
+    run_parser.add_argument("--baits", required=True, type=Path, help="BED-like promoter/bait anchors.")
+    run_parser.add_argument("--preys", required=True, type=Path, help="BED-like enhancer/prey anchors.")
+    run_parser.add_argument(
+        "--out-dir",
+        required=True,
+        type=Path,
+        help="Output directory for counts, plots, merged table, and manifest.",
+    )
+    run_parser.add_argument(
+        "--min-distance",
+        required=True,
+        type=int,
+        help="Minimum bait-prey center distance to count as a candidate pair.",
+    )
+    run_parser.add_argument(
+        "--max-distance",
+        required=True,
+        type=int,
+        help="Maximum bait-prey center distance to count as a candidate pair.",
+    )
+    run_parser.add_argument(
+        "--window",
+        required=True,
+        type=int,
+        help="Half-window around each bait/prey center used for EP contact counts.",
+    )
+    run_parser.add_argument(
+        "--min-bg-distance",
+        required=True,
+        type=int,
+        help="Inner distance from an anchor center for local background windows.",
+    )
+    run_parser.add_argument(
+        "--max-bg-distance",
+        required=True,
+        type=int,
+        help="Outer distance from an anchor center for local background windows.",
+    )
+    run_parser.add_argument(
+        "--source",
+        choices=["auto", "distiller", "touche"],
+        default="auto",
+        help="Input pairs layout.",
+    )
+    run_parser.add_argument(
+        "--min-ep-cpb",
+        default=8.0,
+        type=float,
+        help="Minimum EP contacts per billion contacts required for plotting/comparison.",
+    )
     add_instrumentation_args(run_parser)
     run_parser.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Use reference-style plot formatting.",
     )
     run_parser.set_defaults(func=_run_background)
 

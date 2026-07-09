@@ -9,11 +9,18 @@ from touche.cli.apa import add_apa_parser
 from touche.cli.background import add_background_parser
 from touche.cli.local_decay import add_local_decay_parser
 from touche.cli.preprocess import add_preprocess_parser
+from touche.cli.utils import ToucheArgumentParser
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Assemble the `touche` argparse parser with every command group's subcommands attached."""
-    parser = argparse.ArgumentParser(prog="touche")
+    parser = ToucheArgumentParser(
+        prog="touche",
+        description=(
+            "Analyze enhancer-promoter contacts from processed pairs files. "
+            "Use '<command> --help' for workflow-specific options."
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"touche {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", required=True)

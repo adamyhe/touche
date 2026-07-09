@@ -25,18 +25,57 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     call_parser = local_decay_sub.add_parser(
         "call",
         help="Call bait-prey contacts normalized by local distance decay",
+        description=(
+            "Call candidate bait/prey contacts, estimate local distance-decay expected "
+            "contacts, and write the ContactCaller-style TSV."
+        ),
     )
-    call_parser.add_argument("--baits", required=True, type=Path)
-    call_parser.add_argument("--preys", required=True, type=Path)
-    call_parser.add_argument("--pairs", required=True, type=Path)
-    call_parser.add_argument("--out", required=True, type=Path)
-    call_parser.add_argument("--dist", default=1_000_000, type=int)
-    call_parser.add_argument("--cap", default=2_000, type=int)
-    call_parser.add_argument("--min-distance", default=5_000, type=int)
-    call_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
-    call_parser.add_argument("--lowess-window", default=5_000, type=int)
-    call_parser.add_argument("--lowess-delta", default=16.0, type=float)
-    call_parser.add_argument("--lowess-iterations", default=3, type=int)
+    call_parser.add_argument("--baits", required=True, type=Path, help="Two-column chr/center bait file.")
+    call_parser.add_argument("--preys", required=True, type=Path, help="Two-column chr/center prey file.")
+    call_parser.add_argument("--pairs", required=True, type=Path, help="Input pairs file.")
+    call_parser.add_argument("--out", required=True, type=Path, help="Output contact-call TSV path.")
+    call_parser.add_argument(
+        "--dist",
+        default=1_000_000,
+        type=int,
+        help="Maximum bait-prey distance considered around each bait.",
+    )
+    call_parser.add_argument(
+        "--cap",
+        default=2_000,
+        type=int,
+        help="Maximum observed count cap used by local-decay modeling.",
+    )
+    call_parser.add_argument(
+        "--min-distance",
+        default=5_000,
+        type=int,
+        help="Minimum bait-prey distance to report.",
+    )
+    call_parser.add_argument(
+        "--source",
+        choices=["auto", "distiller", "touche"],
+        default="auto",
+        help="Input pairs layout.",
+    )
+    call_parser.add_argument(
+        "--lowess-window",
+        default=5_000,
+        type=int,
+        help="Distance-bin window used by LOWESS smoothing.",
+    )
+    call_parser.add_argument(
+        "--lowess-delta",
+        default=16.0,
+        type=float,
+        help="LOWESS delta parameter controlling interpolation between fits.",
+    )
+    call_parser.add_argument(
+        "--lowess-iterations",
+        default=3,
+        type=int,
+        help="Robust LOWESS residual reweighting iterations. Lower is faster.",
+    )
     call_parser.add_argument(
         "--index-strategy",
         choices=["cache", "all", "chromosome"],
@@ -61,18 +100,20 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         "--lowess-backend",
         choices=["statsmodels", "numba"],
         default=DEFAULT_LOWESS_BACKEND,
+        help="LOWESS implementation. numba is default; statsmodels requires the legacy extra.",
     )
     call_parser.add_argument(
         "--fisher-backend",
         choices=["scipy", "numba"],
         default=DEFAULT_FISHER_BACKEND,
+        help="Fisher exact-test implementation for local-decay p-values.",
     )
     call_parser.add_argument(
         "--jobs",
         "-j",
         default=1,
         type=int,
-        help="Number of baits to process concurrently (default: 1, sequential).",
+        help="Number of baits to process concurrently. Use 1 for sequential processing.",
     )
     add_instrumentation_args(call_parser)
     call_parser.set_defaults(func=_call_local_decay)
@@ -80,20 +121,74 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser = local_decay_sub.add_parser(
         "run",
         help="Run local-decay calling, pair assignment, and plotting",
+        description=(
+            "Run contact calling, assign functional/nonfunctional/other labels, plot "
+            "observed/expected contacts, and write a manifest."
+        ),
     )
-    run_parser.add_argument("--baits", required=True, type=Path)
-    run_parser.add_argument("--preys", required=True, type=Path)
-    run_parser.add_argument("--pairs", required=True, type=Path)
-    run_parser.add_argument("--functional", required=True, type=Path)
-    run_parser.add_argument("--nonfunctional", required=True, type=Path)
-    run_parser.add_argument("--out-dir", required=True, type=Path)
-    run_parser.add_argument("--dist", default=1_000_000, type=int)
-    run_parser.add_argument("--cap", default=2_000, type=int)
-    run_parser.add_argument("--min-distance", default=5_000, type=int)
-    run_parser.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
-    run_parser.add_argument("--lowess-window", default=5_000, type=int)
-    run_parser.add_argument("--lowess-delta", default=16.0, type=float)
-    run_parser.add_argument("--lowess-iterations", default=3, type=int)
+    run_parser.add_argument("--baits", required=True, type=Path, help="Two-column chr/center bait file.")
+    run_parser.add_argument("--preys", required=True, type=Path, help="Two-column chr/center prey file.")
+    run_parser.add_argument("--pairs", required=True, type=Path, help="Input pairs file.")
+    run_parser.add_argument(
+        "--functional",
+        required=True,
+        type=Path,
+        help="Functional bait/prey pair annotation file.",
+    )
+    run_parser.add_argument(
+        "--nonfunctional",
+        required=True,
+        type=Path,
+        help="Nonfunctional bait/prey pair annotation file.",
+    )
+    run_parser.add_argument(
+        "--out-dir",
+        required=True,
+        type=Path,
+        help="Output directory for calls, assignments, plot files, and manifest.",
+    )
+    run_parser.add_argument(
+        "--dist",
+        default=1_000_000,
+        type=int,
+        help="Maximum bait-prey distance considered around each bait.",
+    )
+    run_parser.add_argument(
+        "--cap",
+        default=2_000,
+        type=int,
+        help="Maximum observed count cap used by local-decay modeling.",
+    )
+    run_parser.add_argument(
+        "--min-distance",
+        default=5_000,
+        type=int,
+        help="Minimum bait-prey distance to report.",
+    )
+    run_parser.add_argument(
+        "--source",
+        choices=["auto", "distiller", "touche"],
+        default="auto",
+        help="Input pairs layout.",
+    )
+    run_parser.add_argument(
+        "--lowess-window",
+        default=5_000,
+        type=int,
+        help="Distance-bin window used by LOWESS smoothing.",
+    )
+    run_parser.add_argument(
+        "--lowess-delta",
+        default=16.0,
+        type=float,
+        help="LOWESS delta parameter controlling interpolation between fits.",
+    )
+    run_parser.add_argument(
+        "--lowess-iterations",
+        default=3,
+        type=int,
+        help="Robust LOWESS residual reweighting iterations. Lower is faster.",
+    )
     run_parser.add_argument(
         "--index-strategy",
         choices=["cache", "all", "chromosome"],
@@ -118,26 +213,39 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         "--lowess-backend",
         choices=["statsmodels", "numba"],
         default=DEFAULT_LOWESS_BACKEND,
+        help="LOWESS implementation. numba is default; statsmodels requires the legacy extra.",
     )
     run_parser.add_argument(
         "--fisher-backend",
         choices=["scipy", "numba"],
         default=DEFAULT_FISHER_BACKEND,
+        help="Fisher exact-test implementation for local-decay p-values.",
     )
     run_parser.add_argument(
         "--jobs",
         "-j",
         default=1,
         type=int,
-        help="Number of baits to process concurrently (default: 1, sequential).",
+        help="Number of baits to process concurrently. Use 1 for sequential processing.",
     )
     add_instrumentation_args(run_parser)
-    run_parser.add_argument("--plot-min-contacts", default=1, type=int)
-    run_parser.add_argument("--plot-min-distance", default=15_000, type=int)
+    run_parser.add_argument(
+        "--plot-min-contacts",
+        default=1,
+        type=int,
+        help="Minimum observed contacts required for rows included in the violin plot.",
+    )
+    run_parser.add_argument(
+        "--plot-min-distance",
+        default=15_000,
+        type=int,
+        help="Minimum absolute bait-prey distance included in the violin plot.",
+    )
     run_parser.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Use reference-style plot formatting.",
     )
     run_parser.set_defaults(func=_run_local_decay)
 
@@ -145,25 +253,51 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         "assign-pair-types",
         help="Assign local-decay contact rows to functional/nonfunctional/other classes",
     )
-    assign_parser.add_argument("--contacts", required=True, type=Path)
-    assign_parser.add_argument("--functional", required=True, type=Path)
-    assign_parser.add_argument("--nonfunctional", required=True, type=Path)
-    assign_parser.add_argument("--out", required=True, type=Path)
+    assign_parser.add_argument("--contacts", required=True, type=Path, help="Contact-call TSV from call.")
+    assign_parser.add_argument(
+        "--functional",
+        required=True,
+        type=Path,
+        help="Functional bait/prey pair annotation file.",
+    )
+    assign_parser.add_argument(
+        "--nonfunctional",
+        required=True,
+        type=Path,
+        help="Nonfunctional bait/prey pair annotation file.",
+    )
+    assign_parser.add_argument("--out", required=True, type=Path, help="Output assignment TSV path.")
     assign_parser.set_defaults(func=_assign_pair_types)
 
     plot_parser = local_decay_sub.add_parser(
         "plot",
         help="Plot observed/expected local-decay contacts by pair type",
     )
-    plot_parser.add_argument("--assignments", required=True, type=Path)
-    plot_parser.add_argument("--out", required=True, type=Path)
-    plot_parser.add_argument("--min-contacts", default=1, type=int)
-    plot_parser.add_argument("--min-distance", default=15_000, type=int)
-    plot_parser.add_argument("--plot-table-out", type=Path)
+    plot_parser.add_argument(
+        "--assignments",
+        required=True,
+        type=Path,
+        help="Assignment TSV from assign-pair-types or local-decay run.",
+    )
+    plot_parser.add_argument("--out", required=True, type=Path, help="Output SVG path.")
+    plot_parser.add_argument(
+        "--min-contacts",
+        default=1,
+        type=int,
+        help="Minimum observed contacts required for rows included in the plot.",
+    )
+    plot_parser.add_argument(
+        "--min-distance",
+        default=15_000,
+        type=int,
+        help="Minimum absolute bait-prey distance included in the plot.",
+    )
+    plot_parser.add_argument("--plot-table-out", type=Path, help="Optional TSV of plot input rows.")
     plot_parser.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Use reference-style plot formatting.",
     )
     plot_parser.set_defaults(func=_plot_pair_type_distribution)
 

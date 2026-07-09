@@ -1,7 +1,7 @@
 """Shared helpers used by every `touche.cli.*` command module.
 
 Public API (all of it, since this module is itself CLI-internal plumbing):
-`print_json`, `print_dataclass`, `add_instrumentation_args`,
+`ToucheArgumentParser`, `print_json`, `add_instrumentation_args`,
 `make_cli_instrumentation`, `add_timings` -- the common `--progress`/
 `--profile` argparse wiring and JSON-summary printing every subcommand uses.
 """
@@ -10,22 +10,43 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from touche.instrumentation import Instrumentation
 
 
+class ToucheHelpFormatter(argparse.HelpFormatter):
+    """CLI help formatter that shows useful defaults without clutter."""
+
+    def _get_help_string(self, action: argparse.Action) -> str:
+        help_text = action.help or ""
+        if "%(default)" in help_text:
+            return help_text
+        if action.required or action.default in (None, False, argparse.SUPPRESS):
+            return help_text
+        return f"{help_text} (default: {format_default(action.default)})"
+
+
+class ToucheArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser with the project help formatter applied by default."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("formatter_class", ToucheHelpFormatter)
+        super().__init__(*args, **kwargs)
+
+
+def format_default(value: Any) -> str:
+    """Render argparse defaults the way they should appear in CLI help."""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
 def print_json(payload: Any) -> None:
     """Print `payload` as indented, sorted-key JSON -- the CLI's standard summary format."""
     print(json.dumps(payload, indent=2, sort_keys=True))
-
-
-def print_dataclass(value: Any) -> None:
-    """`print_json` a dataclass instance (e.g. `PairStats`) by converting it to a dict first."""
-    if not is_dataclass(value):
-        raise TypeError(f"Expected dataclass instance, got {type(value)!r}")
-    print_json(asdict(value))
 
 
 def add_instrumentation_args(parser: argparse.ArgumentParser) -> None:

@@ -25,70 +25,196 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
     apa_aggregate = apa_sub.add_parser(
         "aggregate",
         help="Aggregate APA matrix and 1D anchor signals for one sample",
+        description=(
+            "Build one sample's aggregate peak-analysis matrix plus bait/prey 1D "
+            "signal tracks from pairs and anchor files."
+        ),
     )
-    apa_aggregate.add_argument("--pairs", required=True, type=Path)
-    apa_aggregate.add_argument("--baits", required=True, type=Path)
-    apa_aggregate.add_argument("--preys", required=True, type=Path)
-    apa_aggregate.add_argument("--min-distance", required=True, type=int)
-    apa_aggregate.add_argument("--max-distance", required=True, type=int)
-    apa_aggregate.add_argument("--window", required=True, type=int)
-    apa_aggregate.add_argument("--pixels", required=True, type=int)
-    apa_aggregate.add_argument("--out-dir", required=True, type=Path)
-    apa_aggregate.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
-    apa_aggregate.add_argument("--shift", default=75, type=int)
+    apa_aggregate.add_argument("--pairs", required=True, type=Path, help="Input pairs file.")
+    apa_aggregate.add_argument("--baits", required=True, type=Path, help="BED-like bait anchors.")
+    apa_aggregate.add_argument("--preys", required=True, type=Path, help="BED-like prey anchors.")
+    apa_aggregate.add_argument(
+        "--min-distance",
+        required=True,
+        type=int,
+        help="Minimum bait-prey center distance included in the APA aggregate.",
+    )
+    apa_aggregate.add_argument(
+        "--max-distance",
+        required=True,
+        type=int,
+        help="Maximum bait-prey center distance included in the APA aggregate.",
+    )
+    apa_aggregate.add_argument(
+        "--window",
+        required=True,
+        type=int,
+        help="Total genomic window around each bait/prey pair; must be divisible by --pixels.",
+    )
+    apa_aggregate.add_argument(
+        "--pixels",
+        required=True,
+        type=int,
+        help="Number of APA bins/pixels across each axis.",
+    )
+    apa_aggregate.add_argument(
+        "--out-dir",
+        required=True,
+        type=Path,
+        help="Output directory for AggMat.csv, AggHeatmap.svg, and 1D signal CSVs.",
+    )
+    apa_aggregate.add_argument(
+        "--source",
+        choices=["auto", "distiller", "touche"],
+        default="auto",
+        help="Input pairs layout.",
+    )
+    apa_aggregate.add_argument(
+        "--shift",
+        default=75,
+        type=int,
+        help="Shift contact endpoints before APA counting to match reference coordinates.",
+    )
     add_instrumentation_args(apa_aggregate)
     apa_aggregate.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Use reference-style plot formatting.",
     )
     apa_aggregate.set_defaults(func=_aggregate_apa)
 
     apa_compare = apa_sub.add_parser(
         "compare",
         help="Calculate and plot 1D-normalized inter-sample APA change",
+        description=(
+            "Compare two precomputed APA aggregates after normalizing by their bait/prey "
+            "1D signal tracks."
+        ),
     )
-    apa_compare.add_argument("--control-apa", required=True, type=Path)
-    apa_compare.add_argument("--treatment-apa", required=True, type=Path)
-    apa_compare.add_argument("--control-baits", required=True, type=Path)
-    apa_compare.add_argument("--control-preys", required=True, type=Path)
-    apa_compare.add_argument("--treatment-baits", required=True, type=Path)
-    apa_compare.add_argument("--treatment-preys", required=True, type=Path)
-    apa_compare.add_argument("--bait-count", required=True, type=int)
-    apa_compare.add_argument("--prey-count", required=True, type=int)
-    apa_compare.add_argument("--out", type=Path)
-    apa_compare.add_argument("--matrix-out", type=Path)
-    apa_compare.add_argument("--window", default=10_000, type=int)
-    apa_compare.add_argument("--pixels", default=50, type=int)
+    apa_compare.add_argument("--control-apa", required=True, type=Path, help="Control AggMat.csv.")
+    apa_compare.add_argument("--treatment-apa", required=True, type=Path, help="Treatment AggMat.csv.")
+    apa_compare.add_argument(
+        "--control-baits",
+        required=True,
+        type=Path,
+        help="Control baits_genome_wide_contacts.csv.",
+    )
+    apa_compare.add_argument(
+        "--control-preys",
+        required=True,
+        type=Path,
+        help="Control preys_genome_wide_contacts.csv.",
+    )
+    apa_compare.add_argument(
+        "--treatment-baits",
+        required=True,
+        type=Path,
+        help="Treatment baits_genome_wide_contacts.csv.",
+    )
+    apa_compare.add_argument(
+        "--treatment-preys",
+        required=True,
+        type=Path,
+        help="Treatment preys_genome_wide_contacts.csv.",
+    )
+    apa_compare.add_argument(
+        "--bait-count",
+        required=True,
+        type=int,
+        help="Number of bait anchors used to normalize the comparison.",
+    )
+    apa_compare.add_argument(
+        "--prey-count",
+        required=True,
+        type=int,
+        help="Number of prey anchors used to normalize the comparison.",
+    )
+    apa_compare.add_argument("--out", type=Path, help="Optional comparison heatmap SVG output.")
+    apa_compare.add_argument("--matrix-out", type=Path, help="Optional comparison matrix CSV output.")
+    apa_compare.add_argument("--window", default=10_000, type=int, help="APA window size used for labels.")
+    apa_compare.add_argument("--pixels", default=50, type=int, help="APA pixel count used for labels.")
     apa_compare.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Use reference-style plot formatting.",
     )
     apa_compare.set_defaults(func=_compare_apa)
 
     apa_run = apa_sub.add_parser(
         "run",
         help="Run aggregate APA for control/treatment and compare them",
+        description=(
+            "Aggregate APA outputs for a control and treatment sample, compare the "
+            "1D-normalized change, and write a manifest."
+        ),
     )
-    apa_run.add_argument("--control", required=True, help="Control sample as NAME=PAIRS")
-    apa_run.add_argument("--treatment", required=True, help="Treatment sample as NAME=PAIRS")
-    apa_run.add_argument("--baits", required=True, type=Path)
-    apa_run.add_argument("--preys", required=True, type=Path)
-    apa_run.add_argument("--min-distance", required=True, type=int)
-    apa_run.add_argument("--max-distance", required=True, type=int)
-    apa_run.add_argument("--window", required=True, type=int)
-    apa_run.add_argument("--pixels", required=True, type=int)
-    apa_run.add_argument("--out-dir", required=True, type=Path)
-    apa_run.add_argument("--source", choices=["auto", "distiller", "touche"], default="auto")
-    apa_run.add_argument("--shift", default=75, type=int)
-    apa_run.add_argument("--bait-count", type=int)
-    apa_run.add_argument("--prey-count", type=int)
+    apa_run.add_argument(
+        "--control",
+        required=True,
+        help="Control sample pairs file as NAME=PAIRS, for example DMSO=dmso.pairs.gz.",
+    )
+    apa_run.add_argument(
+        "--treatment",
+        required=True,
+        help="Treatment sample pairs file as NAME=PAIRS, for example FLV=flv.pairs.gz.",
+    )
+    apa_run.add_argument("--baits", required=True, type=Path, help="BED-like bait anchors.")
+    apa_run.add_argument("--preys", required=True, type=Path, help="BED-like prey anchors.")
+    apa_run.add_argument(
+        "--min-distance",
+        required=True,
+        type=int,
+        help="Minimum bait-prey center distance included in APA aggregates.",
+    )
+    apa_run.add_argument(
+        "--max-distance",
+        required=True,
+        type=int,
+        help="Maximum bait-prey center distance included in APA aggregates.",
+    )
+    apa_run.add_argument(
+        "--window",
+        required=True,
+        type=int,
+        help="Total genomic window around each bait/prey pair; must be divisible by --pixels.",
+    )
+    apa_run.add_argument("--pixels", required=True, type=int, help="Number of APA bins/pixels per axis.")
+    apa_run.add_argument(
+        "--out-dir",
+        required=True,
+        type=Path,
+        help="Output directory for per-sample APA outputs, comparison outputs, and manifest.",
+    )
+    apa_run.add_argument(
+        "--source",
+        choices=["auto", "distiller", "touche"],
+        default="auto",
+        help="Input pairs layout.",
+    )
+    apa_run.add_argument(
+        "--shift",
+        default=75,
+        type=int,
+        help="Shift contact endpoints before APA counting to match reference coordinates.",
+    )
+    apa_run.add_argument(
+        "--bait-count",
+        type=int,
+        help="Optional bait count for normalization. Defaults to the number of bait anchors.",
+    )
+    apa_run.add_argument(
+        "--prey-count",
+        type=int,
+        help="Optional prey count for normalization. Defaults to the number of prey anchors.",
+    )
     add_instrumentation_args(apa_run)
     apa_run.add_argument(
         "--reference-style",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Use reference-style plot formatting.",
     )
     apa_run.set_defaults(func=_run_apa)
 
