@@ -13,6 +13,19 @@ The notebook-friendly pattern is:
 
 This API is provisional while the result-object layer matures.
 
+## CPU usage
+
+Compute-heavy functions use Numba kernels. Set `NUMBA_NUM_THREADS` before
+starting Python to control the thread budget:
+
+```bash
+NUMBA_NUM_THREADS=8 python analysis.py
+NUMBA_NUM_THREADS=8 jupyter lab
+```
+
+In an already-running Python process, advanced users can also call
+`numba.set_num_threads(N)` before running compute functions.
+
 ## Imports
 
 ```python
@@ -80,8 +93,6 @@ apa = tt.compute_apa(
 fig = apa.plot()
 ```
 
-APA counting always uses an accelerated Numba kernel.
-
 Write reference-style outputs only when needed:
 
 ```python
@@ -103,39 +114,17 @@ calls = tt.compute_local_decay(
 )
 ```
 
-`compute_local_decay`'s observed-count helper always uses an accelerated
-Numba kernel. `lowess_backend` and `fisher_backend` are separate, still
-selectable choices (default `"numba"`) -- see below.
-
-`lowess_backend="numba"` (the default) is a Numba LOWESS implementation for
-evenly spaced local-decay smoothing arrays. Use `lowess_iterations=0` or `1`
-to reduce robust reweighting work when that drift is acceptable; the
-reference-compatible default is `3`. `lowess_backend="statsmodels"` is the
-exact reference implementation and requires the optional `legacy` extra
+`lowess_backend` and `fisher_backend` default to `"numba"`. Use
+`lowess_backend="statsmodels"` and `fisher_backend="scipy"` for conservative
+reference comparisons; statsmodels requires the optional `legacy` extra
 (`pip install ep-touche[legacy]` / `uv sync --extra legacy`).
 
-`fisher_backend="numba"` (the default) is a `prange`-parallel hypergeometric
-survival function for the per-prey Fisher exact test, matching
-`scipy.stats.hypergeom.sf` to within ~1e-8 absolute error rather than exactly
-(see `notes/numba-implementation-plan.md` for the validation methodology).
-This step is single-threaded regardless of `lowess_backend`, and with that
-set to `"numba"` it becomes the main reason local-decay doesn't saturate
-available cores; `fisher_backend="numba"` addresses that.
-`fisher_backend="scipy"` is exact and always available (scipy is a core
-dependency, since `background`'s scatterplot KDE coloring needs it too).
+Use `lowess_iterations` to change the number of robust residual reweighting
+passes. Lower values are faster but can change expected-contact estimates.
 
-`compute_local_decay(..., n_jobs=N)` processes up to `N` baits concurrently
-in a thread pool instead of one at a time (default `n_jobs=1`, sequential).
-Baits are independent, so this is exact -- not an approximation -- as long
-as `N` doesn't oversubscribe available cores: each worker's own numba
-thread budget is capped to `cores // n_jobs` automatically, but kernel-level
-`prange` parallelism (from the observed-count kernel, `lowess_backend`, and
-`fisher_backend`) and this bait-level parallelism are not additive, they
-compete for the same cores. Worth combining with `lowess_backend`/
-`fisher_backend="numba"` above once per-bait
-overhead (contact filtering, histogram construction) is a meaningful share
-of runtime relative to the kernels themselves -- see
-`notes/numba-implementation-plan.md` for when that's the case.
+`compute_local_decay(..., n_jobs=N)` processes up to `N` baits concurrently.
+Keep `n_jobs=1` when Numba is already using the available cores. Increase it
+only after profiling shows idle CPU outside the kernels.
 
 Pair-type plotting accepts an in-memory dataframe or an assignments file:
 
@@ -160,8 +149,6 @@ counts = tt.compute_ep_and_background(
     max_bg_distance=150_000,
 )
 ```
-
-EP/background counting always uses an accelerated Numba kernel.
 
 ## Saving Figures
 

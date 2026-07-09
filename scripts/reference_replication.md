@@ -8,11 +8,9 @@ reference-comparable plots along the way.
 ## What It Measures
 
 The benchmark profiles the `preprocess-cache-*` steps once, then every
-downstream step once (counting always uses an accelerated Numba kernel, so
-there's no backend choice to profile side by side there). `--lowess-backend`
-and `--fisher-backend` remain real choices for `local-decay-call` (default
-`numba` for both; pass `statsmodels`/`scipy` for the exact reference-parity
-path).
+downstream step once. `--lowess-backend` and `--fisher-backend` remain real
+choices for `local-decay-call` (default `numba` for both; pass
+`statsmodels`/`scipy` for the conservative reference-comparison path).
 
 Full step list:
 

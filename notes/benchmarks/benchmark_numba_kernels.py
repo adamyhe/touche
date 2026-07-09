@@ -60,7 +60,6 @@ def main_orchestrate(argv: list[str]) -> int:
     parser.add_argument("--preys", type=int, default=300)
     parser.add_argument("--genome-size", type=int, default=20_000_000)
     parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--compare-kernels", action="store_true")
     parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="numba")
     parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="numba")
     parser.add_argument(
@@ -95,7 +94,6 @@ def main_orchestrate(argv: list[str]) -> int:
         fisher_backend=args.fisher_backend,
         jobs=args.jobs,
         lowess_iterations=args.lowess_iterations,
-        compare_kernels=args.compare_kernels,
     )
 
     if args.dry_run:
@@ -143,7 +141,6 @@ def build_steps(
     fisher_backend: str,
     jobs: int,
     lowess_iterations: int,
-    compare_kernels: bool,
 ) -> list[BenchmarkStep]:
     script = str(Path(__file__).resolve())
     common = [
@@ -181,21 +178,6 @@ def build_steps(
                 command=[python, script, "_run-single", "--workflow", workflow, *common, *extra],
             )
         )
-    if compare_kernels:
-        steps.append(
-            BenchmarkStep(
-                name="kernel-variants",
-                group="background",
-                command=[
-                    python,
-                    script,
-                    "_run-single",
-                    "--workflow",
-                    "kernel-variants",
-                    *common,
-                ],
-            )
-        )
     return steps
 
 
@@ -210,7 +192,7 @@ def main_run_single(argv: list[str]) -> int:
     parser.add_argument(
         "--workflow",
         required=True,
-        choices=["background", "apa", "local-decay", "kernel-variants"],
+        choices=["background", "apa", "local-decay"],
     )
     parser.add_argument("--contacts", type=int, default=100_000)
     parser.add_argument("--baits", type=int, default=300)
@@ -223,33 +205,24 @@ def main_run_single(argv: list[str]) -> int:
     parser.add_argument("--lowess-iterations", type=int, default=3)
     args = parser.parse_args(argv)
 
-    if args.workflow == "kernel-variants":
-        summary = run_kernel_variants_single(
-            contacts=args.contacts,
-            baits=args.baits,
-            preys=args.preys,
-            genome_size=args.genome_size,
-            repeats=args.repeats,
-        )
+    indexes, baits, preys = make_background_inputs(
+        contacts=args.contacts, baits=args.baits, preys=args.preys, genome_size=args.genome_size
+    )
+    if args.workflow == "background":
+        summary = run_background_single(indexes, baits, preys, repeats=args.repeats)
+    elif args.workflow == "apa":
+        summary = run_apa_single(indexes, baits, preys, repeats=args.repeats)
     else:
-        indexes, baits, preys = make_background_inputs(
-            contacts=args.contacts, baits=args.baits, preys=args.preys, genome_size=args.genome_size
+        summary = run_local_decay_single(
+            indexes,
+            baits,
+            preys,
+            repeats=args.repeats,
+            lowess_backend=args.lowess_backend,
+            fisher_backend=args.fisher_backend,
+            n_jobs=args.jobs,
+            lowess_iterations=args.lowess_iterations,
         )
-        if args.workflow == "background":
-            summary = run_background_single(indexes, baits, preys, repeats=args.repeats)
-        elif args.workflow == "apa":
-            summary = run_apa_single(indexes, baits, preys, repeats=args.repeats)
-        else:
-            summary = run_local_decay_single(
-                indexes,
-                baits,
-                preys,
-                repeats=args.repeats,
-                lowess_backend=args.lowess_backend,
-                fisher_backend=args.fisher_backend,
-                n_jobs=args.jobs,
-                lowess_iterations=args.lowess_iterations,
-            )
 
     print(json.dumps(summary))
     return 0
@@ -318,63 +291,6 @@ def run_local_decay_single(
         lambda: compute_local_decay(indexes, local_baits, local_preys, **kwargs), repeats
     )
     return {"rows": len(result), **timing_summary(times)}
-
-
-def run_kernel_variants_single(
-    *, contacts: int, baits: int, preys: int, genome_size: int, repeats: int
-) -> dict[str, Any]:
-    """Compare the current binary-search kernel against the naive linear-scan one it replaced."""
-
-    from touche.numba.background import (
-        count_ep_background_pairs_eager_numba,
-        count_ep_background_pairs_numba,
-    )
-
-    indexes, baits_df, preys_df = make_background_inputs(
-        contacts=contacts, baits=baits, preys=preys, genome_size=genome_size
-    )
-    kwargs = {
-        "min_distance": 25_000,
-        "max_distance": 150_000,
-        "window": 10_000,
-        "min_bg_distance": 10_000,
-        "max_bg_distance": 150_000,
-    }
-    index = indexes["chr1"]
-    bait_centers = baits_df["center"].to_numpy().astype(np.int64)
-    prey_centers = preys_df["center"].to_numpy().astype(np.int64)
-    pair_bait_index, pair_prey_index = make_pair_indexes(
-        bait_centers, prey_centers, min_distance=kwargs["min_distance"], max_distance=kwargs["max_distance"]
-    )
-    kernel_args = (
-        index.pos_a.astype(np.int64, copy=False),
-        index.pos_b.astype(np.int64, copy=False),
-        bait_centers,
-        prey_centers,
-        pair_bait_index,
-        pair_prey_index,
-        kwargs["window"],
-        kwargs["min_bg_distance"],
-        kwargs["max_bg_distance"],
-    )
-
-    eager = count_ep_background_pairs_eager_numba(*kernel_args)
-    optimized = count_ep_background_pairs_numba(*kernel_args)
-    np.testing.assert_array_equal(optimized[0], eager[0])
-    np.testing.assert_array_equal(optimized[1], eager[1])
-
-    eager_times = timed_repeats(lambda: count_ep_background_pairs_eager_numba(*kernel_args), repeats)
-    optimized_times = timed_repeats(lambda: count_ep_background_pairs_numba(*kernel_args), repeats)
-    return {
-        "rows": len(pair_bait_index),
-        "median_seconds": median(optimized_times),
-        "min_seconds": min(optimized_times),
-        "mean_seconds": statistics.fmean(optimized_times),
-        "timings": [
-            {"step": "kernel_eager", "elapsed_seconds": median(eager_times)},
-            {"step": "kernel_optimized", "elapsed_seconds": median(optimized_times)},
-        ],
-    }
 
 
 def make_pair_indexes(

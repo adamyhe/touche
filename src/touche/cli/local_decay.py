@@ -37,10 +37,26 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     call_parser.add_argument("--lowess-window", default=5_000, type=int)
     call_parser.add_argument("--lowess-delta", default=16.0, type=float)
     call_parser.add_argument("--lowess-iterations", default=3, type=int)
-    call_parser.add_argument("--index-strategy", choices=["cache", "all", "chromosome"], default="cache")
-    call_parser.add_argument("--cache-dir", type=Path)
-    call_parser.add_argument("--cache-prefix", default="contacts")
-    call_parser.add_argument("--require-cache", action="store_true")
+    call_parser.add_argument(
+        "--index-strategy",
+        choices=["cache", "all", "chromosome"],
+        default="cache",
+        help=(
+            "Contact-index strategy. Use cache for real/repeated runs; all and chromosome "
+            "are small-data or diagnostic modes."
+        ),
+    )
+    call_parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="Directory containing or receiving chromosome-sharded contact cache files.",
+    )
+    call_parser.add_argument("--cache-prefix", default="contacts", help="Cache manifest/shard prefix.")
+    call_parser.add_argument(
+        "--require-cache",
+        action="store_true",
+        help="Require an existing cache instead of building one implicitly.",
+    )
     call_parser.add_argument(
         "--lowess-backend",
         choices=["statsmodels", "numba"],
@@ -78,10 +94,26 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--lowess-window", default=5_000, type=int)
     run_parser.add_argument("--lowess-delta", default=16.0, type=float)
     run_parser.add_argument("--lowess-iterations", default=3, type=int)
-    run_parser.add_argument("--index-strategy", choices=["cache", "all", "chromosome"], default="cache")
-    run_parser.add_argument("--cache-dir", type=Path)
-    run_parser.add_argument("--cache-prefix", default="contacts")
-    run_parser.add_argument("--require-cache", action="store_true")
+    run_parser.add_argument(
+        "--index-strategy",
+        choices=["cache", "all", "chromosome"],
+        default="cache",
+        help=(
+            "Contact-index strategy. Use cache for real/repeated runs; all and chromosome "
+            "are small-data or diagnostic modes."
+        ),
+    )
+    run_parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="Directory containing or receiving chromosome-sharded contact cache files.",
+    )
+    run_parser.add_argument("--cache-prefix", default="contacts", help="Cache manifest/shard prefix.")
+    run_parser.add_argument(
+        "--require-cache",
+        action="store_true",
+        help="Require an existing cache instead of building one implicitly.",
+    )
     run_parser.add_argument(
         "--lowess-backend",
         choices=["statsmodels", "numba"],

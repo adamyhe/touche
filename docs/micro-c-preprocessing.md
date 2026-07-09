@@ -86,14 +86,16 @@ compressed input.
 
 ## NPZ cache
 
-For repeated downstream analyses, build chromosome-sharded NPZ caches:
+For real-data local-decay runs, build chromosome-sharded NPZ caches once and
+reuse them:
 
 ```bash
 uv run touche preprocess build-cache \
   --pairs prefix.nodups_30_intra.pairs.gz \
   --source touche \
   --cache-dir .cache/touche/prefix \
-  --prefix prefix
+  --prefix prefix \
+  --no-metadata
 ```
 
 The cache is intentionally sharded by chromosome so downstream commands do not
@@ -105,8 +107,13 @@ buffers, writes one NPZ shard per chromosome, and writes
 location or `--no-qc` to suppress QC output. By default, cache shards include
 strand and MAPQ metadata for workflows that need it; use `--no-metadata` for
 faster, smaller position-only caches when downstream commands only need
-positions, such as local-decay. Use `--index-strategy all` only when you
-explicitly want the legacy whole-genome in-memory cache path.
+positions, such as local-decay.
+
+Pass the same `--cache-dir` and `--cache-prefix` to `touche local-decay run` or
+`touche local-decay call`. Add `--require-cache` for benchmarks and reproducible
+production runs so a missing cache fails fast instead of being built inside the
+timed analysis command. The non-cache local-decay index strategies are kept for
+small inputs and diagnostics.
 
 ## Boundary
 

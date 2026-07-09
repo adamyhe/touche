@@ -12,17 +12,17 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Adam He" }]
 dependencies = [
-  "numpy",
-  "polars",
-  "scipy",
-  "matplotlib",
-  "seaborn",
-  "tqdm",
-  "numba",
+  "numpy>=1.24",
+  "polars>=1.0",
+  "scipy>=1.10",
+  "matplotlib>=3.7",
+  "seaborn>=0.12",
+  "tqdm>=4.65",
+  "numba>=0.59",
 ]
 
 [project.optional-dependencies]
-legacy = ["statsmodels"]
+legacy = ["statsmodels>=0.14"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "mypy"]

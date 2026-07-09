@@ -274,14 +274,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "matplotlib" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "polars" },
-    { name = "scipy" },
-    { name = "seaborn" },
-    { name = "statsmodels", marker = "extra == 'legacy'" },
-    { name = "tqdm" },
+    { name = "matplotlib", specifier = ">=3.7" },
+    { name = "numba", specifier = ">=0.59" },
+    { name = "numpy", specifier = ">=1.24" },
+    { name = "polars", specifier = ">=1.0" },
+    { name = "scipy", specifier = ">=1.10" },
+    { name = "seaborn", specifier = ">=0.12" },
+    { name = "statsmodels", marker = "extra == 'legacy'", specifier = ">=0.14" },
+    { name = "tqdm", specifier = ">=4.65" },
 ]
 provides-extras = ["legacy"]
 

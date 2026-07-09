@@ -100,7 +100,7 @@ def compute_ep_and_background(
     """Count EP and local-background contacts from in-memory indexes and anchors."""
 
     instrument = make_instrumentation(progress, profile=profile)
-    rows: list[dict[str, object]] = []
+    frames: list[pl.DataFrame] = []
     chrom_list = baits["chr"].unique(maintain_order=True).to_list()
 
     chrom_iter = instrument.iter(
@@ -119,16 +119,13 @@ def compute_ep_and_background(
             continue
         prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
         bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
-        pair_bait_indexes: list[int] = []
-        pair_prey_indexes: list[int] = []
-        for bait_index, bait_center in enumerate(bait_centers):
-            distances = np.abs(prey_centers - bait_center)
-            candidate_indexes = np.flatnonzero(
-                (distances >= min_distance) & (distances <= max_distance)
-            )
-            pair_bait_indexes.extend([bait_index] * len(candidate_indexes))
-            pair_prey_indexes.extend(candidate_indexes.tolist())
-        if not pair_bait_indexes:
+        pair_bait_indexes, pair_prey_indexes = _candidate_pair_indexes(
+            bait_centers,
+            prey_centers,
+            min_distance=min_distance,
+            max_distance=max_distance,
+        )
+        if not len(pair_bait_indexes):
             continue
 
         ep_counts, bg_counts = _count_ep_background_pairs_numba(
@@ -136,26 +133,68 @@ def compute_ep_and_background(
             index.pos_b,
             bait_centers,
             prey_centers,
-            np.asarray(pair_bait_indexes, dtype=np.int64),
-            np.asarray(pair_prey_indexes, dtype=np.int64),
+            pair_bait_indexes,
+            pair_prey_indexes,
             window=window,
             min_bg_distance=min_bg_distance,
             max_bg_distance=max_bg_distance,
         )
-        for pair_index, (bait_index, prey_index) in enumerate(
-            zip(pair_bait_indexes, pair_prey_indexes, strict=True)
-        ):
-            rows.append(
+        frames.append(
+            pl.DataFrame(
                 {
-                    "chr": chrom,
-                    "promoter": int(bait_centers[bait_index]),
-                    "enhancer": int(prey_centers[prey_index]),
-                    "EP_contacts": int(ep_counts[pair_index]),
-                    "BG_contacts": int(bg_counts[pair_index]),
-                }
+                    "chr": [chrom] * len(pair_bait_indexes),
+                    "promoter": bait_centers[pair_bait_indexes],
+                    "enhancer": prey_centers[pair_prey_indexes],
+                    "EP_contacts": ep_counts,
+                    "BG_contacts": bg_counts,
+                },
+                schema=_BACKGROUND_SCHEMA,
             )
+        )
 
-    return pl.DataFrame(rows, schema=_BACKGROUND_SCHEMA)
+    if not frames:
+        return pl.DataFrame(schema=_BACKGROUND_SCHEMA)
+    return pl.concat(frames)
+
+
+def _candidate_pair_indexes(
+    bait_centers: np.ndarray,
+    prey_centers: np.ndarray,
+    *,
+    min_distance: int,
+    max_distance: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    pair_bait_indexes: list[int] = []
+    pair_prey_indexes: list[int] = []
+    if prey_centers.shape[0] > 1 and np.any(prey_centers[:-1] > prey_centers[1:]):
+        for bait_index, bait_center in enumerate(bait_centers):
+            distances = np.abs(prey_centers - bait_center)
+            candidate_indexes = np.flatnonzero(
+                (distances >= min_distance) & (distances <= max_distance)
+            )
+            pair_bait_indexes.extend([bait_index] * len(candidate_indexes))
+            pair_prey_indexes.extend(candidate_indexes.tolist())
+    else:
+        for bait_index, bait_center in enumerate(bait_centers):
+            left_start = int(bait_center - max_distance)
+            left_stop = int(bait_center - min_distance)
+            right_start = int(bait_center + min_distance)
+            right_stop = int(bait_center + max_distance)
+
+            left = int(np.searchsorted(prey_centers, left_start, side="left"))
+            right = int(np.searchsorted(prey_centers, left_stop, side="right"))
+            pair_bait_indexes.extend([bait_index] * (right - left))
+            pair_prey_indexes.extend(range(left, right))
+
+            left = int(np.searchsorted(prey_centers, right_start, side="left"))
+            right = int(np.searchsorted(prey_centers, right_stop, side="right"))
+            pair_bait_indexes.extend([bait_index] * (right - left))
+            pair_prey_indexes.extend(range(left, right))
+
+    return (
+        np.asarray(pair_bait_indexes, dtype=np.int64),
+        np.asarray(pair_prey_indexes, dtype=np.int64),
+    )
 
 
 def _count_ep_background_pairs_numba(
@@ -173,9 +212,16 @@ def _count_ep_background_pairs_numba(
     """Cast inputs to the dtypes `touche.numba.background.count_ep_background_pairs_numba` expects."""
     from touche.numba.background import count_ep_background_pairs_numba
 
+    pos_a = pos_a.astype(np.int64, copy=False)
+    pos_b = pos_b.astype(np.int64, copy=False)
+    if pos_a.shape[0] > 1 and np.any(pos_a[:-1] > pos_a[1:]):
+        order = np.argsort(pos_a, kind="mergesort")
+        pos_a = pos_a[order]
+        pos_b = pos_b[order]
+
     return count_ep_background_pairs_numba(
-        pos_a.astype(np.int64, copy=False),
-        pos_b.astype(np.int64, copy=False),
+        pos_a,
+        pos_b,
         bait_centers.astype(np.int64, copy=False),
         prey_centers.astype(np.int64, copy=False),
         pair_bait_index.astype(np.int64, copy=False),

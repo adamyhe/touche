@@ -7,9 +7,10 @@ pip install ep-touche
 touche --help
 ```
 
-From a development checkout, run the same commands through `uv`:
+or
 
 ```bash
+uv add ep-touche
 uv run touche --help
 ```
 
@@ -35,6 +36,56 @@ Most commands accept `--source auto`, `--source distiller`, or `--source touche`
 when reading pairs files. `auto` is the default and infers the input shape from
 the row fields. Use `distiller` for pairtools/distiller-style pairs and `touche`
 for the canonical 9-column format written by `touche preprocess`.
+
+## Main workflow
+
+For routine analyses, prefer the `run` wrappers. They run the expected stages,
+preserve intermediate tables and figures, and write a `manifest.json` with
+inputs, parameters, outputs, metrics, and timings when `--profile` is enabled.
+
+Typical command order:
+
+```bash
+# Optional, but useful when starting from distiller/pairtools pairs.
+uv run touche preprocess filter-pairs \
+  --pairs sample.pairs.gz \
+  --out sample.nodups_30_intra.pairs.gz \
+  --min-mapq 30 \
+  --cis-only
+
+# Recommended before real or repeated local-decay runs.
+uv run touche preprocess build-cache \
+  --pairs sample.nodups_30_intra.pairs.gz \
+  --source touche \
+  --cache-dir .cache/touche/sample \
+  --prefix sample \
+  --no-metadata
+
+uv run touche local-decay run ...
+uv run touche apa run ...
+uv run touche background run ...
+```
+
+Use individual commands such as `local-decay call`, `apa aggregate`, or
+`background count` when debugging, benchmarking, or replacing one stage of a
+larger workflow.
+
+## CPU usage
+
+Compute-heavy commands use Numba kernels. Control their core budget with
+`NUMBA_NUM_THREADS` before running `touche`:
+
+```bash
+NUMBA_NUM_THREADS=8 uv run touche background run ...
+NUMBA_NUM_THREADS=16 uv run touche apa aggregate ...
+```
+
+If `NUMBA_NUM_THREADS` is unset, Numba chooses its default thread count for the
+machine. On shared servers and schedulers, set it explicitly to the cores
+allocated to the job. For `local-decay`, keep `--jobs 1` when Numba is already
+using the available cores; increasing `--jobs` only helps if profiling shows
+substantial idle CPU outside the kernels (though setting `--jobs n_cpus` is
+generally safe).
 
 ## Progress and Profiling
 
@@ -125,7 +176,7 @@ cache construction by default so the compressed pairs file is scanned once.
 
 ### Build NPZ caches
 
-Build chromosome-sharded NPZ caches for repeated analysis:
+Build chromosome-sharded NPZ caches for real or repeated local-decay analysis:
 
 ```bash
 uv run touche preprocess build-cache \
@@ -160,7 +211,7 @@ Inputs:
   assignment.
 - `--nonfunctional`: matching list of nonfunctional pairs.
 
-### Run the full workflow
+### Run the full local decay workflow
 
 Use `local-decay run` when you want contact calling, assignment, plotting, and a
 manifest in one step:
@@ -223,14 +274,16 @@ uv run touche local-decay plot \
 Use `--no-reference-style` on `run` or `plot` to use the package's standard
 Matplotlib styling instead of the reference-style plot appearance.
 
-`local-decay call` and `local-decay run`'s observed-count helper always uses
-an accelerated Numba kernel. `--lowess-backend` and `--fisher-backend` are
-separate, still selectable flags (default `numba`) -- see below.
+`--lowess-backend` and `--fisher-backend` control the local-decay smoothing and
+Fisher exact-test implementations. Both default to `numba`; use
+`--lowess-backend statsmodels` and `--fisher-backend scipy` for the most
+conservative reference-comparison path.
 
 `local-decay call` and `local-decay run` default to `--index-strategy cache`.
-The cache strategy builds or reuses chromosome-sharded NPZ contact indexes, then
-loads one chromosome shard at a time. If `--cache-dir` is omitted, the cache is
-created under `contact_index_cache/` next to the local-decay output table.
+For real data, treat this as the normal path: build the cache once, then reuse
+it for parameter sweeps, reruns, and benchmarks. If `--cache-dir` is omitted,
+the cache is created under `contact_index_cache/` next to the local-decay output
+table.
 
 For repeated local-decay runs, build the cache explicitly and reuse it:
 
@@ -249,43 +302,29 @@ uv run touche local-decay call \
   --out results/local-decay/ContactCaller_microC_output.tsv \
   --index-strategy cache \
   --cache-dir .cache/touche/sample \
-  --cache-prefix sample
+  --cache-prefix sample \
+  --require-cache
 ```
 
-Alternative strategies are available for diagnostics:
+Use `--require-cache` when you want reproducible timing or workflow behavior:
+the command fails if the cache is missing instead of building one implicitly.
+
+Alternative strategies are kept for small data and diagnostics:
 
 - `--index-strategy all`: read the pairs file once and hold every chromosome in
-  memory. This is fastest when enough memory is available.
+  memory. This is useful for tests, notebooks, and small inputs.
 - `--index-strategy chromosome`: scan the pairs file once per bait chromosome
   and keep only that chromosome in memory. This avoids persistent cache files,
-  but can be slow for gzipped pairs.
+  but can be slow for gzipped real-data pairs.
 
-`--lowess-backend numba` (the default) is faster on small synthetic
-benchmarks and matches the current chunked local-decay smoothing wrappers on
-regression fixtures. Use `--lowess-backend statsmodels` for the most
-conservative reference-compatible runs -- this requires the optional
-`legacy` extra (`pip install ep-touche[legacy]` / `uv sync --extra legacy`).
-Use `--lowess-iterations` to change the number of robust residual reweighting
+`--lowess-backend statsmodels` requires the optional `legacy` extra
+(`pip install ep-touche[legacy]` / `uv sync --extra legacy`). Use
+`--lowess-iterations` to change the number of robust residual reweighting
 passes; lower values are faster but can change expected-contact estimates.
 
-`--fisher-backend numba` (the default) replaces `scipy.stats.hypergeom.sf`
-with a `prange`-parallel numba hypergeometric survival function for the
-per-prey Fisher exact test, matching it to within ~1e-8 absolute error rather
-than exactly. That step is single-threaded regardless of `--lowess-backend`,
-so with that set to `numba` it becomes the main reason local-decay doesn't
-saturate available cores; `--fisher-backend numba` addresses that.
-`--fisher-backend scipy` is exact and always available (scipy is a core
-dependency, since `background`'s scatterplot KDE coloring needs it too).
-
-`--jobs`/`-j` (default 1) processes that many baits concurrently in a thread
-pool instead of one at a time. Baits are independent, so this changes
-nothing about the result -- each worker's numba thread budget is
-automatically capped to `cores // jobs` to avoid oversubscription, since
-kernel-level `prange` parallelism (from the backends above) and this
-bait-level parallelism compete for the same cores rather than adding up.
-It's most worth combining with the `numba` backends once per-bait overhead
-outside the parallel kernels (contact filtering, histogram construction) is
-a meaningful share of runtime -- see `notes/numba-implementation-plan.md`.
+`--jobs`/`-j` (default 1) processes that many baits concurrently. Leave it at
+1 when `NUMBA_NUM_THREADS` already saturates the available cores. Try a higher
+value only after checking `--profile` timings and CPU utilization.
 
 ## Background
 
@@ -300,7 +339,7 @@ Inputs:
 - `--treatments`: one or more `NAME=PATH` values.
 - `--depths`: sequencing depth values as `NAME=INTEGER`.
 
-### Run the full workflow
+### Run the full background workflow
 
 Use `background run` to count each sample, compare ratios, write plots, and
 write a manifest:
@@ -357,9 +396,6 @@ uv run touche background compare \
 The `--min-ep-cpb` threshold filters pairs by control EP contacts per billion
 contacts before plotting comparisons.
 
-`background count` and `background run` always use an accelerated Numba
-kernel for EP/background counting.
-
 ## APA
 
 `touche apa` runs aggregate peak analysis for bait/prey pairs and can compare
@@ -372,7 +408,7 @@ Inputs:
 - `--control`: `NAME=PAIRS`.
 - `--treatment`: `NAME=PAIRS`.
 
-### Run the full workflow
+### Run the full APA workflow
 
 Use `apa run` to aggregate APA matrices for a control and treatment sample,
 compare them, and write a manifest:
@@ -437,9 +473,6 @@ uv run touche apa compare \
 `apa run` can infer `--bait-count` and `--prey-count` from the anchor files. The
 standalone `apa compare` command requires them because it only receives the
 already aggregated APA and signal files.
-
-`apa aggregate` and `apa run` always use an accelerated Numba kernel for APA
-matrix and 1D signal counting.
 
 ## Output and manifests
 

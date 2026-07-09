@@ -9,8 +9,13 @@ Implementation plans, agent logs, experiments, and design sketches belong in
 ## Running Commands
 
 If `touche` is installed with `pip`, run commands directly with `touche`.
-When working from a development checkout, use `uv run touche` as shown in the
-examples.
+When working from a development checkout or with a `uv` managed project,
+use `uv run touche` as shown in the examples.
+
+For routine analyses, start with the [CLI reference](cli.md)'s main workflow
+section. It shows when to preprocess pairs, when local-decay caches are useful,
+which `run` wrappers to use, and how to set `NUMBA_NUM_THREADS` for long
+counting jobs.
 
 ## Guides
 

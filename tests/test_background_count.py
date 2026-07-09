@@ -147,6 +147,109 @@ class BackgroundCountTests(unittest.TestCase):
         )
         assert_frame_equal(result, expected)
 
+    @unittest.skipUnless(has_numba(), "numba is not installed")
+    def test_optimized_background_kernel_matches_reference_with_overlapping_windows(self) -> None:
+        from touche.numba.background import count_ep_background_pairs_numba
+
+        pos_a = np.asarray([90, 100, 105, 125, 135, 160, 170, 200], dtype=np.int64)
+        pos_b = np.asarray([120, 135, 170, 95, 145, 100, 130, 110], dtype=np.int64)
+        bait_centers = np.asarray([100, 150], dtype=np.int64)
+        prey_centers = np.asarray([125, 170], dtype=np.int64)
+        pair_bait_index = np.asarray([0, 0, 1, 1], dtype=np.int64)
+        pair_prey_index = np.asarray([0, 1, 0, 1], dtype=np.int64)
+        order = np.argsort(pos_a, kind="mergesort")
+
+        expected_ep, expected_bg = _reference_ep_background_counts(
+            pos_a,
+            pos_b,
+            bait_centers,
+            prey_centers,
+            pair_bait_index,
+            pair_prey_index,
+            20,
+            10,
+            50,
+        )
+        opt_ep, opt_bg = count_ep_background_pairs_numba(
+            pos_a[order],
+            pos_b[order],
+            bait_centers,
+            prey_centers,
+            pair_bait_index,
+            pair_prey_index,
+            20,
+            10,
+            50,
+        )
+
+        np.testing.assert_array_equal(opt_ep, expected_ep)
+        np.testing.assert_array_equal(opt_bg, expected_bg)
+
+
+def _reference_ep_background_counts(
+    pos_a: np.ndarray,
+    pos_b: np.ndarray,
+    bait_centers: np.ndarray,
+    prey_centers: np.ndarray,
+    pair_bait_index: np.ndarray,
+    pair_prey_index: np.ndarray,
+    window: int,
+    min_bg_distance: int,
+    max_bg_distance: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    ep_counts = np.zeros(pair_bait_index.shape[0], dtype=np.int64)
+    bg_counts = np.zeros(pair_bait_index.shape[0], dtype=np.int64)
+
+    for pair_index, (bait_index, prey_index) in enumerate(
+        zip(pair_bait_index, pair_prey_index, strict=True)
+    ):
+        bait_center = bait_centers[bait_index]
+        prey_center = prey_centers[prey_index]
+
+        bait_start = bait_center - window
+        bait_end = bait_center + window
+        prey_start = prey_center - window
+        prey_end = prey_center + window
+
+        prey_bg_left_start = prey_center - max_bg_distance
+        prey_bg_left_end = prey_center - min_bg_distance
+        prey_bg_right_start = prey_center + min_bg_distance
+        prey_bg_right_end = prey_center + max_bg_distance
+
+        bait_bg_left_start = bait_center - max_bg_distance
+        bait_bg_left_end = bait_center - min_bg_distance
+        bait_bg_right_start = bait_center + min_bg_distance
+        bait_bg_right_end = bait_center + max_bg_distance
+
+        for a, b in zip(pos_a, pos_b, strict=True):
+            a_in_bait = bait_start <= a <= bait_end
+            b_in_bait = bait_start <= b <= bait_end
+            a_in_prey = prey_start <= a <= prey_end
+            b_in_prey = prey_start <= b <= prey_end
+
+            if (a_in_bait and b_in_prey) or (b_in_bait and a_in_prey):
+                ep_counts[pair_index] += 1
+
+            a_in_prey_bg = (prey_bg_left_start <= a <= prey_bg_left_end) or (
+                prey_bg_right_start <= a <= prey_bg_right_end
+            )
+            b_in_prey_bg = (prey_bg_left_start <= b <= prey_bg_left_end) or (
+                prey_bg_right_start <= b <= prey_bg_right_end
+            )
+            a_in_bait_bg = (bait_bg_left_start <= a <= bait_bg_left_end) or (
+                bait_bg_right_start <= a <= bait_bg_right_end
+            )
+            b_in_bait_bg = (bait_bg_left_start <= b <= bait_bg_left_end) or (
+                bait_bg_right_start <= b <= bait_bg_right_end
+            )
+
+            if (a_in_bait and b_in_prey_bg) or (b_in_bait and a_in_prey_bg):
+                bg_counts[pair_index] += 1
+            if (a_in_prey and b_in_bait_bg) or (b_in_prey and a_in_bait_bg):
+                bg_counts[pair_index] += 1
+
+    return ep_counts, bg_counts
+
 
 if __name__ == "__main__":
     unittest.main()

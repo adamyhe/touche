@@ -8,7 +8,7 @@ Python API and CLI tools for analyzing enhancer-promoter contacts (touches) from
 
 `touche` starts from processed pairs files. Raw FASTQ processing, alignment,
 deduplication, and cooler generation should be handled by an external workflow
-such as `distiller-nf`.
+such as [distiller-nf](https://github.com/open2c/distiller-nf).
 
 ## Status
 
@@ -37,19 +37,15 @@ uv add ep-touche
 uv run touche --help
 ```
 
-`local-decay`'s exact, statsmodels-backed LOWESS path
-(`lowess_backend="statsmodels"`) is an optional `legacy` extra, since the
-default `lowess_backend="numba"` covers everyday use:
+`local-decay` also supports a statsmodels-backed LOWESS path
+(`lowess_backend="statsmodels"`) for exact reference comparisons
+(at the cost of being much slower than our custom implementation).
+Install the optional `legacy` extra only if you need that backend:
 
 ```bash
 pip install ep-touche[legacy]
 # or: uv sync --extra legacy
 ```
-
-Our custom `numba` kernel is substantially faster and produces essentially
-equivalent results, so should be the main option used for LOWESS in
-`local-decay`, but `statsmodels` LOWESS is maintained as an optional backend
-for true equivalences with the reference code base.
 
 ## CLI Overview
 
@@ -74,6 +70,27 @@ Available command groups:
 See the [CLI reference](docs/cli.md) for examples, common options, and expected
 outputs.
 
+## Typical workflow
+
+Start from analysis-ready `.pairs` or `.pairs.gz` files produced by distiller-nf
+or an equivalent workflow.
+
+1. Filter or convert pairs with `touche preprocess`.
+2. For real or repeated local-decay runs, build a position-only cache with
+   `touche preprocess build-cache --no-metadata`.
+3. Use the `run` wrappers for end-to-end analyses:
+   `touche local-decay run`, `touche apa run`, and `touche background run`.
+4. Use individual subcommands such as `local-decay call` or `background count`
+   when debugging or replacing one stage.
+
+Many of the computation-heavy steps use `numba` acceleration and parallelism.
+Set `NUMBA_NUM_THREADS` before running to control CPU usage (default is to use
+all threads on machine):
+
+```bash
+NUMBA_NUM_THREADS=8 touche background run ...
+```
+
 ## Python API
 
 For notebooks and custom scripts, import the provisional API surface:
@@ -87,9 +104,8 @@ indexes = tt.build_contact_indexes("sample.nodups_30_intra.pairs.gz", source="to
 The API is organized around reading pairs and anchors once, running in-memory
 compute functions such as `compute_apa`, `compute_local_decay`, and
 `compute_ep_and_background`, then displaying or saving returned Matplotlib
-figures as needed. Counting always uses an accelerated Numba kernel.
-Long-running CLI and API calls also support optional progress bars and
-lightweight profiling. See the [API guide](docs/api.md) for examples.
+figures as needed. Long-running CLI and API calls support optional progress
+bars and lightweight profiling. See the [API guide](docs/api.md) for examples.
 
 ## Documentation
 
