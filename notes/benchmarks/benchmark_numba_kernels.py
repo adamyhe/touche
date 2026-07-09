@@ -64,6 +64,7 @@ def main_orchestrate(argv: list[str]) -> int:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--compare-kernels", action="store_true")
     parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="statsmodels")
+    parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="scipy")
     parser.add_argument("--lowess-iterations", type=int, default=3)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--dry-run", action="store_true")
@@ -95,6 +96,7 @@ def main_orchestrate(argv: list[str]) -> int:
         genome_size=args.genome_size,
         repeats=args.repeats,
         lowess_backend=args.lowess_backend,
+        fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
         compare_kernels=args.compare_kernels and "numba" in backends,
     )
@@ -149,6 +151,7 @@ def build_steps(
     genome_size: int,
     repeats: int,
     lowess_backend: str,
+    fisher_backend: str,
     lowess_iterations: int,
     compare_kernels: bool,
 ) -> list[BenchmarkStep]:
@@ -169,7 +172,14 @@ def build_steps(
     for workflow in WORKFLOWS:
         for backend in backends:
             extra = (
-                ["--lowess-backend", lowess_backend, "--lowess-iterations", str(lowess_iterations)]
+                [
+                    "--lowess-backend",
+                    lowess_backend,
+                    "--fisher-backend",
+                    fisher_backend,
+                    "--lowess-iterations",
+                    str(lowess_iterations),
+                ]
                 if workflow == "local-decay"
                 else []
             )
@@ -284,6 +294,7 @@ def main_run_single(argv: list[str]) -> int:
     parser.add_argument("--genome-size", type=int, default=20_000_000)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--lowess-backend", default="statsmodels", choices=["statsmodels", "numba"])
+    parser.add_argument("--fisher-backend", default="scipy", choices=["scipy", "numba"])
     parser.add_argument("--lowess-iterations", type=int, default=3)
     args = parser.parse_args(argv)
 
@@ -313,6 +324,7 @@ def main_run_single(argv: list[str]) -> int:
                 backend=args.backend,
                 repeats=args.repeats,
                 lowess_backend=args.lowess_backend,
+                fisher_backend=args.fisher_backend,
                 lowess_iterations=args.lowess_iterations,
             )
 
@@ -361,6 +373,7 @@ def run_local_decay_single(
     backend: str,
     repeats: int,
     lowess_backend: str,
+    fisher_backend: str,
     lowess_iterations: int,
 ) -> dict[str, Any]:
     local_baits = baits.select(["chr", "center"])
@@ -375,6 +388,7 @@ def run_local_decay_single(
         "min_distance": 1_000,
         "lowess_window": 500,
         "lowess_backend": lowess_backend,
+        "fisher_backend": fisher_backend,
         "lowess_iterations": lowess_iterations,
     }
     result = compute_local_decay(

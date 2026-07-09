@@ -9,7 +9,7 @@ from typing import Any
 from touche import __version__
 from touche.anchors import read_bed_anchors
 from touche.apa import aggregate_apa, compare_apa_change
-from touche.backends import DEFAULT_BACKEND, DEFAULT_LOWESS_BACKEND
+from touche.backends import DEFAULT_BACKEND, DEFAULT_FISHER_BACKEND, DEFAULT_LOWESS_BACKEND
 from touche.background import compare_background_ratios, count_ep_and_background
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
@@ -36,6 +36,7 @@ def run_local_decay_pipeline(
     reference_style: bool = True,
     backend: str = DEFAULT_BACKEND,
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
+    fisher_backend: str = DEFAULT_FISHER_BACKEND,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,
     cache_prefix: str = "contacts",
@@ -71,6 +72,7 @@ def run_local_decay_pipeline(
             lowess_delta=lowess_delta,
             backend=backend,
             lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
             index_strategy=index_strategy,
             cache_dir=cache_dir,
             cache_prefix=cache_prefix,
@@ -115,6 +117,7 @@ def run_local_decay_pipeline(
             "reference_style": reference_style,
             "backend": backend,
             "lowess_backend": lowess_backend,
+            "fisher_backend": fisher_backend,
             "index_strategy": index_strategy,
             "cache_dir": str(cache_dir) if cache_dir is not None else None,
             "cache_prefix": cache_prefix,

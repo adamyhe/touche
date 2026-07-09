@@ -268,6 +268,15 @@ local-decay smoothing wrappers on regression fixtures, but keep the default
 `--lowess-iterations` to change the number of robust residual reweighting passes;
 lower values are faster but can change expected-contact estimates.
 
+`--fisher-backend numba` is a further experimental, opt-in flag (default
+`scipy`) that replaces `scipy.stats.hypergeom.sf` with a `prange`-parallel
+numba hypergeometric survival function for the per-prey Fisher exact test.
+That step is single-threaded regardless of `--backend`/`--lowess-backend`, so
+with those set to `numba` it becomes the main reason local-decay doesn't
+saturate available cores; `--fisher-backend numba` addresses that, at the
+cost of p-values that match scipy to within ~1e-8 absolute error rather than
+exactly.
+
 ## Background
 
 `touche background` counts enhancer-promoter contacts and local background

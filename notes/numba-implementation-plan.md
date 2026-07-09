@@ -626,21 +626,68 @@ approaches the core count:
   favor of staying sequential and letting `NUMBA_NUM_THREADS` control core
   usage -- see item 3's "Status: deferred" note for why.
 
-1. **Vectorize local-decay's per-prey Fisher-exact loop** (lowest risk, ready
-   to implement first). `_call_bait_contacts`'s tail loop
-   (`src/touche/local_decay.py:647-676`) computes `exp_prob` via a fresh
-   `bg_pdf[exp_start:exp_stop+1].sum()` slice-sum per prey, then calls
-   `fisher_greater` (`src/touche/stats.py`, pure scipy `hypergeom.sf`, only
-   production caller is `local_decay.py:657`) once per prey -- both scalar,
-   run once per (bait, prey) candidate (up to hundreds of preys x 300 baits).
-   `hypergeom.sf` already broadcasts over array args, so this is a
-   numpy-vectorization job, not a new numba kernel: add a vectorized sibling
-   `fisher_greater_batch(a1, a2, b1, b2) -> np.ndarray` to `stats.py`, and
-   replace the windowed slice-sum with a cumulative-sum lookup
-   (`cumsum = np.concatenate([[0.0], np.cumsum(bg_pdf)])`,
-   `exp_prob = cumsum[exp_stop+1] - cumsum[exp_start]`), turning an
-   O(preys x window) loop into O(preys) vectorized ops. Verify via exact
-   equality against the current scalar loop's output on existing fixtures.
+1. **Vectorize local-decay's per-prey Fisher-exact loop.** **Status: done,
+   but only a partial fix -- see caveat below.** `_call_bait_contacts`'s tail
+   loop previously computed `exp_prob` via a fresh
+   `bg_pdf[exp_start:exp_stop+1].sum()` slice-sum per prey, then called
+   `fisher_greater` (pure scipy `hypergeom.sf`) once per prey -- both scalar,
+   entirely single-threaded and GIL-bound, running once per (bait, prey)
+   candidate. Replaced with: a cumulative-sum lookup for `exp_prob`
+   (`cumsum = np.concatenate([[0.0], np.cumsum(bg_pdf)])`, indexed once per
+   prey instead of re-summing a window each time) and a new vectorized
+   `fisher_greater_batch(a1, a2, b1, b2) -> np.ndarray` in `stats.py`
+   (`hypergeom.sf` broadcasts over array args), both applied across all of a
+   bait's preys at once instead of one Python-level iteration per prey.
+   Verified via exact equality against the scalar loop on a synthetic
+   fixture and via the existing `test_numba_compute_local_decay_matches_numpy`
+   parity test.
+
+   **Caveat (partially resolved by the numba `fisher_backend` prototype
+   below) -- vectorizing alone only partially addressed low core
+   utilization on local-decay.** Microbenchmarking (5000 synthetic preys,
+   ~2M-bin background histogram) found the windowed-sum-to-cumsum change is
+   a large win in isolation (~13x on that piece alone) but negligible
+   against the total, because `fisher_greater`/`hypergeom.sf` completely
+   dominates runtime -- vectorizing it via `fisher_greater_batch` only gave
+   ~1.5x (scipy's hypergeometric survival function has substantial fixed
+   per-element cost even when called as one batched array op instead of N
+   scalar calls; it isn't a thin wrapper over cheap arithmetic). After
+   `backend="numba"` and `lowess_backend="numba"` made the counting/LOWESS
+   kernels fast and fully parallel, this comparatively-slow, still
+   single-threaded loop became a larger share of each bait's wall time than
+   before -- which is why the real-data benchmark showed only ~2-3 cores
+   active on local-decay rather than saturating the core budget.
+
+   **Update: prototyped an opt-in `fisher_backend="numba"` that replaces
+   `hypergeom.sf` itself.** `numba_kernels.py`'s `hypergeom_sf_numba` (with
+   scalar helpers `_log_binom`/`_hypergeom_sf_scalar`) computes the
+   hypergeometric survival function via a `prange`-parallel log-space PMF
+   tail sum -- `lgamma`-based binomial-coefficient differences (avoiding
+   naive factorials, which overflow immediately at this scale), summing
+   whichever side of the k-split is smaller (direct tail vs. `1 -`
+   complement) to avoid precision loss when the true answer is close to 1.
+   Exposed as `fisher_backend: Literal["scipy", "numba"] = "scipy"` --
+   mirroring the `lowess_backend` pattern exactly (own `DEFAULT_FISHER_BACKEND`
+   constant and `validate_fisher_backend()` in `backends.py`, threaded through
+   every `call_local_decay`/`compute_local_decay`/`_call_bait_contacts` layer,
+   `run_local_decay_pipeline`, and a `--fisher-backend {scipy,numba}` CLI flag
+   on `local-decay call`/`run`) -- `fisher_backend="scipy"` (exact, scipy-backed)
+   stays the default; `numba` is opt-in.
+
+   Validated against `scipy.stats.hypergeom.sf` across 40,000 randomized
+   table shapes (uniform-random `(k, M, n, N)`, plus tables shaped like
+   local-decay's actual usage: `M`/`N` in the millions from a genome-scale
+   background histogram with `n` in the tens from observed/expected contact
+   counts) -- max absolute error ~1.7e-8, zero NaN mismatches (both sides
+   return `nan` for the degenerate `total<=0` table, which
+   `_call_bait_contacts` cannot produce since its histograms always have at
+   least one bin). This is negligible for p-value thresholding at any
+   normal significance level. `tests/test_stats.py::test_fisher_greater_batch_numba_matches_scipy`
+   and `tests/test_local_decay.py::test_fisher_backend_numba_matches_scipy`
+   encode this as a closeness check (`atol=1e-6`), not exact equality --
+   unlike the integer-count numba/numpy backends elsewhere in this file,
+   this is a different floating-point algorithm for the same quantity, so
+   bit-identical output was never the goal.
 
 2. **Parallelize `apa_matrix_numba`.** **Status: done.**
    `apa_matrix_numba` (`src/touche/numba_kernels.py:207`) previously ran

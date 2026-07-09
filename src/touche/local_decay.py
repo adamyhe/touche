@@ -9,8 +9,10 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from touche.backends import (
     DEFAULT_BACKEND,
+    DEFAULT_FISHER_BACKEND,
     DEFAULT_LOWESS_BACKEND,
     validate_backend,
+    validate_fisher_backend,
     validate_lowess_backend,
 )
 from touche.contacts import (
@@ -22,7 +24,7 @@ from touche.contacts import (
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.io import open_text
 from touche.models import ContactIndex
-from touche.stats import fisher_greater
+from touche.stats import fisher_greater_batch
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -81,6 +83,7 @@ def call_local_decay(
     lowess_delta: float = 16.0,
     backend: str = DEFAULT_BACKEND,
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
+    fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,
@@ -129,6 +132,7 @@ def call_local_decay(
             lowess_delta=lowess_delta,
             backend=backend,
             lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
             progress=instrument,
         )
@@ -145,6 +149,7 @@ def call_local_decay(
             lowess_delta=lowess_delta,
             backend=backend,
             lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
             progress=instrument,
         )
@@ -167,6 +172,7 @@ def call_local_decay(
             lowess_delta=lowess_delta,
             backend=backend,
             lowess_backend=lowess_backend,
+            fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
             progress=instrument,
         )
@@ -223,6 +229,7 @@ def _call_local_decay_by_chromosome(
     lowess_delta: float,
     backend: str,
     lowess_backend: str,
+    fisher_backend: str,
     lowess_iterations: int,
     progress: Instrumentation,
 ) -> pl.DataFrame:
@@ -261,6 +268,7 @@ def _call_local_decay_by_chromosome(
                 lowess_delta=lowess_delta,
                 backend=backend,
                 lowess_backend=lowess_backend,
+                fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
                 progress=progress,
             )
@@ -283,6 +291,7 @@ def _call_local_decay_from_cache(
     lowess_delta: float,
     backend: str,
     lowess_backend: str,
+    fisher_backend: str,
     lowess_iterations: int,
     progress: Instrumentation,
 ) -> pl.DataFrame:
@@ -317,6 +326,7 @@ def _call_local_decay_from_cache(
                 lowess_delta=lowess_delta,
                 backend=backend,
                 lowess_backend=lowess_backend,
+                fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
                 progress=progress,
             )
@@ -338,6 +348,7 @@ def compute_local_decay(
     lowess_delta: float = 16.0,
     backend: str = DEFAULT_BACKEND,
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
+    fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
     progress: bool | Instrumentation = False,
     profile: bool = False,
@@ -350,6 +361,7 @@ def compute_local_decay(
         raise ValueError("cap must be non-negative")
     backend = validate_backend(backend)
     lowess_backend = validate_lowess_backend(lowess_backend)
+    fisher_backend = validate_fisher_backend(fisher_backend)
     if lowess_iterations < 0:
         raise ValueError("lowess_iterations must be non-negative")
 
@@ -408,6 +420,7 @@ def compute_local_decay(
                     lowess_delta=lowess_delta,
                     backend=backend,
                     lowess_backend=lowess_backend,
+                    fisher_backend=fisher_backend,
                     lowess_iterations=lowess_iterations,
                 )
             )
@@ -570,6 +583,7 @@ def _call_bait_contacts(
     lowess_delta: float,
     backend: str,
     lowess_backend: str,
+    fisher_backend: str,
     lowess_iterations: int,
 ) -> list[dict[str, float | int | str]]:
     in_region = ((bait_center - dist) <= index.pos_a) & (index.pos_a <= (bait_center + dist)) | (
@@ -609,7 +623,6 @@ def _call_bait_contacts(
     minus = pos_a[(bait_start <= pos_b) & (pos_b <= bait_stop)]
     histogram_bins = len(counts)
 
-    records: list[dict[str, float | int | str]] = []
     if backend == "numba":
         observed_values, directional_distances, contact_counts = _local_decay_observed_numba(
             plus,
@@ -618,13 +631,6 @@ def _call_bait_contacts(
             prey_centers,
             cap=cap,
             min_distance=min_distance,
-        )
-        iterable = zip(
-            prey_centers,
-            directional_distances,
-            observed_values,
-            contact_counts,
-            strict=True,
         )
     else:
         observed_values = []
@@ -644,38 +650,57 @@ def _call_bait_contacts(
                 int(((prey_start <= contact_positions) & (contact_positions <= prey_stop)).sum())
             )
             contact_counts.append(len(contact_positions))
-        iterable = zip(prey_centers, directional_distances, observed_values, contact_counts, strict=True)
 
-    for prey_center, directional_distance, observed, contact_count in iterable:
-        directional_distance = int(directional_distance)
-        if abs(directional_distance) <= min_distance:
-            continue
-        strand_distance = abs(directional_distance)
-        exp_start = max(0, int(strand_distance - cap))
-        exp_stop = min(len(bg_pdf) - 1, int(strand_distance + cap))
-        exp_prob = float(bg_pdf[exp_start : exp_stop + 1].sum()) if exp_stop >= exp_start else 0.0
-        expected = float(int(contact_count) * exp_prob)
-        observed = int(observed)
-        p_value = fisher_greater(
-            observed,
-            expected,
-            histogram_bins - observed,
-            histogram_bins - expected,
+    prey_centers = np.asarray(prey_centers, dtype=np.int64)
+    directional_distances = np.asarray(directional_distances, dtype=np.int64)
+    observed_values = np.asarray(observed_values, dtype=np.int64)
+    contact_counts = np.asarray(contact_counts, dtype=np.int64)
+
+    keep = np.abs(directional_distances) > min_distance
+    prey_centers = prey_centers[keep]
+    directional_distances = directional_distances[keep]
+    observed_values = observed_values[keep]
+    contact_counts = contact_counts[keep]
+    if prey_centers.size == 0:
+        return []
+
+    # Windowed sum of bg_pdf via a cumulative-sum lookup, vectorized across all
+    # preys at once instead of a fresh slice-sum + scipy call per prey.
+    strand_distances = np.abs(directional_distances)
+    exp_start = np.maximum(0, strand_distances - cap)
+    exp_stop = np.minimum(len(bg_pdf) - 1, strand_distances + cap)
+    valid_window = exp_stop >= exp_start
+    cumsum = np.concatenate([[0.0], np.cumsum(bg_pdf)])
+    safe_start = np.clip(exp_start, 0, len(bg_pdf))
+    safe_stop = np.clip(exp_stop + 1, 0, len(bg_pdf))
+    exp_prob = np.where(valid_window, cumsum[safe_stop] - cumsum[safe_start], 0.0)
+
+    expected = contact_counts.astype(np.float64) * exp_prob
+    p_values = fisher_greater_batch(
+        observed_values.astype(np.float64),
+        expected,
+        (histogram_bins - observed_values).astype(np.float64),
+        histogram_bins - expected,
+        backend=fisher_backend,
+    )
+
+    chrom = index.chrom if index.chrom.startswith("chr") else f"chr{index.chrom}"
+    return [
+        {
+            "chr": chrom,
+            "bait_center": int(bait_center),
+            "prey_center": int(prey_center),
+            "directional_distance": int(directional_distance),
+            "p_value": float(p_value),
+            "observed": int(observed),
+            "expected": float(expected_value),
+            "observed_background": int(histogram_bins - observed),
+            "expected_background": float(histogram_bins - expected_value),
+        }
+        for prey_center, directional_distance, p_value, observed, expected_value in zip(
+            prey_centers, directional_distances, p_values, observed_values, expected, strict=True
         )
-        records.append(
-            {
-                "chr": index.chrom if index.chrom.startswith("chr") else f"chr{index.chrom}",
-                "bait_center": int(bait_center),
-                "prey_center": int(prey_center),
-                "directional_distance": directional_distance,
-                "p_value": p_value,
-                "observed": observed,
-                "expected": expected,
-                "observed_background": histogram_bins - observed,
-                "expected_background": histogram_bins - expected,
-            }
-        )
-    return records
+    ]
 
 
 def _local_decay_observed_numba(

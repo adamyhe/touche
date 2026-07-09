@@ -4,9 +4,11 @@ from typing import Literal
 
 Backend = Literal["numpy", "numba"]
 LowessBackend = Literal["statsmodels", "numba"]
+FisherBackend = Literal["scipy", "numba"]
 
 DEFAULT_BACKEND: Backend = "numba"
 DEFAULT_LOWESS_BACKEND: LowessBackend = "statsmodels"
+DEFAULT_FISHER_BACKEND: FisherBackend = "scipy"
 
 
 def validate_backend(backend: str) -> Backend:
@@ -23,6 +25,14 @@ def validate_lowess_backend(lowess_backend: str) -> LowessBackend:
     if lowess_backend == "numba":
         require_numba()
     return lowess_backend  # type: ignore[return-value]
+
+
+def validate_fisher_backend(fisher_backend: str) -> FisherBackend:
+    if fisher_backend not in {"scipy", "numba"}:
+        raise ValueError("fisher_backend must be one of: scipy, numba")
+    if fisher_backend == "numba":
+        require_numba()
+    return fisher_backend  # type: ignore[return-value]
 
 
 def has_numba() -> bool:

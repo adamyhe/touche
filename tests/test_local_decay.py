@@ -258,6 +258,56 @@ class LocalDecayTests(unittest.TestCase):
             assert_frame_equal(numba_calls, numpy_calls)
 
     @unittest.skipUnless(has_numba(), "numba extra is not installed")
+    def test_fisher_backend_numba_matches_scipy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            baits = tmp_path / "baits.tsv"
+            preys = tmp_path / "preys.tsv"
+            pairs = tmp_path / "pairs.tsv"
+            baits.write_text("chr1\t10000\n", encoding="utf-8")
+            preys.write_text("chr1\t6000\nchr1\t14000\n", encoding="utf-8")
+            pairs.write_text(
+                "\n".join(
+                    [
+                        "chr1\t9950\tchr1\t14020\t+\t-\tUU\t30\t30",
+                        "chr1\t9990\tchr1\t14080\t+\t-\tUU\t30\t30",
+                        "chr1\t6050\tchr1\t10020\t+\t-\tUU\t30\t30",
+                        "chr1\t3000\tchr1\t7000\t+\t-\tUU\t30\t30",
+                        "chr1\t12000\tchr1\t17000\t+\t-\tUU\t30\t30",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            indexes = build_contact_indexes(pairs, source="touche")
+            bait_anchors = read_center_anchors(baits)
+            prey_anchors = read_center_anchors(preys)
+            kwargs = {
+                "dist": 10_000,
+                "cap": 100,
+                "min_distance": 1_000,
+                "lowess_window": 500,
+            }
+
+            scipy_calls = compute_local_decay(
+                indexes, bait_anchors, prey_anchors, fisher_backend="scipy", **kwargs
+            )
+            numba_calls = compute_local_decay(
+                indexes, bait_anchors, prey_anchors, fisher_backend="numba", **kwargs
+            )
+
+            assert_frame_equal(
+                numba_calls.drop("p_value"),
+                scipy_calls.drop("p_value"),
+            )
+            assert_series_equal(
+                numba_calls["p_value"],
+                scipy_calls["p_value"],
+                abs_tol=1e-6,
+                check_exact=False,
+            )
+
+    @unittest.skipUnless(has_numba(), "numba extra is not installed")
     def test_numba_lowess_backend_returns_finite_values(self) -> None:
         counts = pl.Series([0, 1, 0, 0, 2, 0, 1, 0, 0, 1] * 20).cast(pl.Float64).to_numpy()
 

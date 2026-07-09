@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from touche.backends import DEFAULT_BACKEND, DEFAULT_LOWESS_BACKEND
+from touche.backends import DEFAULT_BACKEND, DEFAULT_FISHER_BACKEND, DEFAULT_LOWESS_BACKEND
 from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
 from touche.pipelines import run_local_decay_pipeline
@@ -38,6 +38,11 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         choices=["statsmodels", "numba"],
         default=DEFAULT_LOWESS_BACKEND,
     )
+    call_parser.add_argument(
+        "--fisher-backend",
+        choices=["scipy", "numba"],
+        default=DEFAULT_FISHER_BACKEND,
+    )
     add_instrumentation_args(call_parser)
     call_parser.set_defaults(func=_call_local_decay)
 
@@ -67,6 +72,11 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         "--lowess-backend",
         choices=["statsmodels", "numba"],
         default=DEFAULT_LOWESS_BACKEND,
+    )
+    run_parser.add_argument(
+        "--fisher-backend",
+        choices=["scipy", "numba"],
+        default=DEFAULT_FISHER_BACKEND,
     )
     add_instrumentation_args(run_parser)
     run_parser.add_argument("--plot-min-contacts", default=1, type=int)
@@ -120,6 +130,7 @@ def _call_local_decay(args: argparse.Namespace) -> None:
         lowess_delta=args.lowess_delta,
         backend=args.backend,
         lowess_backend=args.lowess_backend,
+        fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
         index_strategy=args.index_strategy,
         cache_dir=args.cache_dir,
@@ -155,6 +166,7 @@ def _run_local_decay(args: argparse.Namespace) -> None:
         lowess_delta=args.lowess_delta,
         backend=args.backend,
         lowess_backend=args.lowess_backend,
+        fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
         index_strategy=args.index_strategy,
         cache_dir=args.cache_dir,

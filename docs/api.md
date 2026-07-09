@@ -114,6 +114,16 @@ Numba LOWESS implementation for evenly spaced local-decay smoothing arrays. Use
 `lowess_iterations=0` or `1` to reduce robust reweighting work when that drift is
 acceptable; the reference-compatible default is `3`.
 
+`compute_local_decay(..., fisher_backend="numba")` enables an experimental,
+`prange`-parallel hypergeometric survival function for the per-prey Fisher
+exact test, in place of the default `fisher_backend="scipy"`
+(`scipy.stats.hypergeom.sf`). This step is single-threaded regardless of
+`backend`/`lowess_backend`, and with those set to `"numba"` it becomes the
+main reason local-decay doesn't saturate available cores; `fisher_backend="numba"`
+addresses that at the cost of p-values that match scipy to within ~1e-8
+absolute error rather than exactly (see
+`notes/numba-implementation-plan.md` for the validation methodology).
+
 Pair-type plotting accepts an in-memory dataframe or an assignments file:
 
 ```python
