@@ -37,6 +37,13 @@ uv add ep-touche
 uv run touche --help
 ```
 
+Or if you just want the CLI:
+
+```bash
+uv tool install ep-touche
+touche --help
+```
+
 `local-decay` also supports a statsmodels-backed LOWESS path
 (`lowess_backend="statsmodels"`) for exact reference comparisons
 (at the cost of being much slower than our custom implementation).
