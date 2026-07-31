@@ -13,7 +13,7 @@ It runs on:
 - pull requests
 - pushes to `main`
 
-The CI matrix runs on Python 3.10, 3.11, and 3.12. Each job:
+The CI matrix runs on Python 3.10 through 3.14. Each job:
 
 1. installs `uv`
 2. syncs development dependencies with `uv sync --dev --python <matrix-version>`
