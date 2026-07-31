@@ -1,4 +1,4 @@
-"""One-sided Fisher exact test helpers. Public API: `fisher_greater`, `fisher_greater_batch`."""
+"""One-sided Fisher exact test helpers. Public API: `fisher_greater_batch`."""
 
 from __future__ import annotations
 
@@ -6,27 +6,6 @@ import numpy as np
 from scipy.stats import hypergeom
 
 from touche.backends import DEFAULT_FISHER_BACKEND
-
-
-def fisher_greater(a1: float, a2: float, b1: float, b2: float) -> float:
-    """R-compatible one-sided Fisher exact p-value used by local decay calls.
-
-    The reference implementation rounds values before calling R's
-    ``fisher.test(..., alternative = "greater")`` through rpy2. Keep the
-    rounding here so this can replace rpy2 without changing expected behavior.
-    """
-
-    a = round(a1)
-    b = round(a2)
-    c = round(b1)
-    d = round(b2)
-    if min(a, b, c, d) < 0:
-        raise ValueError("Fisher exact table entries must be non-negative")
-
-    total = a + b + c + d
-    row_1 = a + b
-    col_1 = a + c
-    return float(hypergeom.sf(a - 1, total, row_1, col_1))
 
 
 def fisher_greater_batch(
@@ -37,7 +16,11 @@ def fisher_greater_batch(
     *,
     backend: str = DEFAULT_FISHER_BACKEND,
 ) -> np.ndarray:
-    """Vectorized sibling of `fisher_greater` -- `hypergeom.sf` broadcasts over arrays.
+    """R-compatible one-sided Fisher exact p-values used by local decay calls.
+
+    The reference implementation rounds values before calling R's
+    ``fisher.test(..., alternative = "greater")`` (via rpy2); this function
+    replaces that call and keeps the same rounding so results match exactly.
 
     `backend="numba"` (the default) uses a `prange`-parallel hypergeometric
     survival function instead of `scipy.stats.hypergeom.sf`, matching it to

@@ -209,7 +209,7 @@ def _count_ep_background_pairs_numba(
     min_bg_distance: int,
     max_bg_distance: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Cast inputs to the dtypes `touche.numba.background.count_ep_background_pairs_numba` expects."""
+    """Cast inputs to the dtypes `touche.numba.background.count_ep_background_pairs_numba` expects, sorting by `pos_a` first if not already ascending."""
     from touche.numba.background import count_ep_background_pairs_numba
 
     pos_a = pos_a.astype(np.int64, copy=False)
