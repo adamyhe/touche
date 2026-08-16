@@ -43,11 +43,29 @@ remote server" below.
 `ContactCaller_microC.bsh` also hardcodes
 `export LD_LIBRARY_PATH=/programs/R-4.0.5/lib/` (a Cornell HPC path). This
 script does not patch that -- `_reference/E-P_contacts`-style checkouts are
-read-only prior art, not something to edit. A nonexistent directory in
-`LD_LIBRARY_PATH` is normally harmless as long as your R install's shared
-libraries are otherwise on the default linker search path; if the local-decay
-legacy step fails with an R/library loading error, this is the first thing to
-check.
+read-only prior art, not something to edit. The problem isn't that the
+directory is missing on your machine; it's that `export` **overwrites**
+`LD_LIBRARY_PATH` rather than appending to it, wiping out whatever your conda
+env's own activation had already put there -- in particular, a newer
+`libstdc++.so.6` that conda-forge scipy/statsmodels/rpy2 builds are commonly
+linked against. Once that's gone, those compiled extensions fall back to your
+HPC node's system `libstdc++.so.6`, which is often much older. Symptom:
+
+```text
+ImportError: /lib64/libstdc++.so.6: version `GLIBCXX_3.4.30' not found
+(required by .../site-packages/scipy/optimize/_highs/_highs_wrapper...so)
+```
+
+(or the same failure against a different compiled extension -- rpy2's own C
+extension can hit this too). Setting `LD_LIBRARY_PATH` yourself beforehand
+doesn't help -- that `export` line will just overwrite it again. Use
+`--legacy-ld-preload` instead: `LD_PRELOAD` is a separate env var that line
+never touches, so the linker still picks up your conda env's newer
+`libstdc++.so.6` regardless of whatever `LD_LIBRARY_PATH` ends up being.
+
+```bash
+--legacy-ld-preload "$(conda run -n EP-contacts python -c 'import sys; print(sys.prefix)')/lib/libstdc++.so.6"
+```
 
 ## What It Compares
 
@@ -160,6 +178,7 @@ tmux new -s touche-legacy-bench
 uv run python scripts/legacy_timing_comparison.py \
   --reference-dir /path/to/E-P_contacts \
   --legacy-shell-prefix "conda run -n EP-contacts --no-capture-output" \
+  --legacy-ld-preload "$(conda run -n EP-contacts python -c 'import sys; print(sys.prefix)')/lib/libstdc++.so.6" \
   --work-dir benchmark/legacy-timing-comparison \
   --progress
 ```
@@ -184,6 +203,7 @@ tmux new -s touche-legacy-bench
 uv run python scripts/legacy_timing_comparison.py \
   --reference-dir /path/to/E-P_contacts \
   --legacy-shell-prefix "conda run -n EP-contacts --no-capture-output" \
+  --legacy-ld-preload "$(conda run -n EP-contacts python -c 'import sys; print(sys.prefix)')/lib/libstdc++.so.6" \
   --work-dir benchmark/legacy-timing-comparison \
   --resume-from benchmark/legacy-timing-comparison/benchmark-results.jsonl
 ```

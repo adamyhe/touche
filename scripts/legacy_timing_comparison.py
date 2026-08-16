@@ -111,6 +111,20 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--legacy-ld-preload",
+        default="",
+        help=(
+            "Path to a shared library to LD_PRELOAD before running legacy steps, e.g. "
+            'a conda env\'s own libstdc++.so.6: --legacy-ld-preload '
+            '"$(conda run -n EP-contacts python -c \'import sys; print(sys.prefix)\')/lib/libstdc++.so.6". '
+            "ContactCaller_microC.bsh unconditionally overwrites LD_LIBRARY_PATH (not appends), "
+            "which can wipe out a conda env's newer libstdc++ and expose the HPC node's older "
+            "system one instead -- symptom: ImportError: .../libstdc++.so.6: version "
+            "'GLIBCXX_3.4.30' not found, from scipy/statsmodels/rpy2's compiled extensions. "
+            "LD_PRELOAD is a separate env var that line never touches, so it survives."
+        ),
+    )
+    parser.add_argument(
         "--legacy-cpu",
         type=int,
         default=available_cores(),
@@ -219,6 +233,7 @@ def main() -> int:
         data_dir=data_dir.resolve(),
         output_dir=(output_dir / "legacy").resolve(),
         shell_prefix=shlex.split(args.legacy_shell_prefix),
+        legacy_ld_preload=args.legacy_ld_preload,
         legacy_cpu=args.legacy_cpu,
         workflows=args.workflows,
         apa_sample=args.apa_sample,
@@ -316,12 +331,25 @@ def touche_step_names(*, workflows: list[str], apa_sample: str, background_sampl
     return names
 
 
+def _ld_preload_prefix(legacy_ld_preload: str) -> list[str]:
+    """`export LD_PRELOAD=...` as a leading command, or `[]` if unset.
+
+    A separate env var from `LD_LIBRARY_PATH`, so it survives
+    `ContactCaller_microC.bsh`'s unconditional `export LD_LIBRARY_PATH=...`
+    overwrite -- see `--legacy-ld-preload`'s help text.
+    """
+    if not legacy_ld_preload:
+        return []
+    return [f"export LD_PRELOAD={shlex.quote(legacy_ld_preload)}"]
+
+
 def build_legacy_steps(
     *,
     reference_dir: Path,
     data_dir: Path,
     output_dir: Path,
     shell_prefix: list[str],
+    legacy_ld_preload: str,
     legacy_cpu: int,
     workflows: list[str],
     apa_sample: str,
@@ -333,12 +361,14 @@ def build_legacy_steps(
     preys_local = input_dir / LOCAL_DECAY_PREYS
     baits_mesc = input_dir / MESC_BAITS
     preys_mesc = input_dir / MESC_PREYS
+    ld_preload_prefix = _ld_preload_prefix(legacy_ld_preload)
 
     if "local-decay" in workflows:
         outdir = output_dir / "local-decay"
         combined_out = outdir / "ContactCaller_microC_output.txt"
         inner = " && ".join(
             [
+                *ld_preload_prefix,
                 f"mkdir -p {shlex.quote(str(outdir))}",
                 f"cd {shlex.quote(str(reference_dir))}",
                 "bash "
@@ -370,6 +400,7 @@ def build_legacy_steps(
         outdir = output_dir / "apa" / apa_sample.upper()
         inner = " && ".join(
             [
+                *ld_preload_prefix,
                 f"cd {shlex.quote(str(reference_dir))}",
                 "bash "
                 + shlex.join(
@@ -405,6 +436,7 @@ def build_legacy_steps(
         outdir = output_dir / "background" / background_sample.upper()
         inner = " && ".join(
             [
+                *ld_preload_prefix,
                 f"cd {shlex.quote(str(reference_dir))}",
                 "bash "
                 + shlex.join(
