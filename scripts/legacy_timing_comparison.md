@@ -32,7 +32,7 @@ remote server" below.
    `--legacy-shell-prefix`:
 
    ```bash
-   --legacy-shell-prefix conda run -n EP-contacts --no-capture-output
+   --legacy-shell-prefix "conda run -n EP-contacts --no-capture-output"
    ```
 
    APA and EP/background have no R/rpy2 dependency (pure Python + awk/bash),
@@ -122,7 +122,7 @@ tmux new -s touche-legacy-bench
 # inside the tmux session:
 uv run python scripts/legacy_timing_comparison.py \
   --reference-dir /path/to/E-P_contacts \
-  --legacy-shell-prefix conda run -n EP-contacts --no-capture-output \
+  --legacy-shell-prefix "conda run -n EP-contacts --no-capture-output" \
   --work-dir benchmark/legacy-timing-comparison \
   --progress
 ```
@@ -146,7 +146,7 @@ tmux new -s touche-legacy-bench
 # inside the tmux session:
 uv run python scripts/legacy_timing_comparison.py \
   --reference-dir /path/to/E-P_contacts \
-  --legacy-shell-prefix conda run -n EP-contacts --no-capture-output \
+  --legacy-shell-prefix "conda run -n EP-contacts --no-capture-output" \
   --work-dir benchmark/legacy-timing-comparison \
   --resume-from benchmark/legacy-timing-comparison/benchmark-results.jsonl
 ```

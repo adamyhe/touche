@@ -81,12 +81,14 @@ def main() -> int:
     parser.add_argument("--touche-python", default=sys.executable, help="Python executable for -m touche")
     parser.add_argument(
         "--legacy-shell-prefix",
-        nargs="*",
-        default=[],
+        default="",
         help=(
             "Command prefix to invoke bash/python inside the legacy repo's own environment, "
-            "e.g. --legacy-shell-prefix conda run -n EP-contacts --no-capture-output. "
-            "Local-decay's ContactCaller_microC.py needs R (>=4.1) + rpy2 on this path."
+            "as a single shell-quoted string, e.g. "
+            '--legacy-shell-prefix "conda run -n EP-contacts --no-capture-output". '
+            "Local-decay's ContactCaller_microC.py needs R (>=4.1) + rpy2 on this path. "
+            "(Passed as one string, not nargs=\"*\", so option-looking tokens like -n "
+            "inside it don't get parsed as this script's own flags.)"
         ),
     )
     parser.add_argument("--legacy-cpu", type=int, default=os.cpu_count() or 4)
@@ -178,7 +180,7 @@ def main() -> int:
         reference_dir=args.reference_dir.resolve(),
         data_dir=data_dir.resolve(),
         output_dir=(output_dir / "legacy").resolve(),
-        shell_prefix=args.legacy_shell_prefix,
+        shell_prefix=shlex.split(args.legacy_shell_prefix),
         legacy_cpu=args.legacy_cpu,
         workflows=args.workflows,
         apa_sample=args.apa_sample,
