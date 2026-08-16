@@ -78,24 +78,45 @@ numbers as a clean "touche is Nx faster on the same hardware" claim.
 defaults to every logical core on the machine. Nothing in
 `legacy_timing_comparison.py` caps it.
 
-`local-decay call` is the one workflow where this alone is not enough to
-saturate a many-core box, and it's easy to mistake for underutilization if
-you don't pass `--jobs`. Only its LOWESS kernel is `prange`-parallel; the
-rest of each bait's work (`_call_bait_contacts`'s region filtering,
-histogram construction, `fit_zero_inflation_model`'s own glue code) is
-single-threaded Python/NumPy. At real-data scale that single-threaded glue
-code is the majority of wall time (~66% in a 500-bait/3M-contact profile, see
-`notes/numba-implementation-plan.md`), so most cores sit idle regardless of
-`NUMBA_NUM_THREADS` -- expect to see only a handful of cores active. This
-script's own `--jobs`/`-j` (forwarded to `local-decay call --jobs`) fans
-baits out across a thread pool to parallelize exactly that glue code, but
-**defaults to `1`** (sequential), matching touche's own CLI default. If you
-see low core utilization on the local-decay step, pass a higher `--jobs`,
-e.g. `--jobs 8`; tune per node, since returns diminish past `n_jobs≈4` on a
-10-core machine in touche's own benchmark (each worker's numba thread budget
-shrinks to `cores // n_jobs` as `n_jobs` grows) -- try a couple of values on
-your hardware and compare `report/summary.md`'s wall time for
-`local-decay-call`.
+`local-decay call` is the one workflow where `NUMBA_NUM_THREADS` alone is not
+enough to saturate a many-core box. Only its LOWESS kernel is
+`prange`-parallel; the rest of each bait's work (`_call_bait_contacts`'s
+region filtering, histogram construction, `fit_zero_inflation_model`'s own
+glue code) is single-threaded Python/NumPy. At real-data scale that
+single-threaded glue code is the majority of wall time (~66% in a
+500-bait/3M-contact profile, see `notes/numba-implementation-plan.md`), and
+only `local-decay call --jobs` (a bait-level thread pool; baits are
+independent, so this is exact, not approximate) parallelizes it.
+
+This script's own `--jobs`/`-j` forwards to that flag and **defaults to
+`available_cores()`** (touche's own CLI defaults `--jobs` to `1` instead --
+deliberately conservative there, since it's a general-purpose library/CLI
+that also needs to serve small inputs where thread-pool setup outweighs the
+benefit; this script always runs against the full real Gasperini bait set, so
+that concern doesn't apply and a "use what you have" default serves the
+comparison's purpose better). `available_cores()` prefers `NUMBA_NUM_THREADS`
+if you've set it, else `os.sched_getaffinity` (respects scheduler/cgroup CPU
+pinning on Linux, unlike `os.cpu_count()`, which reports the whole node
+regardless of your actual allocation), else `os.cpu_count()`.
+
+Each worker thread still caps its own numba thread budget to
+`get_num_threads() // n_jobs` before running kernels (see
+`_call_bait_contacts_threaded` in `src/touche/local_decay.py`), so this
+doesn't oversubscribe *relative to what `get_num_threads()` reports* -- but
+that's only accurate if `NUMBA_NUM_THREADS` (or the detected affinity) matches
+what your scheduler actually gave you. On a shared HPC node, explicitly set
+`NUMBA_NUM_THREADS` to your real per-job core allocation (e.g. `export
+NUMBA_NUM_THREADS=$NSLOTS` for SGE, `$SLURM_CPUS_PER_TASK` for SLURM) before
+running, so both the default `--jobs` and numba's own kernels agree with your
+actual allocation instead of the whole node's core count.
+
+Pass `--jobs 1` explicitly to see the fully-sequential baseline instead (e.g.
+to reproduce the earlier low-utilization behavior, or to isolate how much of
+the speedup vs. legacy comes from `--jobs` specifically vs. the numba
+kernels alone). Returns diminish past `n_jobs≈4` on a 10-core machine in
+touche's own benchmark, so the default isn't guaranteed optimal on every
+machine -- if you want to squeeze out more, try a couple of explicit values
+and compare `report/summary.md`'s wall time for `local-decay-call`.
 
 **Legacy**, per `.bsh` script:
 

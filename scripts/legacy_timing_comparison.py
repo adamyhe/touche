@@ -47,6 +47,25 @@ from reference_replication import (
 
 REFERENCE_REPO_URL = "https://github.com/Danko-Lab/E-P_contacts.git"
 
+
+def available_cores() -> int:
+    """Cores actually usable by this process.
+
+    Prefers `NUMBA_NUM_THREADS` (what numba's own kernels will use, if set),
+    then `os.sched_getaffinity` (respects scheduler/cgroup CPU pinning on
+    Linux -- unlike `os.cpu_count()`, which reports the whole node's core
+    count regardless of what a shared-HPC job was actually allocated), then
+    falls back to `os.cpu_count()` on platforms without `sched_getaffinity`
+    (e.g. macOS).
+    """
+    env_threads = os.environ.get("NUMBA_NUM_THREADS")
+    if env_threads and env_threads.isdigit():
+        return max(1, int(env_threads))
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return os.cpu_count() or 1
+
 SAMPLE_PAIRS = {
     "dmso": "mESCs_DMSO_30_intra.mm10.nodups.pairs.gz",
     "flv": "mESCs_FLV_30_intra.mm10.nodups.pairs.gz",
@@ -91,19 +110,27 @@ def main() -> int:
             "inside it don't get parsed as this script's own flags.)"
         ),
     )
-    parser.add_argument("--legacy-cpu", type=int, default=os.cpu_count() or 4)
+    parser.add_argument(
+        "--legacy-cpu",
+        type=int,
+        default=available_cores(),
+        help="Passed through to ContactCaller_microC.bsh's [CPU.threads] argument (default: "
+        "detected available cores). See the Core Usage section of legacy_timing_comparison.md "
+        "-- that script only echoes this value and doesn't actually use it to throttle.",
+    )
     parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="numba")
     parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="numba")
     parser.add_argument(
         "--jobs",
         "-j",
         type=int,
-        default=1,
+        default=available_cores(),
         help=(
-            "touche local-decay call --jobs (bait-level thread pool). Only local-decay's "
-            "LOWESS kernel is numba-parallel; most of its wall time at real-data scale is "
-            "single-threaded per-bait glue code, so leaving this at 1 leaves most cores idle "
-            "on a many-core machine -- raise it (e.g. 8) if you see low CPU utilization."
+            "touche local-decay call --jobs (bait-level thread pool; default: detected "
+            "available cores, see --legacy-cpu). Only local-decay's LOWESS kernel is "
+            "numba-parallel; most of its wall time at real-data scale is single-threaded "
+            "per-bait glue code that only --jobs parallelizes, not NUMBA_NUM_THREADS -- pass "
+            "--jobs 1 to see the sequential-baits baseline instead."
         ),
     )
     parser.add_argument(
