@@ -151,12 +151,12 @@ Implementation plans, experiment logs, and agent-facing notes belong in
 
 ## Development
 
-Development is managed with `uv`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setting up a development checkout,
+running tests/lint, and pull request guidelines.
 
-```bash
-git clone https://github.com/adamyhe/touche.git
-cd touche/
-uv sync --dev
-uv run touche --help
-uv run pytest
-```
+## Citation
+
+If you use `touche`, please cite it -- and the original Danko Lab
+E-P_contacts reference implementation and its associated paper, since
+`touche` is a refactor of that reference workflow. See
+[CITATION.cff](CITATION.cff).

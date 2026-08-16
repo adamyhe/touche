@@ -21,14 +21,8 @@ The CI matrix runs on Python 3.10 through 3.14. Each job:
 4. runs `uv run pytest`
 5. builds the package with `uv build`
 
-Run the same checks locally from a development checkout:
-
-```bash
-uv sync --dev
-uv run ruff check src tests
-uv run pytest
-uv build
-```
+See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for running these same checks
+locally from a development checkout.
 
 ## Publishing to PyPI
 
