@@ -76,10 +76,26 @@ numbers as a clean "touche is Nx faster on the same hardware" claim.
 
 **touche** (all three workflows): governed by `NUMBA_NUM_THREADS`, which numba
 defaults to every logical core on the machine. Nothing in
-`legacy_timing_comparison.py` caps it. `local-decay call` also has a
-`--jobs`/`-j` bait-level thread pool, but this script leaves it at the default
-`1`, so it's one numba thread pool using every core rather than split across
-jobs.
+`legacy_timing_comparison.py` caps it.
+
+`local-decay call` is the one workflow where this alone is not enough to
+saturate a many-core box, and it's easy to mistake for underutilization if
+you don't pass `--jobs`. Only its LOWESS kernel is `prange`-parallel; the
+rest of each bait's work (`_call_bait_contacts`'s region filtering,
+histogram construction, `fit_zero_inflation_model`'s own glue code) is
+single-threaded Python/NumPy. At real-data scale that single-threaded glue
+code is the majority of wall time (~66% in a 500-bait/3M-contact profile, see
+`notes/numba-implementation-plan.md`), so most cores sit idle regardless of
+`NUMBA_NUM_THREADS` -- expect to see only a handful of cores active. This
+script's own `--jobs`/`-j` (forwarded to `local-decay call --jobs`) fans
+baits out across a thread pool to parallelize exactly that glue code, but
+**defaults to `1`** (sequential), matching touche's own CLI default. If you
+see low core utilization on the local-decay step, pass a higher `--jobs`,
+e.g. `--jobs 8`; tune per node, since returns diminish past `n_jobs≈4` on a
+10-core machine in touche's own benchmark (each worker's numba thread budget
+shrinks to `cores // n_jobs` as `n_jobs` grows) -- try a couple of values on
+your hardware and compare `report/summary.md`'s wall time for
+`local-decay-call`.
 
 **Legacy**, per `.bsh` script:
 

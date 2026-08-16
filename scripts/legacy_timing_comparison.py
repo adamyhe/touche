@@ -94,7 +94,18 @@ def main() -> int:
     parser.add_argument("--legacy-cpu", type=int, default=os.cpu_count() or 4)
     parser.add_argument("--lowess-backend", choices=["statsmodels", "numba"], default="numba")
     parser.add_argument("--fisher-backend", choices=["scipy", "numba"], default="numba")
-    parser.add_argument("--jobs", "-j", type=int, default=1, help="touche local-decay call --jobs")
+    parser.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=1,
+        help=(
+            "touche local-decay call --jobs (bait-level thread pool). Only local-decay's "
+            "LOWESS kernel is numba-parallel; most of its wall time at real-data scale is "
+            "single-threaded per-bait glue code, so leaving this at 1 leaves most cores idle "
+            "on a many-core machine -- raise it (e.g. 8) if you see low CPU utilization."
+        ),
+    )
     parser.add_argument(
         "--workflows",
         nargs="+",
