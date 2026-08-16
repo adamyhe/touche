@@ -110,34 +110,41 @@ persistent-cache equivalent and re-parses the raw pairs file every run.
 
 ## Running on a remote server
 
-Because a legacy step can run for hours, launch it detached so an SSH
+Because a legacy step can run for hours, run it inside `tmux` so an SSH
 disconnect doesn't kill it, and keep results incremental so a crash doesn't
-lose already-measured (possibly hours-long) steps:
+lose already-measured (possibly hours-long) steps.
+
+Start a session and launch the benchmark inside it:
 
 ```bash
-scripts/run_legacy_timing_comparison_remote.sh \
+tmux new -s touche-legacy-bench
+
+# inside the tmux session:
+uv run python scripts/legacy_timing_comparison.py \
   --reference-dir /path/to/E-P_contacts \
   --legacy-shell-prefix conda run -n EP-contacts --no-capture-output \
   --work-dir benchmark/legacy-timing-comparison \
   --progress
 ```
 
-This backgrounds `legacy_timing_comparison.py` with `nohup`, writes combined
-output to `<work-dir>/nohup.log`, and prints the PID. Disconnect freely; check
-back with:
+Detach with `Ctrl-b` `d` and disconnect freely. Reattach later to watch
+`--progress` output live:
 
 ```bash
-tail -f benchmark/legacy-timing-comparison/nohup.log
-kill -0 "$(cat benchmark/legacy-timing-comparison/nohup.pid)" && echo running || echo finished
+tmux ls
+tmux attach -t touche-legacy-bench
 ```
 
 `legacy_timing_comparison.py` writes each step's result to
 `benchmark-results.jsonl` as soon as that step finishes (not just at the end),
-so if the process is killed or the box reboots partway through, resume
+so if the session or box dies partway through, resume in a fresh session
 without re-running already-completed steps:
 
 ```bash
-scripts/run_legacy_timing_comparison_remote.sh \
+tmux new -s touche-legacy-bench
+
+# inside the tmux session:
+uv run python scripts/legacy_timing_comparison.py \
   --reference-dir /path/to/E-P_contacts \
   --legacy-shell-prefix conda run -n EP-contacts --no-capture-output \
   --work-dir benchmark/legacy-timing-comparison \
