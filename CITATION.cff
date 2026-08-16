@@ -1,0 +1,65 @@
+cff-version: 1.2.0
+message: >-
+  If you use touche, please cite it using the metadata below, and also cite
+  the original Danko Lab E-P_contacts reference implementation and its
+  associated paper, since touche is a refactor of that reference workflow.
+type: software
+title: touche
+abstract: >-
+  Python API and CLI tools for analyzing enhancer-promoter contacts from
+  high-resolution chromatin contact (Micro-C) data, refactored from the
+  Danko Lab E-P_contacts reference workflows into a dependency-light, faster
+  implementation.
+authors:
+  - given-names: Adam Youlin
+    family-names: He
+license: MIT
+repository-code: https://github.com/adamyhe/touche
+url: https://pypi.org/project/ep-touche/
+version: 0.1.4
+references:
+  - type: software
+    title: E-P_contacts
+    abstract: >-
+      Original Python/awk/shell reference workflows for local-decay contact
+      calling, aggregate peak analysis (APA), and enhancer-promoter
+      vs. local-background contact counting, which touche refactors.
+    authors:
+      - given-names: Gilad
+        family-names: Barshad
+      - given-names: Charles G
+        family-names: Danko
+    repository-code: https://github.com/Danko-Lab/E-P_contacts
+  - type: article
+    title: RNA polymerase II dynamics shape enhancer-promoter interactions
+    authors:
+      - given-names: Gilad
+        family-names: Barshad
+      - given-names: James J
+        family-names: Lewis
+      - given-names: Alexandra G
+        family-names: Chivu
+      - given-names: Abderhman
+        family-names: Abuhashem
+      - given-names: Nils
+        family-names: Krietenstein
+      - given-names: Edward J
+        family-names: Rice
+      - given-names: Yitian
+        family-names: Ma
+      - given-names: Zhong
+        family-names: Wang
+      - given-names: Oliver J
+        family-names: Rando
+      - given-names: Anna-Katerina
+        family-names: Hadjantonakis
+      - given-names: Charles G
+        family-names: Danko
+    doi: 10.1038/s41588-023-01442-7
+    journal: Nature Genetics
+    volume: 55
+    issue: 8
+    start: 1370
+    end: 1380
+    year: 2023
+    notes: "PMID: 37430091; PMCID: PMC10714922"
