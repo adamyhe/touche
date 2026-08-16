@@ -67,6 +67,16 @@ never touches, so the linker still picks up your conda env's newer
 --legacy-ld-preload "$(conda run -n EP-contacts python -c 'import sys; print(sys.prefix)')/lib/libstdc++.so.6"
 ```
 
+Separately: `uv run python scripts/legacy_timing_comparison.py` itself sets `VIRTUAL_ENV`
+(pointing at touche's own venv) and `UV_RUN_RECURSION_DEPTH`, which get inherited
+by every subprocess this script spawns. Confirmed on real hardware that this
+leak alone breaks `rpy2`'s import through the full subprocess chain (`rpy2`
+independently confirmed installed and importable in the same conda env when
+run directly, but a `ModuleNotFoundError` for it when run through this
+script) -- every legacy step now unsets `VIRTUAL_ENV`, `PYTHONHOME`,
+`PYTHONPATH`, and the `UV_*` vars before doing anything else, so this
+shouldn't recur. No flag needed for this one; it's unconditional.
+
 ## What It Compares
 
 Per workflow family, one touche command vs. its legacy equivalent, same

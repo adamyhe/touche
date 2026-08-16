@@ -343,6 +343,35 @@ def _ld_preload_prefix(legacy_ld_preload: str) -> list[str]:
     return [f"export LD_PRELOAD={shlex.quote(legacy_ld_preload)}"]
 
 
+_UV_ENV_LEAK_VARS = [
+    "VIRTUAL_ENV",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "UV_RUN_RECURSION_DEPTH",
+    "UV_PYTHON",
+    "UV_PROJECT_ENVIRONMENT",
+    "UV_INDEX",
+]
+
+
+def _env_unset_prefix() -> list[str]:
+    """`unset ...` for vars `uv run` sets that legacy subprocesses shouldn't inherit.
+
+    `uv run python legacy_timing_comparison.py` sets VIRTUAL_ENV (pointing at
+    touche's own venv) and UV_RUN_RECURSION_DEPTH, which then leak into every
+    subprocess this script spawns -- including through `conda run` into the
+    legacy repo's own Python/R. Confirmed on real hardware: the identical
+    generated command succeeded when run directly (no leaked vars) but failed
+    with a `rpy2` ModuleNotFoundError when run through this script (leaked
+    vars present), even though `rpy2` was independently confirmed installed
+    and importable in that same conda env. Unsetting these defensively
+    (whether or not each one is actually set) is harmless and removes touche's
+    own Python environment from a process tree that should reflect the
+    legacy repo's own environment instead.
+    """
+    return [f"unset {' '.join(_UV_ENV_LEAK_VARS)}"]
+
+
 def build_legacy_steps(
     *,
     reference_dir: Path,
@@ -361,14 +390,14 @@ def build_legacy_steps(
     preys_local = input_dir / LOCAL_DECAY_PREYS
     baits_mesc = input_dir / MESC_BAITS
     preys_mesc = input_dir / MESC_PREYS
-    ld_preload_prefix = _ld_preload_prefix(legacy_ld_preload)
+    env_prefix = [*_env_unset_prefix(), *_ld_preload_prefix(legacy_ld_preload)]
 
     if "local-decay" in workflows:
         outdir = output_dir / "local-decay"
         combined_out = outdir / "ContactCaller_microC_output.txt"
         inner = " && ".join(
             [
-                *ld_preload_prefix,
+                *env_prefix,
                 f"mkdir -p {shlex.quote(str(outdir))}",
                 f"cd {shlex.quote(str(reference_dir))}",
                 "bash "
@@ -400,7 +429,7 @@ def build_legacy_steps(
         outdir = output_dir / "apa" / apa_sample.upper()
         inner = " && ".join(
             [
-                *ld_preload_prefix,
+                *env_prefix,
                 f"cd {shlex.quote(str(reference_dir))}",
                 "bash "
                 + shlex.join(
@@ -436,7 +465,7 @@ def build_legacy_steps(
         outdir = output_dir / "background" / background_sample.upper()
         inner = " && ".join(
             [
-                *ld_preload_prefix,
+                *env_prefix,
                 f"cd {shlex.quote(str(reference_dir))}",
                 "bash "
                 + shlex.join(
