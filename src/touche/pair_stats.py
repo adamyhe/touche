@@ -47,34 +47,37 @@ def compute_pair_stats(
     """Compute QC stats from a lazy frame of pairs.
 
     `lf` must have `chrom_a`/`chrom_b`/`pos_a`/`pos_b`/`mapq_a`/`mapq_b` columns.
-    Aggregations run against the lazy plan with the streaming engine so peak
-    memory is bounded by the number of distinct chromosomes/distance buckets,
-    not the row count.
+    The totals/per-chromosome/distance-histogram aggregations are collected
+    together in one `pl.collect_all` call rather than three separate
+    `.collect()` calls, so the shared scan/filter plan they all build on -- the
+    source pairs file, which may be a slow-to-decompress gzip -- is only read
+    once instead of three times. Peak memory is still bounded by the number of
+    distinct chromosomes/distance buckets, not the row count.
     """
 
     lf = lf.with_columns(
         (pl.col("chrom_a") == pl.col("chrom_b")).alias("is_cis"),
         ((pl.col("mapq_a") >= min_mapq) & (pl.col("mapq_b") >= min_mapq)).alias("mapq_pass"),
     )
-    totals = (
-        lf.select(
-            pl.len().alias("total_rows"),
-            pl.col("is_cis").sum().alias("cis_rows"),
-            (~pl.col("is_cis")).sum().alias("trans_rows"),
-            pl.col("mapq_pass").sum().alias("mapq_pass_rows"),
-            (~pl.col("mapq_pass")).sum().alias("mapq_fail_rows"),
-        )
-        .collect(engine="streaming")
-        .row(0, named=True)
+    totals_lf = lf.select(
+        pl.len().alias("total_rows"),
+        pl.col("is_cis").sum().alias("cis_rows"),
+        (~pl.col("is_cis")).sum().alias("trans_rows"),
+        pl.col("mapq_pass").sum().alias("mapq_pass_rows"),
+        (~pl.col("mapq_pass")).sum().alias("mapq_fail_rows"),
     )
 
     cis_lf = lf.filter(pl.col("is_cis")).with_columns(
         _distance_bin_expr((pl.col("pos_b") - pl.col("pos_a")).abs()).alias("distance_bin")
     )
-    per_chrom = cis_lf.group_by("chrom_a").agg(pl.len().alias("n")).collect(engine="streaming")
-    per_chromosome = dict(sorted(zip(per_chrom["chrom_a"].to_list(), per_chrom["n"].to_list())))
+    per_chrom_lf = cis_lf.group_by("chrom_a").agg(pl.len().alias("n"))
+    hist_lf = cis_lf.group_by("distance_bin").agg(pl.len().alias("n"))
 
-    hist = cis_lf.group_by("distance_bin").agg(pl.len().alias("n")).collect(engine="streaming")
+    totals_df, per_chrom, hist = pl.collect_all(
+        [totals_lf, per_chrom_lf, hist_lf], engine="streaming"
+    )
+    totals = totals_df.row(0, named=True)
+    per_chromosome = dict(sorted(zip(per_chrom["chrom_a"].to_list(), per_chrom["n"].to_list())))
     distance_histogram = dict(zip(hist["distance_bin"].to_list(), hist["n"].to_list()))
 
     return PairStats(
