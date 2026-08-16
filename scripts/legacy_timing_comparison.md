@@ -68,6 +68,41 @@ Select a subset with `--workflows local-decay apa` etc. Choose which mESC
 treatment APA/background compare against with `--apa-sample`/
 `--background-sample` (`dmso`/`flv`/`trp`).
 
+## Core Usage
+
+The two sides don't use cores the same way, and the legacy scripts aren't even
+consistent with each other -- worth knowing before reading the speedup
+numbers as a clean "touche is Nx faster on the same hardware" claim.
+
+**touche** (all three workflows): governed by `NUMBA_NUM_THREADS`, which numba
+defaults to every logical core on the machine. Nothing in
+`legacy_timing_comparison.py` caps it. `local-decay call` also has a
+`--jobs`/`-j` bait-level thread pool, but this script leaves it at the default
+`1`, so it's one numba thread pool using every core rather than split across
+jobs.
+
+**Legacy**, per `.bsh` script:
+
+| Workflow | Legacy parallelism | Cores used |
+| --- | --- | --- |
+| local-decay (`ContactCaller_microC.bsh`) | `wait_a_second()` throttles backgrounded `&` jobs at a **hardcoded 30** | up to 30 single-core processes |
+| APA (`MicroC_Stranded_Aggregation_pipeline_with_1D_signal.bsh`) | same throttle pattern, capped at **60** | up to 60 single-core processes |
+| background (`MicroC_EP_and_BG_contacts.bsh`) | setup/splitting stages are capped at 60, but the main EP/background counting loop (the dominant cost) has no `&` and no throttle at all | **1 core** for the dominant cost |
+
+Two consequences:
+
+- `--legacy-cpu` is passed through faithfully as `ContactCaller_microC.bsh`'s
+  documented positional `[CPU.threads]` argument, but that script only
+  **echoes** the value for its startup diagnostics -- it never uses it to set
+  the concurrency cap, which stays hardcoded at 30 regardless. This script
+  doesn't patch that (the legacy `.bsh` is read-only prior art), so
+  `--legacy-cpu` doesn't actually change legacy core usage today.
+- Because background's real counting loop is single-threaded, its
+  touche-vs-legacy speedup will scale up with core count on a many-core box
+  in a way local-decay's and APA's won't (both cap at 30/60 regardless of
+  how many cores are available) -- that's a genuine property of the legacy
+  code, not an artifact of this comparison.
+
 `local-decay`'s touche side is reported two ways in `report/speedup.md`:
 warm (`local-decay call` reusing a persistent NPZ cache) and cold (adding the
 one-time `preprocess build-cache` cost), since the legacy pipeline has no
