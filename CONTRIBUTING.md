@@ -36,9 +36,9 @@ typical contribution.
 - Keep `docs/` current when changing CLI flags or public API signatures (see
   [`docs/README.md`](docs/README.md) for the docs layout).
 - When in doubt about expected output shape or a threshold/default, check the
-  corresponding reference script under `_reference/E-P_contacts/` (a local,
-  gitignored clone of the [original Danko Lab reference workflows](https://github.com/Danko-Lab/E-P_contacts)
-  `touche` refactors) rather than guessing -- see [`CITATION.cff`](CITATION.cff)
-  for how to cite that original implementation and its associated paper.
+  corresponding script in the [original Danko Lab E-P_contacts reference
+  workflows](https://github.com/Danko-Lab/E-P_contacts) `touche` refactors,
+  rather than guessing -- see [`CITATION.cff`](CITATION.cff) for how to cite
+  that original implementation and its associated paper.
 - Implementation plans, experiment logs, and agent-facing notes belong under
   `notes/`, not `docs/`.
