@@ -125,6 +125,23 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--legacy-r-home",
+        default="",
+        help=(
+            "Force R_HOME for the local-decay legacy step, e.g. a conda env's own R: "
+            "--legacy-r-home \"$(conda run -n EP-contacts python -c 'import sys; "
+            "print(sys.prefix)')/lib/R\". rpy2 autodetects R_HOME by running `R RHOME` "
+            "against whatever R/Rscript PATH resolves to, which is not always the conda "
+            "env's own R even when invoked via `conda run -n <env>` -- if it instead finds "
+            "a system-installed R, rpy2 (built against the conda env's R) can pair with an "
+            "ABI-mismatched R core, surfacing as R package-loading errors "
+            "(e.g. \"cannot add binding of '.methodsNamespace' to the base environment\") "
+            "or \"unable to initialize the JIT\", unrelated to --legacy-ld-preload. Check "
+            "`conda run -n <env> which R` against `conda run -n <env> python -c "
+            "'import sys; print(sys.prefix)'` to see if this applies."
+        ),
+    )
+    parser.add_argument(
         "--legacy-cpu",
         type=int,
         default=available_cores(),
@@ -234,6 +251,7 @@ def main() -> int:
         output_dir=(output_dir / "legacy").resolve(),
         shell_prefix=shlex.split(args.legacy_shell_prefix),
         legacy_ld_preload=args.legacy_ld_preload,
+        legacy_r_home=args.legacy_r_home,
         legacy_cpu=args.legacy_cpu,
         workflows=args.workflows,
         apa_sample=args.apa_sample,
@@ -343,6 +361,13 @@ def _ld_preload_prefix(legacy_ld_preload: str) -> list[str]:
     return [f"export LD_PRELOAD={shlex.quote(legacy_ld_preload)}"]
 
 
+def _r_home_prefix(legacy_r_home: str) -> list[str]:
+    """`export R_HOME=...` as a leading command, or `[]` if unset. See `--legacy-r-home`."""
+    if not legacy_r_home:
+        return []
+    return [f"export R_HOME={shlex.quote(legacy_r_home)}"]
+
+
 _UV_ENV_LEAK_VARS = [
     "VIRTUAL_ENV",
     "PYTHONHOME",
@@ -379,6 +404,7 @@ def build_legacy_steps(
     output_dir: Path,
     shell_prefix: list[str],
     legacy_ld_preload: str,
+    legacy_r_home: str,
     legacy_cpu: int,
     workflows: list[str],
     apa_sample: str,
@@ -390,7 +416,11 @@ def build_legacy_steps(
     preys_local = input_dir / LOCAL_DECAY_PREYS
     baits_mesc = input_dir / MESC_BAITS
     preys_mesc = input_dir / MESC_PREYS
-    env_prefix = [*_env_unset_prefix(), *_ld_preload_prefix(legacy_ld_preload)]
+    env_prefix = [
+        *_env_unset_prefix(),
+        *_ld_preload_prefix(legacy_ld_preload),
+        *_r_home_prefix(legacy_r_home),
+    ]
 
     if "local-decay" in workflows:
         outdir = output_dir / "local-decay"
