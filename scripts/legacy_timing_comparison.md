@@ -1,0 +1,146 @@
+# touche vs. legacy timing comparison
+
+This benchmark is agent-facing and is not run by normal tests. It runs one
+representative real-data command from each `touche` workflow family
+(local-decay, APA, EP/background) against its original Danko-Lab
+`E-P_contacts` `.bsh`/`.py` counterpart, on identical inputs and parameters,
+and profiles both with the same wall-time/peak-RSS/CPU harness
+`reference_replication.py` uses.
+
+**Run this on a remote server, not your laptop.** The legacy pipeline spawns
+many per-bait/per-chromosome Python and R subprocesses over the full real
+K562/mESC pairs files; a single legacy step can take hours. See "Running on a
+remote server" below.
+
+## Prerequisites
+
+1. A local clone of <https://github.com/Danko-Lab/E-P_contacts> (pass
+   `--reference-dir`, or `--clone-reference` to have the script clone it for
+   you).
+2. For the local-decay comparison only: the legacy repo's own R (>=4.1) +
+   `rpy2` environment (its `ContactCaller_microC.py` calls R's
+   `fisher.test` via `rpy2` -- this is exactly the dependency `touche` was
+   built to remove, see `docs/reproducing-reference-plots.md`). Build it from
+   the reference repo's `environment.yml`:
+
+   ```bash
+   cd /path/to/E-P_contacts
+   conda env create -f environment.yml
+   ```
+
+   Then point every legacy subprocess at that environment with
+   `--legacy-shell-prefix`:
+
+   ```bash
+   --legacy-shell-prefix conda run -n EP-contacts --no-capture-output
+   ```
+
+   APA and EP/background have no R/rpy2 dependency (pure Python + awk/bash),
+   so `--legacy-shell-prefix` only matters for `--workflows local-decay`.
+3. `touche`'s own dependencies (`uv sync --dev`), same as
+   `reference_replication.py`.
+
+`ContactCaller_microC.bsh` also hardcodes
+`export LD_LIBRARY_PATH=/programs/R-4.0.5/lib/` (a Cornell HPC path). This
+script does not patch that -- `_reference/E-P_contacts`-style checkouts are
+read-only prior art, not something to edit. A nonexistent directory in
+`LD_LIBRARY_PATH` is normally harmless as long as your R install's shared
+libraries are otherwise on the default linker search path; if the local-decay
+legacy step fails with an R/library loading error, this is the first thing to
+check.
+
+## What It Compares
+
+Per workflow family, one touche command vs. its legacy equivalent, same
+parameters:
+
+| Family | touche step | Legacy step |
+| --- | --- | --- |
+| local-decay | `local-decay call` (K562, `--dist 1000000 --cap 2000`) | `ContactCaller_microC.bsh` + concatenating its per-bait outputs |
+| APA | `apa aggregate` (`--apa-sample`, default DMSO; `25-150kb`, `10kb` window, `50` pixels) | `MicroC_Stranded_Aggregation_pipeline_with_1D_signal.bsh` |
+| background | `background count` (`--background-sample`, default DMSO; `25-150kb`, `2.5kb` window, `10-150kb` background) | `MicroC_EP_and_BG_contacts.bsh` |
+
+Only the compute-heavy call/aggregate/count steps are timed -- not the
+downstream assign/plot/compare steps, which are comparably cheap
+post-processing on both sides and aren't where the performance gap is.
+
+Select a subset with `--workflows local-decay apa` etc. Choose which mESC
+treatment APA/background compare against with `--apa-sample`/
+`--background-sample` (`dmso`/`flv`/`trp`).
+
+`local-decay`'s touche side is reported two ways in `report/speedup.md`:
+warm (`local-decay call` reusing a persistent NPZ cache) and cold (adding the
+one-time `preprocess build-cache` cost), since the legacy pipeline has no
+persistent-cache equivalent and re-parses the raw pairs file every run.
+
+## Running on a remote server
+
+Because a legacy step can run for hours, launch it detached so an SSH
+disconnect doesn't kill it, and keep results incremental so a crash doesn't
+lose already-measured (possibly hours-long) steps:
+
+```bash
+scripts/run_legacy_timing_comparison_remote.sh \
+  --reference-dir /path/to/E-P_contacts \
+  --legacy-shell-prefix conda run -n EP-contacts --no-capture-output \
+  --work-dir benchmark/legacy-timing-comparison \
+  --progress
+```
+
+This backgrounds `legacy_timing_comparison.py` with `nohup`, writes combined
+output to `<work-dir>/nohup.log`, and prints the PID. Disconnect freely; check
+back with:
+
+```bash
+tail -f benchmark/legacy-timing-comparison/nohup.log
+kill -0 "$(cat benchmark/legacy-timing-comparison/nohup.pid)" && echo running || echo finished
+```
+
+`legacy_timing_comparison.py` writes each step's result to
+`benchmark-results.jsonl` as soon as that step finishes (not just at the end),
+so if the process is killed or the box reboots partway through, resume
+without re-running already-completed steps:
+
+```bash
+scripts/run_legacy_timing_comparison_remote.sh \
+  --reference-dir /path/to/E-P_contacts \
+  --legacy-shell-prefix conda run -n EP-contacts --no-capture-output \
+  --work-dir benchmark/legacy-timing-comparison \
+  --resume-from benchmark/legacy-timing-comparison/benchmark-results.jsonl
+```
+
+Once finished, pull back just the report (small) rather than the full
+`data/`/`outputs/` trees (large, mostly downloaded pairs files and legacy
+intermediate `.bed`/`.gz` scratch files):
+
+```bash
+rsync -av remote:touche/benchmark/legacy-timing-comparison/report/ ./legacy-timing-report/
+```
+
+## Outputs
+
+Default work directory: `benchmark/legacy-timing-comparison/`.
+
+- `data/`: downloaded pairs files and anchor/CSV inputs (only what the
+  selected `--workflows`/`--apa-sample`/`--background-sample` need).
+- `outputs/`: touche command outputs, NPZ cache, and legacy outputs under
+  `outputs/legacy/`.
+- `logs/*.stdout`/`*.stderr`: per-step subprocess output.
+- `benchmark-results.jsonl`: one profiled result per step, written
+  incrementally.
+- `benchmark-manifest.json`: settings and every step result.
+- `report/summary.md`, `report/summary.csv`, `report/index.html`: the same
+  step-by-step report shape `reference_replication.py` writes (wall time,
+  peak RSS, CPU, output sizes).
+- `report/speedup.md`, `report/speedup.csv`, `report/speedup.svg`: the
+  touche-vs-legacy wall-time comparison, per workflow family.
+
+## Preview Without Running Anything
+
+```bash
+uv run python scripts/legacy_timing_comparison.py \
+  --reference-dir /path/to/E-P_contacts --dry-run
+```
+
+Prints the planned downloads and step commands (including the exact legacy
+`bash -c` invocations) as JSON without downloading or running anything.
