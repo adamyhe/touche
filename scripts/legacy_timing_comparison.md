@@ -173,11 +173,72 @@ warm (`local-decay call` reusing a persistent NPZ cache) and cold (adding the
 one-time `preprocess build-cache` cost), since the legacy pipeline has no
 persistent-cache equivalent and re-parses the raw pairs file every run.
 
+## Avoiding uv/python environment leakage (recommended)
+
+`uv run python legacy_timing_comparison.py` itself sets `VIRTUAL_ENV`
+(touche's own venv) and `UV_RUN_RECURSION_DEPTH`, which get inherited by
+every subprocess this script spawns -- including through `conda run` into
+the legacy repo's own Python/R. This is a real bug that showed up on real
+hardware: the identical generated legacy command succeeded when copy-pasted
+and run directly, but failed with a `rpy2` `ModuleNotFoundError` when run as
+a subprocess of this script, even though `rpy2` was independently confirmed
+installed and importable in that same conda env. Every legacy step now
+`unset`s those vars defensively (`_env_unset_prefix` in
+`legacy_timing_comparison.py`), which should prevent this, but there's a
+structurally stronger option if you'd rather not depend on that:
+run the legacy steps as their own standalone bash script with **zero**
+`uv`/`python` in their process ancestry at all, so this bug class can't
+happen regardless of what environment variables `uv run` sets in the future.
+
+```bash
+uv run python scripts/legacy_timing_comparison.py \
+  --reference-dir /path/to/E-P_contacts \
+  --legacy-shell-prefix "conda run -n EP-contacts --no-capture-output" \
+  --legacy-ld-preload "$(conda run -n EP-contacts python -c 'import sys; print(sys.prefix)')/lib/libstdc++.so.6" \
+  --legacy-r-home "$(conda run -n EP-contacts python -c 'import sys; print(sys.prefix)')/lib/R" \
+  --work-dir benchmark/legacy-timing-comparison \
+  --emit-legacy-script benchmark/legacy-timing-comparison/run-legacy.sh
+```
+
+This downloads inputs (same as a normal run, so the emitted script's paths
+are valid) and writes `run-legacy.sh`, then exits without running anything
+itself. Run that script **directly, never through `uv run`**:
+
+```bash
+bash benchmark/legacy-timing-comparison/run-legacy.sh
+```
+
+It measures wall time and process-tree peak RSS in plain bash/awk (not CPU
+time/percent -- that needs Python's `resource.getrusage`, which isn't easily
+replicated in bash; those two columns come back empty for legacy steps in
+the merged report) and appends one JSON line per step to
+`run-legacy.sh.results.jsonl` as it goes, so a killed/crashed run doesn't
+lose already-measured steps -- just re-run the same script, it always starts
+its results file fresh, so pair this with `--resume-from` on the *touche*
+side once you're done, not mid-run on the bash side. Once it's done (or far
+enough along), feed its results back into a normal, touche-only run of this
+script for the combined report:
+
+```bash
+uv run python scripts/legacy_timing_comparison.py \
+  --reference-dir /path/to/E-P_contacts \
+  --work-dir benchmark/legacy-timing-comparison \
+  --resume-from benchmark/legacy-timing-comparison/run-legacy.sh.results.jsonl
+```
+
+This touche-only run doesn't need `--legacy-shell-prefix`/`--legacy-ld-preload`/
+`--legacy-r-home` at all -- those only matter for constructing legacy
+commands, and every legacy step name is already present in `--resume-from`,
+so none get re-run.
+
 ## Running on a remote server
 
 Because a legacy step can run for hours, run it inside `tmux` so an SSH
 disconnect doesn't kill it, and keep results incremental so a crash doesn't
-lose already-measured (possibly hours-long) steps.
+lose already-measured (possibly hours-long) steps. Everything below applies
+equally to the emitted standalone script from the previous section (swap
+in `bash run-legacy.sh` for the `uv run python ...` command) -- put whichever
+one you're running for hours in `tmux`.
 
 Start a session and launch the benchmark inside it:
 

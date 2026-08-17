@@ -190,8 +190,31 @@ def main() -> int:
         help=(
             "Path to a benchmark-results.jsonl from a previous (e.g. killed or crashed) run. "
             "Steps that already completed successfully there are reused instead of re-run -- "
-            "important on a remote box where a single legacy step can take hours."
+            "important on a remote box where a single legacy step can take hours. Also how "
+            "results from --emit-legacy-script's standalone script get fed back in."
         ),
+    )
+    parser.add_argument(
+        "--emit-legacy-script",
+        type=Path,
+        help=(
+            "Instead of running anything, write a standalone bash script (no uv/python "
+            "involved when you run it) to this path that runs just the legacy steps, then "
+            "exit. Run that script directly -- e.g. `bash <path>` -- separately from this "
+            "one; it has zero uv/python ancestry, so touche's own VIRTUAL_ENV/PYTHONPATH/"
+            "UV_* can never leak into it the way they can when legacy steps run as "
+            "subprocesses of `uv run python legacy_timing_comparison.py` itself (a real bug "
+            "hit on real hardware -- see legacy_timing_comparison.md). Its results land in "
+            "--emit-legacy-results; feed that back into a normal (touche-only) run of this "
+            "script with --resume-from to get the combined report. Downloads still run first "
+            "(unless --skip-download), since the emitted script needs the same input files."
+        ),
+    )
+    parser.add_argument(
+        "--emit-legacy-results",
+        type=Path,
+        help="Where --emit-legacy-script's script writes its results.jsonl. Defaults to "
+        "<emit-legacy-script path>.results.jsonl.",
     )
     args = parser.parse_args()
 
@@ -267,6 +290,18 @@ def main() -> int:
     download_records: list[dict[str, Any]] = []
     if not args.skip_download:
         download_records = download_reference_inputs(downloads)
+
+    if args.emit_legacy_script:
+        results_path = args.emit_legacy_results or args.emit_legacy_script.with_suffix(
+            args.emit_legacy_script.suffix + ".results.jsonl"
+        )
+        write_legacy_script(legacy_steps, script_path=args.emit_legacy_script, results_path=results_path)
+        print(f"Wrote {args.emit_legacy_script}", file=sys.stderr)
+        print("Run it directly, separately from this script (not via uv run):", file=sys.stderr)
+        print(f"  bash {args.emit_legacy_script}", file=sys.stderr)
+        print("Then feed its results into a touche-only run of this script with:", file=sys.stderr)
+        print(f"  --resume-from {results_path}", file=sys.stderr)
+        return 0
 
     reusable_results = load_resumable_results(args.resume_from) if args.resume_from else {}
 
@@ -538,6 +573,123 @@ def interleave(touche_steps: list[BenchmarkStep], legacy_steps: list[BenchmarkSt
             used_legacy.add(legacy_step.name)
     ordered.extend(step for step in legacy_steps if step.name not in used_legacy)
     return ordered
+
+
+_BASH_HELPERS = r'''
+json_escape() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '%s' "$s"
+}
+
+descendant_rss_kb() {
+  # Sum RSS (KiB) of PID "$1" and every descendant, from one `ps` snapshot --
+  # mirrors _report.py's process_tree_rss_kb/child_pids, since a legacy step
+  # forks many concurrent children whose combined memory is what matters.
+  local root=$1
+  ps -eo pid=,ppid=,rss= 2>/dev/null | awk -v root="$root" '
+    { P[$1] = $2; R[$1] = $3 }
+    END {
+      total = 0
+      stack[1] = root; n = 1
+      while (n > 0) {
+        cur = stack[n]; n--
+        if (visited[cur]) continue
+        visited[cur] = 1
+        if (cur in R) total += R[cur]
+        for (p in P) { if (P[p] == cur) { n++; stack[n] = p } }
+      }
+      print total
+    }
+  '
+}
+
+run_step() {
+  local name="$1" group="$2" outputs_csv="$3"; shift 3
+  echo "[legacy] running $name ..." >&2
+  local start end elapsed rc rss_max=0 rss pid
+  start=$(date +%s.%N)
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    rss=$(descendant_rss_kb "$pid")
+    [ -n "$rss" ] && [ "$rss" -gt "$rss_max" ] 2>/dev/null && rss_max=$rss
+    sleep 0.25
+  done
+  wait "$pid"
+  rc=$?
+  end=$(date +%s.%N)
+  elapsed=$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.6f", b - a }')
+  local rss_mb
+  rss_mb=$(awk -v r="$rss_max" 'BEGIN { printf "%.3f", r / 1024 }')
+
+  local outputs_json="{}"
+  if [ -n "$outputs_csv" ]; then
+    outputs_json="{"
+    local first=1 p size
+    IFS=':' read -ra __outputs <<< "$outputs_csv"
+    for p in "${__outputs[@]}"; do
+      size="null"
+      if [ -e "$p" ]; then
+        size=$(du -sk "$p" 2>/dev/null | awk '{print $1 * 1024}')
+        [ -z "$size" ] && size="null"
+      fi
+      [ "$first" -eq 0 ] && outputs_json+=","
+      first=0
+      outputs_json+="\"$(json_escape "$p")\":$size"
+    done
+    outputs_json+="}"
+  fi
+
+  printf '{"name":"%s","group":"%s","command":["ran via emitted legacy script"],"returncode":%d,"signal_name":null,"elapsed_seconds":%s,"peak_rss_mb":%s,"cpu_seconds":null,"cpu_percent":null,"stdout_log":"","stderr_log":"","outputs":%s,"command_json":null}\n' \
+    "$(json_escape "$name")" "$(json_escape "$group")" "$rc" "$elapsed" "$rss_mb" "$outputs_json" >> "$RESULTS_FILE"
+  echo "[legacy] $name: returncode=$rc elapsed=${elapsed}s peak_rss=${rss_mb}MiB" >&2
+  return "$rc"
+}
+'''
+
+
+def _bash_run_step_call(step: BenchmarkStep) -> str:
+    outputs_csv = ":".join(str(path) for path in step.outputs)
+    command = " ".join(shlex.quote(part) for part in step.command)
+    return (
+        f"run_step {shlex.quote(step.name)} {shlex.quote(step.group)} "
+        f"{shlex.quote(outputs_csv)} {command}"
+    )
+
+
+def write_legacy_script(
+    steps: list[BenchmarkStep], *, script_path: Path, results_path: Path
+) -> None:
+    """Write a standalone bash script that runs `steps` with zero uv/python ancestry.
+
+    Run this directly (`bash script_path`), never through `uv run` -- that's
+    the whole point. It has no touche VIRTUAL_ENV/PYTHONPATH/UV_* to leak into
+    conda-run/R/rpy2, unlike running these same steps as subprocesses of
+    `uv run python legacy_timing_comparison.py` itself (a real bug hit on
+    real hardware). Each step's result is appended to `results_path` in the
+    same shape `BenchmarkResult`/`load_resumable_results` expect, so
+    `--resume-from results_path` feeds them back into a normal
+    (touche-only) run of this script for the combined report. Timing/peak-RSS
+    are measured in plain bash/awk (process-tree RSS polling, matching
+    `_report.py`'s approach) rather than CPU time/percent, which needs
+    `resource.getrusage` and isn't easily replicated in bash -- those two
+    columns come back empty for legacy steps in the merged report.
+    """
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -uo pipefail",
+        "",
+        f"RESULTS_FILE={shlex.quote(str(results_path))}",
+        'mkdir -p "$(dirname "$RESULTS_FILE")"',
+        ': > "$RESULTS_FILE"',
+        _BASH_HELPERS,
+    ]
+    lines.extend(_bash_run_step_call(step) for step in steps)
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    script_path.chmod(0o755)
 
 
 def needed_downloads(
