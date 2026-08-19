@@ -13,6 +13,7 @@ import email.utils
 import hashlib
 import http.client
 import json
+import os
 import random
 import sys
 import time
@@ -30,6 +31,25 @@ from _report import (
     run_profiled_step,
     write_profile_report,
 )
+
+
+def available_cores() -> int:
+    """Cores actually usable by this process.
+
+    Prefers `NUMBA_NUM_THREADS` (what numba's own kernels will use, if set),
+    then `os.sched_getaffinity` (respects scheduler/cgroup CPU pinning on
+    Linux -- unlike `os.cpu_count()`, which reports the whole node's core
+    count regardless of what a shared-HPC job was actually allocated), then
+    falls back to `os.cpu_count()` on platforms without `sched_getaffinity`
+    (e.g. macOS).
+    """
+    env_threads = os.environ.get("NUMBA_NUM_THREADS")
+    if env_threads and env_threads.isdigit():
+        return max(1, int(env_threads))
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return os.cpu_count() or 1
 
 REFERENCE_RAW_BASE = "https://raw.githubusercontent.com/Danko-Lab/E-P_contacts/main/Input_files"
 GEO_BASE = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE206nnn/GSE206131/suppl"
@@ -73,8 +93,15 @@ def main() -> int:
         "--jobs",
         "-j",
         type=int,
-        default=1,
-        help="local-decay call --jobs -- baits to process concurrently (default: 1, sequential).",
+        default=available_cores(),
+        help=(
+            "local-decay call --jobs -- baits to process concurrently (default: detected "
+            "available cores). Only local-decay's LOWESS kernel is numba-parallel; at real-data "
+            "scale most of its wall time is single-threaded per-bait glue code that only --jobs "
+            "parallelizes, not NUMBA_NUM_THREADS -- pass --jobs 1 for the sequential-baits "
+            "baseline instead, which is touche's own conservative CLI default (chosen for small "
+            "inputs, where this script's real Gasperini-bait scale doesn't apply)."
+        ),
     )
     parser.add_argument("--lowess-iterations", type=int, default=3)
     parser.add_argument("--poll-interval", type=float, default=0.25)
