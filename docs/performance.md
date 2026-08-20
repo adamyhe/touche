@@ -59,7 +59,7 @@ in every one of its per-bait processes.
 
 A candidate still on the table for `touche`'s own `local-decay-call`, not yet
 implemented: `_call_bait_contacts`'s `in_region` window filter
-(`src/touche/local_decay.py:678`) does a full boolean-mask pass over the
+(`src/touche/local_decay.py:651`) does a full boolean-mask pass over the
 *entire* chromosome's `pos_a`/`pos_b` arrays on every bait call, even though
 `_ordered_cis_index` already sorts contacts by `pos_a` -- most of that
 filtering could resolve via `np.searchsorted` (O(log n)) instead of O(n) per
