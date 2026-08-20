@@ -165,50 +165,59 @@ arrays — no embedded R interpreter, no per-locus subprocess memory overhead.
 [`scripts/reference_replication.py`](../scripts/reference_replication.py) ran
 the full example end to end on a 16-core node against the real Danko-Lab
 inputs (K562 local-decay at 8.9GB of pairs; DMSO/FLV/TRP APA and
-EP/background at 433MB/2.8GB/3.15GB): **~1,042 seconds (~17.4 minutes)**
+EP/background at 433MB/2.8GB/3.15GB): **~949 seconds (~15.8 minutes)**
 total across all 16 profiled steps, from already-downloaded raw pairs to
-every local-decay/APA/background output and comparison plot.
+every local-decay/APA/background output and comparison plot -- down from an
+initial **~1,318 seconds (~22.0 minutes)** before the three fixes below.
 
 | Step | Elapsed (s) | Peak RSS (MB) | CPU % |
 | --- | ---: | ---: | ---: |
-| preprocess-cache-k562 | 273.7 | 11,914 | 638% |
-| local-decay-call | 243.6 | 12,399 | 972% |
-| apa-aggregate-trp | 95.4 | 10,457 | 318% |
-| apa-aggregate-flv | 86.5 | 9,298 | 323% |
-| preprocess-cache-trp | 77.1 | 4,207 | 730% |
-| preprocess-cache-flv | 69.6 | 3,676 | 720% |
-| background-compare | 135.2 | 279 | 123% |
-| apa-aggregate-dmso | 12.3 | 1,637 | 326% |
-| preprocess-cache-dmso | 10.5 | 946 | 690% |
-| background-count-trp | 8.9 | 6,536 | 309% |
-| background-count-flv | 8.5 | 5,814 | 302% |
-| local-decay-plot | 9.9 | 211 | 42% |
-| apa-compare-{flv,trp}-vs-dmso | 2.8 each | 213 | 110% |
-| background-count-dmso | 3.1 | 1,086 | 202% |
-| local-decay-assign-pair-types | 1.8 | 134 | 89% |
+| preprocess-cache-k562 | 271.3 | 11,854 | 692% |
+| local-decay-call | 139.7 | 9,821 | 737% |
+| background-compare | 134.3 | 243 | 123% |
+| apa-aggregate-trp | 97.3 | 10,383 | 313% |
+| apa-aggregate-flv | 88.4 | 9,225 | 319% |
+| preprocess-cache-trp | 81.3 | 4,551 | 695% |
+| preprocess-cache-flv | 73.1 | 3,836 | 686% |
+| apa-aggregate-dmso | 14.0 | 1,535 | 297% |
+| preprocess-cache-dmso | 11.7 | 861 | 623% |
+| background-count-trp | 10.0 | 6,457 | 281% |
+| background-count-flv | 9.9 | 5,740 | 268% |
+| apa-compare-{flv,trp}-vs-dmso | ~4.1 each | 179 | ~98% |
+| background-count-dmso | 4.2 | 1,009 | 169% |
+| local-decay-plot | 3.5 | 171 | 94% |
+| local-decay-assign-pair-types | 2.4 | 90 | 87% |
 
-These numbers already reflect two fixes this table motivated (see git history
-for the full before/after): the `preprocess-cache-dmso/flv/trp` steps used to
-build NPZ caches nothing downstream read (162.7s wasted, ~12% of the run);
-`apa aggregate`/`background count` now support `--index-strategy cache`, so
-those same per-sample caches (built once, with strand metadata since APA
-needs it) are shared between both workflows via `--require-cache` instead of
-each re-parsing its sample's raw pairs file from scratch. Cache-build time is
-counted once, in `preprocess-cache-{dmso,flv,trp}` above -- `apa-aggregate-*`/
-`background-count-*` never rebuild it (`--require-cache` fails loudly if it's
-missing), so their numbers are pure cache-read cost, not bundled into
-cache-build cost. Effect on the raw-pairs-parse step specifically ("read
-inputs" in `report/command-timings.csv`): FLV 64.8s → 6.0s (apa), 57.3s →
-4.4s (background); TRP 71.9s → 6.7s (apa), 65.7s → 4.9s (background) -- and
-peak RSS for those same steps dropped by roughly half to two-thirds, since
-reading a compact pre-built NPZ shard is lighter than Polars parsing raw
-gzipped pairs text.
+These numbers reflect three fixes this table motivated (see git history for
+the full before/after):
 
-`local-decay-call` (243.6s) and `preprocess-cache-k562` (273.7s) were
-untouched by either the cache-generation or cache-sharing fix and remained
-the two largest single steps in this run -- see "Runtime" above for the
-`_call_bait_contacts` `in_region`-masking fix landed afterward, not yet
-reflected in this table (pending a re-run).
+1. The `preprocess-cache-dmso/flv/trp` steps used to build NPZ caches
+   nothing downstream read (162.7s wasted, ~12% of the original run) --
+   removed, then reinstated once they became genuinely shared.
+2. `apa aggregate`/`background count` now support `--index-strategy cache`,
+   so those same per-sample caches (built once, with strand metadata since
+   APA needs it) are shared between both workflows via `--require-cache`
+   instead of each re-parsing its sample's raw pairs file from scratch.
+   Cache-build time is counted once, in `preprocess-cache-{dmso,flv,trp}`
+   above -- `apa-aggregate-*`/`background-count-*` never rebuild it
+   (`--require-cache` fails loudly if it's missing), so their numbers are
+   pure cache-read cost. Effect on the raw-pairs-parse step specifically
+   ("read inputs" in `report/command-timings.csv`): FLV 64.8s → 6.0s (apa),
+   57.3s → 4.4s (background); TRP 71.9s → 6.7s (apa), 65.7s → 4.9s
+   (background) -- and peak RSS for those same steps dropped by roughly half
+   to two-thirds.
+3. `_call_bait_contacts`'s `in_region` window filter (see "Runtime" above)
+   now resolves via `np.searchsorted` instead of a full per-bait boolean
+   mask over the whole chromosome. **`local-decay-call`: 243.6s → 139.7s**
+   (1.74x), with peak RSS also dropping 12,399MB → 9,821MB. The named
+   profiling steps inside it (cache loading) are unchanged at ~17.3s, so
+   this reflects a ~227s → ~122s (1.86x) reduction in the per-bait compute
+   loop itself, where LOWESS/Fisher/histogram work (unaffected by this fix)
+   also lives.
+
+`preprocess-cache-k562` (271.3s) and `background-compare` (134.3s, driven by
+`scipy.stats.gaussian_kde` scatter-plot coloring, independent of any backend
+flag) are now the two largest untouched steps.
 
 CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `parallel=True` kernels, and local-decay's `--jobs` thread pool) — e.g.
