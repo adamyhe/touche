@@ -143,6 +143,9 @@ Detailed usage notes live under `docs/`:
   and custom scripts.
 - [Reproducing reference plots](docs/reproducing-reference-plots.md): end-to-end
   commands for the reference local-decay, APA, and EP/background plots.
+- [Performance vs. the reference implementation](docs/performance.md): how
+  `touche`'s runtime, intermediate-file, and memory behavior compares to the
+  reference implementation, and why.
 - [Testing and publishing](docs/testing-and-publishing.md): CI, local checks,
   and PyPI release workflow for the `ep-touche` distribution.
 
