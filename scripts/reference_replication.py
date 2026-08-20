@@ -329,16 +329,23 @@ def reference_downloads(data_dir: Path) -> list[Download]:
 def build_cache_steps(
     *, python: str, data_dir: Path, output_dir: Path, skip_existing: bool = False
 ) -> tuple[list[BenchmarkStep], dict[str, Path]]:
-    """NPZ caches shared by every downstream step."""
+    """NPZ cache(s) consumed by downstream steps.
+
+    Only `local-decay-call` has a cache-consuming code path
+    (`--index-strategy cache`/`--cache-dir`/`--require-cache`); `apa
+    aggregate` and `background count` have no equivalent flag and always
+    parse their pairs file directly (`build_contact_indexes` in
+    `aggregate_apa`/`count_ep_and_background`), so building DMSO/FLV/TRP
+    caches here would just add unread NPZ files -- confirmed on a real
+    benchmark run where those three cache-build steps cost ~163s (12% of
+    total wall time) for output nothing downstream consumed.
+    """
 
     cache_dir = output_dir / "caches"
     steps: list[BenchmarkStep] = []
     cache_paths: dict[str, Path] = {}
     for label, pairs in [
         ("k562", data_dir / K562_PAIRS),
-        ("dmso", data_dir / DMSO_PAIRS),
-        ("flv", data_dir / FLV_PAIRS),
-        ("trp", data_dir / TRP_PAIRS),
     ]:
         cache_out = cache_dir / label
         cache_paths[label] = cache_out
