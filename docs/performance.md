@@ -57,21 +57,29 @@ batching, on a 40-bait synthetic benchmark (`notes/numba-implementation-plan.md`
 The reference implementation still has this cost, in pure Python, paid fresh
 in every one of its per-bait processes.
 
-A candidate still on the table for `touche`'s own `local-decay-call`, not yet
-implemented: `_call_bait_contacts`'s `in_region` window filter
-(`src/touche/local_decay.py:651`) does a full boolean-mask pass over the
-*entire* chromosome's `pos_a`/`pos_b` arrays on every bait call, even though
-`_ordered_cis_index` already sorts contacts by `pos_a` -- most of that
-filtering could resolve via `np.searchsorted` (O(log n)) instead of O(n) per
-bait. On a real benchmark run this mattered: only ~17s of `local-decay-call`'s
-243.6s wall time is accounted for by named profiling steps (cache loading);
-the remaining ~227s (93%) is the per-bait compute loop itself, where this
-sits. A correct fix needs more than a drop-in `searchsorted` swap, since only
-`pos_a` is sorted -- catching contacts that span into the window from the
-left needs a bounded second slice using a per-chromosome max-span bound, not
-a second full sort. Not yet implemented pending a size-up of the risk/reward
-given local-decay's cost is already competitive with the reference's
-per-bait-process model.
+`touche`'s own `local-decay-call` had the same shape of inefficiency:
+`_call_bait_contacts`'s `in_region` window filter used to do a full
+boolean-mask pass over the *entire* chromosome's `pos_a`/`pos_b` arrays on
+every bait call, even though `_ordered_cis_index` already sorts contacts by
+`pos_a`. On a real benchmark run this mattered: only ~17s of
+`local-decay-call`'s 243.6s wall time was accounted for by named profiling
+steps (cache loading); the remaining ~227s (93%) was the per-bait compute
+loop itself, where this sat. Fixed in `_bait_window_contacts`
+(`src/touche/local_decay.py`): contacts with `pos_a` in the bait's window are
+now a direct `np.searchsorted` slice (O(log n) instead of O(n) per bait);
+contacts that start before the window but span into it (`pos_a < lo <= pos_b
+<= hi`) are bounded to `pos_a >= lo - max_span`, where `max_span` is the
+chromosome's largest observed `pos_b - pos_a` (computed once per chromosome,
+not per bait) -- `pos_b <= pos_a + max_span` bounds how far left such a
+contact's `pos_a` can be, so that candidate slice stays small and still only
+needs a boolean mask across a narrow range, not the whole chromosome.
+Verified bit-identical against the pre-fix mask via `git stash` (randomized
+datasets specifically sized to exercise the spanning case, an
+exact-boundary-contacts case, both `n_jobs=1` and `n_jobs=2`), plus a
+permanent regression test (50 randomized trials against a brute-force
+reimplementation of the original mask formula). **~3x** speedup (2.76s →
+0.93s) on a synthetic 3M-contact/500-bait benchmark matching the real K562
+scale profiled in `notes/numba-implementation-plan.md`.
 
 ### APA and EP/background
 
@@ -196,10 +204,11 @@ peak RSS for those same steps dropped by roughly half to two-thirds, since
 reading a compact pre-built NPZ shard is lighter than Polars parsing raw
 gzipped pairs text.
 
-`local-decay-call` (243.6s) and `preprocess-cache-k562` (273.7s) are
-untouched by either fix and remain the two largest single steps -- see
-"Runtime" above for the `_call_bait_contacts` `in_region`-masking candidate
-still on the table for `local-decay-call` specifically.
+`local-decay-call` (243.6s) and `preprocess-cache-k562` (273.7s) were
+untouched by either the cache-generation or cache-sharing fix and remained
+the two largest single steps in this run -- see "Runtime" above for the
+`_call_bait_contacts` `in_region`-masking fix landed afterward, not yet
+reflected in this table (pending a re-run).
 
 CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `parallel=True` kernels, and local-decay's `--jobs` thread pool) — e.g.
