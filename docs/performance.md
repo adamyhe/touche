@@ -235,8 +235,14 @@ single unavoidable full-file scan (gzip decompression + parsing into the
 local Parquet spool), with QC and all per-chromosome shard writes reading
 cheaply from that spool afterward (Parquet row-group pruning). No fix
 identified; this looks like inherent I/O cost, not an algorithmic
-inefficiency. `background-compare`'s 134.3s predates fix 4 above and should
-drop substantially on the next full re-run.
+inefficiency. One potential shortcut was ruled out empirically: BGZF
+(block-gzip, used by pairtools/distiller-nf by convention to support
+`pairix`/`tabix` indexing) is a strict superset of gzip whose concatenated
+block structure a BGZF-aware reader can decompress in parallel -- but
+`htsfile` against the real K562 input (`GSE206131_K562_cis_mapq30_pairs.txt.gz`)
+reports "unknown gzip-compressed data", not BGZF, so there's no block
+structure here to exploit. `background-compare`'s 134.3s predates fix 4
+above and should drop substantially on the next full re-run.
 
 CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `parallel=True` kernels, and local-decay's `--jobs` thread pool) — e.g.
