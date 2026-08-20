@@ -16,6 +16,7 @@ from touche.backends import has_numba, has_statsmodels
 from touche.cli.local_decay import _assign_pair_types
 from touche.contacts import build_contact_indexes, build_npz_cache
 from touche.local_decay import (
+    _bait_window_contacts,
     assign_pair_types,
     call_local_decay,
     compute_local_decay,
@@ -24,6 +25,7 @@ from touche.local_decay import (
     plot_pair_type_distribution,
     read_center_anchors,
 )
+from touche.models import ContactIndex
 
 
 class LocalDecayTests(unittest.TestCase):
@@ -195,6 +197,50 @@ class LocalDecayTests(unittest.TestCase):
                     cache_dir=tmp_path / "missing-cache",
                     require_cache=True,
                 )
+
+    def test_bait_window_contacts_matches_brute_force_mask(self) -> None:
+        """`_bait_window_contacts`'s searchsorted-based windowing vs. the
+        brute-force boolean mask it replaced (`(lo<=pos_a<=hi)|(lo<=pos_b<=hi)`),
+        across randomized configurations deliberately sized to exercise the
+        "spanning" branch (contacts whose smaller endpoint is well before the
+        bait window but whose larger endpoint reaches into it)."""
+        rng = np.random.default_rng(20240817)
+        for trial in range(50):
+            n = int(rng.integers(0, 400))
+            chrom_len = int(rng.integers(1_000, 200_000))
+            max_span_bound = int(rng.integers(1, chrom_len))
+            pos_a = np.sort(rng.integers(0, chrom_len, size=n)).astype(np.int64)
+            span = rng.integers(0, max_span_bound, size=n) if n else np.array([], dtype=np.int64)
+            pos_b = (pos_a + span).astype(np.int64)
+            max_span = int(np.max(span)) if n else 0
+
+            bait_center = int(rng.integers(-chrom_len, 2 * chrom_len))
+            dist = int(rng.integers(1, chrom_len))
+            lo, hi = bait_center - dist, bait_center + dist
+
+            expected_mask = ((lo <= pos_a) & (pos_a <= hi)) | ((lo <= pos_b) & (pos_b <= hi))
+            expected_pos_a = pos_a[expected_mask]
+            expected_pos_b = pos_b[expected_mask]
+
+            index = ContactIndex(
+                chrom="chr1",
+                pos_a=pos_a,
+                pos_b=pos_b,
+                strand_a=np.ones(n, dtype=np.int8),
+                strand_b=np.full(n, -1, dtype=np.int8),
+                mapq_a=np.full(n, 30, dtype=np.int16),
+                mapq_b=np.full(n, 30, dtype=np.int16),
+            )
+            got_pos_a, got_pos_b = _bait_window_contacts(
+                index, bait_center, dist=dist, max_span=max_span
+            )
+
+            np.testing.assert_array_equal(
+                got_pos_a,
+                expected_pos_a,
+                err_msg=f"trial={trial} n={n} bait_center={bait_center} dist={dist} max_span={max_span}",
+            )
+            np.testing.assert_array_equal(got_pos_b, expected_pos_b)
 
     def test_compute_local_decay_accepts_in_memory_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
