@@ -184,6 +184,7 @@ def main() -> int:
             data_dir=data_dir,
             output_dir=output_dir,
             k562_cache_dir=cache_paths["k562"],
+            mesc_cache_dirs={label: cache_paths[label] for label in ("dmso", "flv", "trp")},
             lowess_backend=args.lowess_backend,
             fisher_backend=args.fisher_backend,
             jobs=args.jobs,
@@ -331,14 +332,16 @@ def build_cache_steps(
 ) -> tuple[list[BenchmarkStep], dict[str, Path]]:
     """NPZ cache(s) consumed by downstream steps.
 
-    Only `local-decay-call` has a cache-consuming code path
-    (`--index-strategy cache`/`--cache-dir`/`--require-cache`); `apa
-    aggregate` and `background count` have no equivalent flag and always
-    parse their pairs file directly (`build_contact_indexes` in
-    `aggregate_apa`/`count_ep_and_background`), so building DMSO/FLV/TRP
-    caches here would just add unread NPZ files -- confirmed on a real
-    benchmark run where those three cache-build steps cost ~163s (12% of
-    total wall time) for output nothing downstream consumed.
+    K562's cache is position-only (`--no-metadata`), consumed only by
+    `local-decay-call` (`--index-strategy cache`/`--cache-dir`/
+    `--require-cache`). DMSO/FLV/TRP caches include strand metadata (no
+    `--no-metadata`) since `apa aggregate` needs it; `background count`
+    tolerates the extra metadata fine, so one cache per mESC sample is
+    shared between both workflows via the same flags -- confirmed on a real
+    benchmark run that building these and *not* consuming them wasted
+    ~163s (12% of total wall time), and that apa-aggregate/background-count
+    on the same sample separately re-parsing the same raw pairs file cost
+    another ~120-140s per sample.
     """
 
     cache_dir = output_dir / "caches"
@@ -346,6 +349,9 @@ def build_cache_steps(
     cache_paths: dict[str, Path] = {}
     for label, pairs in [
         ("k562", data_dir / K562_PAIRS),
+        ("dmso", data_dir / DMSO_PAIRS),
+        ("flv", data_dir / FLV_PAIRS),
+        ("trp", data_dir / TRP_PAIRS),
     ]:
         cache_out = cache_dir / label
         cache_paths[label] = cache_out
@@ -383,6 +389,7 @@ def build_steps(
     data_dir: Path,
     output_dir: Path,
     k562_cache_dir: Path,
+    mesc_cache_dirs: dict[str, Path],
     lowess_backend: str,
     fisher_backend: str,
     jobs: int,
@@ -526,6 +533,13 @@ def build_steps(
                     "50",
                     "--out-dir",
                     sample_dir,
+                    "--index-strategy",
+                    "cache",
+                    "--cache-dir",
+                    mesc_cache_dirs[label],
+                    "--cache-prefix",
+                    label,
+                    "--require-cache",
                     *common_profile,
                 ),
                 outputs=[
@@ -608,6 +622,13 @@ def build_steps(
                     "150000",
                     "--out",
                     background_counts[label],
+                    "--index-strategy",
+                    "cache",
+                    "--cache-dir",
+                    mesc_cache_dirs[label],
+                    "--cache-prefix",
+                    label,
+                    "--require-cache",
                     *common_profile,
                 ),
                 outputs=[background_counts[label]],
