@@ -6,7 +6,9 @@ Public API: `count_ep_and_background` (file-driven wrapper), `compute_ep_and_bac
 including `_count_ep_background_pairs_numba`, which wraps the Numba counting
 kernel in `touche.numba.background` that `compute_ep_and_background` always
 uses. `_safe_kde` is the one place `scipy.stats.gaussian_kde` is called --
-only for the scatter plot's point-density coloring, not the numeric output.
+only for the scatter plot's point-density coloring, not the numeric output --
+and fits on a capped random subsample at large point counts to avoid
+`gaussian_kde`'s O(n^2) evaluation cost, still coloring every point.
 """
 
 from __future__ import annotations
@@ -423,14 +425,30 @@ def _resolve_cache_dir(cache_dir: str | Path | None, out_path: str | Path) -> Pa
     return Path(out_path).parent / "contact_index_cache"
 
 
-def _safe_kde(values: np.ndarray) -> np.ndarray:
-    """Gaussian KDE point-density estimate, falling back to uniform color on a degenerate input."""
-    if values.shape[1] < 2:
-        return np.ones(values.shape[1])
+def _safe_kde(values: np.ndarray, *, max_fit_points: int = 5000, seed: int = 0) -> np.ndarray:
+    """Gaussian KDE point-density estimate, falling back to uniform color on a degenerate input.
+
+    `gaussian_kde(values)(values)` is O(n_fit * n_eval) with no faster path in
+    scipy -- fitting and evaluating on every point is O(n^2) and dominates
+    `background compare`'s wall time at real scale (tens of seconds per plot
+    at ~68k rows). Every point is still colored (`n_eval` stays the full
+    `values`); only the fit is capped to a random subsample of at most
+    `max_fit_points`, since KDE bandwidth already smooths over local
+    neighborhoods -- a several-thousand-point subsample gives a visually
+    indistinguishable density estimate. `seed` is fixed by default so the
+    same input always produces the same plot.
+    """
+    n = values.shape[1]
+    if n < 2:
+        return np.ones(n)
+    fit_values = values
+    if n > max_fit_points:
+        indices = np.random.default_rng(seed).choice(n, size=max_fit_points, replace=False)
+        fit_values = values[:, indices]
     try:
-        return gaussian_kde(values)(values)
+        return gaussian_kde(fit_values)(values)
     except np.linalg.LinAlgError:
-        return np.ones(values.shape[1])
+        return np.ones(n)
 
 
 def _split_name_value(value: str) -> tuple[str, str]:
