@@ -1,7 +1,8 @@
 """Build `ContactIndex` objects from pairs files and cache them as chromosome-sharded NPZ files.
 
 Public API: `build_contact_indexes`, `build_npz_cache`, `load_npz_cache`,
-`load_npz_cache_manifest`, `write_npz_cache`. Everything else (the
+`load_npz_cache_manifest`, `write_npz_cache`, `ensure_npz_cache`,
+`load_cached_contact_indexes`. Everything else (the
 `_build_*`/`_write_*`/`_contact_index_from_frame` helpers) is internal
 plumbing specific to one of the two `index_strategy` code paths in
 `build_npz_cache` -- see CLAUDE.md's "Contact indexing strategies" section.
@@ -157,6 +158,68 @@ def load_npz_cache_manifest(cache_dir: str | Path, *, prefix: str = "contacts") 
         str(chrom): cache_dir / str(record["path"])
         for chrom, record in chromosomes.items()
         if isinstance(record, dict) and "path" in record
+    }
+
+
+def ensure_npz_cache(
+    pairs_path: str | Path,
+    *,
+    cache_dir: str | Path,
+    cache_prefix: str = "contacts",
+    source: str = "auto",
+    include_metadata: bool = True,
+    require_cache: bool = False,
+) -> None:
+    """Build the NPZ cache at `cache_dir` if its manifest is missing, unless `require_cache` demands it exist."""
+    manifest_path = Path(cache_dir) / f"{cache_prefix}.manifest.json"
+    if manifest_path.exists():
+        return
+    if require_cache:
+        raise FileNotFoundError(
+            f"Required contact-index cache manifest is missing: {manifest_path}. "
+            "Run `touche preprocess build-cache` first or disable require_cache."
+        )
+    build_npz_cache(
+        pairs_path,
+        cache_dir,
+        source=source,
+        prefix=cache_prefix,
+        cis_only=True,
+        include_metadata=include_metadata,
+        index_strategy="chromosome",
+    )
+
+
+def load_cached_contact_indexes(
+    pairs_path: str | Path,
+    *,
+    cache_dir: str | Path,
+    cache_prefix: str = "contacts",
+    source: str = "auto",
+    include_metadata: bool = True,
+    require_cache: bool = False,
+) -> dict[str, ContactIndex]:
+    """Load every chromosome's `ContactIndex` from an NPZ cache, building it first if missing.
+
+    Unlike local-decay's `index_strategy="cache"` path (one chromosome shard
+    loaded at a time, bounding memory to the largest chromosome), this loads
+    every shard up front: APA/background already hold every chromosome's
+    index in memory at once (their default `build_contact_indexes` call), so
+    this only trades a raw-pairs-file parse for a faster NPZ-shard read, with
+    no existing memory-bounded behavior to preserve.
+    """
+    ensure_npz_cache(
+        pairs_path,
+        cache_dir=cache_dir,
+        cache_prefix=cache_prefix,
+        source=source,
+        include_metadata=include_metadata,
+        require_cache=require_cache,
+    )
+    cache_paths = load_npz_cache_manifest(cache_dir, prefix=cache_prefix)
+    return {
+        chrom: load_npz_cache(path, include_metadata=include_metadata)
+        for chrom, path in cache_paths.items()
     }
 
 

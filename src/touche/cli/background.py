@@ -69,6 +69,27 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
         default="auto",
         help="Input pairs layout.",
     )
+    count_parser.add_argument(
+        "--index-strategy",
+        choices=["all", "cache"],
+        default="all",
+        help=(
+            "Contact-index strategy. cache reads a persistent NPZ ContactIndex cache "
+            "(building it first if missing) instead of re-parsing --pairs -- useful when "
+            "apa aggregate also runs against the same sample."
+        ),
+    )
+    count_parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="Directory containing or receiving chromosome-sharded contact cache files.",
+    )
+    count_parser.add_argument("--cache-prefix", default="contacts", help="Cache manifest/shard prefix.")
+    count_parser.add_argument(
+        "--require-cache",
+        action="store_true",
+        help="Require an existing cache instead of building one implicitly.",
+    )
     add_instrumentation_args(count_parser)
     count_parser.set_defaults(func=_count_background)
 
@@ -185,6 +206,29 @@ def add_background_parser(subparsers: argparse._SubParsersAction) -> None:
         type=float,
         help="Minimum EP contacts per billion contacts required for plotting/comparison.",
     )
+    run_parser.add_argument(
+        "--index-strategy",
+        choices=["all", "cache"],
+        default="all",
+        help=(
+            "Contact-index strategy. cache reads a persistent NPZ ContactIndex cache per "
+            "sample (building it first if missing) instead of re-parsing each pairs file -- "
+            "useful when apa run also runs against the same samples."
+        ),
+    )
+    run_parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        help=(
+            "Base directory for per-sample contact caches (one subdirectory per sample name). "
+            "Defaults to a contact_index_cache/ directory next to each sample's own output."
+        ),
+    )
+    run_parser.add_argument(
+        "--require-cache",
+        action="store_true",
+        help="Require existing caches instead of building them implicitly.",
+    )
     add_instrumentation_args(run_parser)
     run_parser.add_argument(
         "--reference-style",
@@ -208,6 +252,10 @@ def _count_background(args: argparse.Namespace) -> None:
         min_bg_distance=args.min_bg_distance,
         max_bg_distance=args.max_bg_distance,
         source=args.source,
+        index_strategy=args.index_strategy,
+        cache_dir=args.cache_dir,
+        cache_prefix=args.cache_prefix,
+        require_cache=args.require_cache,
         progress=instrument,
     )
     print_json(add_timings({"rows": int(len(result)), "out": str(args.out)}, instrument))
@@ -255,6 +303,9 @@ def _run_background(args: argparse.Namespace) -> None:
         source=args.source,
         min_ep_cpb=args.min_ep_cpb,
         reference_style=args.reference_style,
+        index_strategy=args.index_strategy,
+        cache_dir=args.cache_dir,
+        require_cache=args.require_cache,
         progress=instrument,
     )
     print_json(manifest)

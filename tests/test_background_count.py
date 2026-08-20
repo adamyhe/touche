@@ -12,7 +12,7 @@ from touche.anchors import read_bed_anchors
 from touche.backends import has_numba
 from touche.background import compute_ep_and_background, count_ep_and_background
 from touche.models import ContactIndex
-from touche.contacts import build_contact_indexes
+from touche.contacts import build_contact_indexes, build_npz_cache
 
 
 class BackgroundCountTests(unittest.TestCase):
@@ -60,6 +60,91 @@ class BackgroundCountTests(unittest.TestCase):
             )
             self.assertEqual(written[0, "ep"], 1)
             self.assertEqual(written[0, "bg"], 2)
+
+    def test_count_ep_and_background_cache_index_strategy_matches_all(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pairs = tmp_path / "pairs.tsv"
+            baits = tmp_path / "baits.bed"
+            preys = tmp_path / "preys.bed"
+            cache_dir = tmp_path / "cache"
+            all_out = tmp_path / "all.tsv"
+            cache_out = tmp_path / "cache.tsv"
+
+            pairs.write_text(
+                "\n".join(
+                    [
+                        "chr1\t100\tchr1\t300\t+\t-\tUU\t30\t30",
+                        "chr1\t100\tchr1\t250\t+\t-\tUU\t30\t30",
+                        "chr1\t150\tchr1\t300\t+\t-\tUU\t30\t30",
+                        "chr1\t100\tchr1\t101\t+\t-\tUU\t30\t30",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            baits.write_text("chr1\t95\t105\t+\n", encoding="utf-8")
+            preys.write_text("chr1\t295\t305\t+\n", encoding="utf-8")
+            build_npz_cache(pairs, cache_dir, source="touche", prefix="sample")
+
+            all_result = count_ep_and_background(
+                pairs,
+                baits,
+                preys,
+                all_out,
+                min_distance=150,
+                max_distance=250,
+                window=10,
+                min_bg_distance=40,
+                max_bg_distance=60,
+                source="touche",
+                index_strategy="all",
+            )
+            cache_result = count_ep_and_background(
+                pairs,
+                baits,
+                preys,
+                cache_out,
+                min_distance=150,
+                max_distance=250,
+                window=10,
+                min_bg_distance=40,
+                max_bg_distance=60,
+                source="touche",
+                index_strategy="cache",
+                cache_dir=cache_dir,
+                cache_prefix="sample",
+            )
+
+            assert_frame_equal(cache_result, all_result)
+
+    def test_count_ep_and_background_require_cache_rejects_missing_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pairs = tmp_path / "pairs.tsv"
+            baits = tmp_path / "baits.bed"
+            preys = tmp_path / "preys.bed"
+            out = tmp_path / "counts.tsv"
+            pairs.write_text("chr1\t100\tchr1\t300\t+\t-\tUU\t30\t30\n", encoding="utf-8")
+            baits.write_text("chr1\t95\t105\t+\n", encoding="utf-8")
+            preys.write_text("chr1\t295\t305\t+\n", encoding="utf-8")
+
+            with self.assertRaises(FileNotFoundError):
+                count_ep_and_background(
+                    pairs,
+                    baits,
+                    preys,
+                    out,
+                    min_distance=150,
+                    max_distance=250,
+                    window=10,
+                    min_bg_distance=40,
+                    max_bg_distance=60,
+                    source="touche",
+                    index_strategy="cache",
+                    cache_dir=tmp_path / "missing-cache",
+                    require_cache=True,
+                )
 
     def test_compute_ep_and_background_accepts_in_memory_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

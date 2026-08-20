@@ -10,7 +10,7 @@ from polars.testing import assert_frame_equal
 from touche.anchors import read_bed_anchors
 from touche.apa import aggregate_apa, compute_apa
 from touche.backends import has_numba
-from touche.contacts import build_contact_indexes
+from touche.contacts import build_contact_indexes, build_npz_cache
 
 
 class ApaAggregateTests(unittest.TestCase):
@@ -91,6 +91,92 @@ class ApaAggregateTests(unittest.TestCase):
             import matplotlib.pyplot as plt
 
             plt.close(fig)
+
+    def test_aggregate_apa_cache_index_strategy_matches_all(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pairs = tmp_path / "pairs.tsv"
+            baits = tmp_path / "baits.bed"
+            preys = tmp_path / "preys.bed"
+            cache_dir = tmp_path / "cache"
+            all_out = tmp_path / "all"
+            cache_out = tmp_path / "cache_run"
+
+            pairs.write_text(
+                "\n".join(
+                    [
+                        "chr1\t95\tchr1\t305\t+\t+\tUU\t30\t30",
+                        "chr1\t95\tchr1\t315\t+\t+\tUU\t30\t30",
+                        "chr1\t85\tchr1\t305\t+\t+\tUU\t30\t30",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            baits.write_text("chr1\t95\t105\t+\n", encoding="utf-8")
+            preys.write_text("chr1\t295\t305\t+\n", encoding="utf-8")
+            build_npz_cache(pairs, cache_dir, source="touche", prefix="sample", include_metadata=True)
+
+            all_outputs = aggregate_apa(
+                pairs,
+                baits,
+                preys,
+                all_out,
+                min_distance=150,
+                max_distance=250,
+                window=20,
+                pixels=2,
+                source="touche",
+                shift=0,
+                index_strategy="all",
+            )
+            cache_outputs = aggregate_apa(
+                pairs,
+                baits,
+                preys,
+                cache_out,
+                min_distance=150,
+                max_distance=250,
+                window=20,
+                pixels=2,
+                source="touche",
+                shift=0,
+                index_strategy="cache",
+                cache_dir=cache_dir,
+                cache_prefix="sample",
+            )
+
+            assert_frame_equal(
+                pl.read_csv(cache_outputs["matrix"]), pl.read_csv(all_outputs["matrix"])
+            )
+
+    def test_aggregate_apa_require_cache_rejects_missing_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pairs = tmp_path / "pairs.tsv"
+            baits = tmp_path / "baits.bed"
+            preys = tmp_path / "preys.bed"
+            out_dir = tmp_path / "apa"
+            pairs.write_text("chr1\t95\tchr1\t305\t+\t+\tUU\t30\t30\n", encoding="utf-8")
+            baits.write_text("chr1\t95\t105\t+\n", encoding="utf-8")
+            preys.write_text("chr1\t295\t305\t+\n", encoding="utf-8")
+
+            with self.assertRaises(FileNotFoundError):
+                aggregate_apa(
+                    pairs,
+                    baits,
+                    preys,
+                    out_dir,
+                    min_distance=150,
+                    max_distance=250,
+                    window=20,
+                    pixels=2,
+                    source="touche",
+                    shift=0,
+                    index_strategy="cache",
+                    cache_dir=tmp_path / "missing-cache",
+                    require_cache=True,
+                )
 
     @unittest.skipUnless(has_numba(), "numba is not installed")
     def test_compute_apa_matches_expected_matrix_and_signals(self) -> None:

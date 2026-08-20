@@ -32,7 +32,7 @@ from touche.backends import (
 )
 from touche.contacts import (
     build_contact_indexes,
-    build_npz_cache,
+    ensure_npz_cache,
     load_npz_cache,
     load_npz_cache_manifest,
 )
@@ -128,11 +128,12 @@ def call_local_decay(
     if index_strategy == "cache":
         cache_dir = _resolve_cache_dir(cache_dir, out_path)
         with instrument.step("prepare contact cache"):
-            _ensure_local_decay_cache(
+            ensure_npz_cache(
                 pairs_path,
                 cache_dir=cache_dir,
                 cache_prefix=cache_prefix,
                 source=source,
+                include_metadata=False,
                 require_cache=require_cache,
             )
         calls = _call_local_decay_from_cache(
@@ -203,34 +204,6 @@ def _resolve_cache_dir(cache_dir: str | Path | None, out_path: str | Path) -> Pa
     if cache_dir is not None:
         return Path(cache_dir)
     return Path(out_path).parent / "contact_index_cache"
-
-
-def _ensure_local_decay_cache(
-    pairs_path: str | Path,
-    *,
-    cache_dir: str | Path,
-    cache_prefix: str,
-    source: str,
-    require_cache: bool = False,
-) -> None:
-    """Build the NPZ cache if its manifest is missing, unless `require_cache` demands it exist."""
-    manifest_path = Path(cache_dir) / f"{cache_prefix}.manifest.json"
-    if manifest_path.exists():
-        return
-    if require_cache:
-        raise FileNotFoundError(
-            f"Required local-decay cache manifest is missing: {manifest_path}. "
-            "Run `touche preprocess build-cache` first or disable require_cache."
-        )
-    build_npz_cache(
-        pairs_path,
-        cache_dir,
-        source=source,
-        prefix=cache_prefix,
-        cis_only=True,
-        include_metadata=False,
-        index_strategy="chromosome",
-    )
 
 
 def _call_local_decay_by_chromosome(

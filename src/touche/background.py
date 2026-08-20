@@ -20,7 +20,7 @@ import polars as pl
 from scipy.stats import gaussian_kde
 
 from touche.anchors import read_bed_anchors
-from touche.contacts import build_contact_indexes
+from touche.contacts import build_contact_indexes, load_cached_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex, NamedDepth, NamedPath
 
@@ -50,19 +50,45 @@ def count_ep_and_background(
     min_bg_distance: int,
     max_bg_distance: int,
     source: str = "auto",
+    index_strategy: str = "all",
+    cache_dir: str | Path | None = None,
+    cache_prefix: str = "contacts",
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
-    """Count anchor-to-anchor and local-background contacts for bait/prey pairs."""
+    """Count anchor-to-anchor and local-background contacts for bait/prey pairs.
+
+    `index_strategy="cache"` reads a persistent NPZ `ContactIndex` cache
+    (building it first if missing) instead of re-parsing `pairs_path` --
+    useful when `apa aggregate` is also run against the same sample, since
+    both would otherwise each pay their own full pairs-file parse. The
+    cache only needs positions (no strand/mapq), but a cache shared with
+    `apa aggregate` may include metadata anyway -- harmless, just ignored.
+    """
+
+    if index_strategy not in {"all", "cache"}:
+        raise ValueError("index_strategy must be one of: all, cache")
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
-        indexes = build_contact_indexes(
-            pairs_path,
-            source=source,
-            cis_only=True,
-            include_metadata=False,
-        )
+        if index_strategy == "cache":
+            cache_dir = _resolve_cache_dir(cache_dir, out_path)
+            indexes = load_cached_contact_indexes(
+                pairs_path,
+                cache_dir=cache_dir,
+                cache_prefix=cache_prefix,
+                source=source,
+                include_metadata=False,
+                require_cache=require_cache,
+            )
+        else:
+            indexes = build_contact_indexes(
+                pairs_path,
+                source=source,
+                cis_only=True,
+                include_metadata=False,
+            )
         baits = read_bed_anchors(baits_path)
         preys = read_bed_anchors(preys_path)
     result = compute_ep_and_background(
@@ -388,6 +414,13 @@ def _reference_pair_order(control: str, treatments: list[str]) -> list[tuple[str
     pairs = [(control, treatment) for treatment in treatments]
     pairs.extend(combinations(treatments, 2))
     return pairs
+
+
+def _resolve_cache_dir(cache_dir: str | Path | None, out_path: str | Path) -> Path:
+    """Default to a `contact_index_cache/` directory next to `out_path`."""
+    if cache_dir is not None:
+        return Path(cache_dir)
+    return Path(out_path).parent / "contact_index_cache"
 
 
 def _safe_kde(values: np.ndarray) -> np.ndarray:
