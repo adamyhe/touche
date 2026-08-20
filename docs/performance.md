@@ -214,10 +214,29 @@ the full before/after):
    this reflects a ~227s → ~122s (1.86x) reduction in the per-bait compute
    loop itself, where LOWESS/Fisher/histogram work (unaffected by this fix)
    also lives.
+4. `_safe_kde` (`src/touche/background.py`) used to call
+   `gaussian_kde(values)(values)` -- fitting *and* evaluating on every point,
+   O(n_fit x n_eval) with no faster path in scipy. At `background-compare`'s
+   real ~68k-row scale, run once per sample pair (three: DMSO/FLV, DMSO/TRP,
+   FLV/TRP), this dominated its 134.3s. Fixed by capping the fit to a random
+   subsample (default 5000 points, fixed seed) while still coloring every
+   point -- KDE bandwidth already smooths over local neighborhoods, so a
+   several-thousand-point subsample gives a visually indistinguishable
+   density estimate. Verified against the real `background_comparison.tsv`
+   from this benchmark run: **13.6-14.0x speedup per plot** (12.0s → 0.88s on
+   the machine used to verify) with **0.990-0.995 correlation** between old
+   and new point coloring across all three sample pairs, plus a visual
+   side-by-side confirming the two are indistinguishable. This only affects
+   scatter-plot coloring, not `compare_background_ratios`'s numeric output.
 
-`preprocess-cache-k562` (271.3s) and `background-compare` (134.3s, driven by
-`scipy.stats.gaussian_kde` scatter-plot coloring, independent of any backend
-flag) are now the two largest untouched steps.
+`preprocess-cache-k562` (271.3s) remains the largest untouched step --
+profiling a synthetic 22M-row pairs file placed 66% of its time in the
+single unavoidable full-file scan (gzip decompression + parsing into the
+local Parquet spool), with QC and all per-chromosome shard writes reading
+cheaply from that spool afterward (Parquet row-group pruning). No fix
+identified; this looks like inherent I/O cost, not an algorithmic
+inefficiency. `background-compare`'s 134.3s predates fix 4 above and should
+drop substantially on the next full re-run.
 
 CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `parallel=True` kernels, and local-decay's `--jobs` thread pool) — e.g.
