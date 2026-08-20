@@ -57,6 +57,22 @@ batching, on a 40-bait synthetic benchmark (`notes/numba-implementation-plan.md`
 The reference implementation still has this cost, in pure Python, paid fresh
 in every one of its per-bait processes.
 
+A candidate still on the table for `touche`'s own `local-decay-call`, not yet
+implemented: `_call_bait_contacts`'s `in_region` window filter
+(`src/touche/local_decay.py:678`) does a full boolean-mask pass over the
+*entire* chromosome's `pos_a`/`pos_b` arrays on every bait call, even though
+`_ordered_cis_index` already sorts contacts by `pos_a` -- most of that
+filtering could resolve via `np.searchsorted` (O(log n)) instead of O(n) per
+bait. On a real benchmark run this mattered: only ~17s of `local-decay-call`'s
+243.6s wall time is accounted for by named profiling steps (cache loading);
+the remaining ~227s (93%) is the per-bait compute loop itself, where this
+sits. A correct fix needs more than a drop-in `searchsorted` swap, since only
+`pos_a` is sorted -- catching contacts that span into the window from the
+left needs a bounded second slice using a per-chromosome max-span bound, not
+a second full sort. Not yet implemented pending a size-up of the risk/reward
+given local-decay's cost is already competitive with the reference's
+per-bait-process model.
+
 ### APA and EP/background
 
 `MicroC_Stranded_Aggregation_pipeline_with_1D_signal.bsh` and
@@ -141,40 +157,49 @@ arrays — no embedded R interpreter, no per-locus subprocess memory overhead.
 [`scripts/reference_replication.py`](../scripts/reference_replication.py) ran
 the full example end to end on a 16-core node against the real Danko-Lab
 inputs (K562 local-decay at 8.9GB of pairs; DMSO/FLV/TRP APA and
-EP/background at 433MB/2.8GB/3.15GB): **~1,318 seconds (~22 minutes)** total
-across all 13 profiled steps, from already-downloaded raw pairs to every
-local-decay/APA/background output and comparison plot.
+EP/background at 433MB/2.8GB/3.15GB): **~1,042 seconds (~17.4 minutes)**
+total across all 16 profiled steps, from already-downloaded raw pairs to
+every local-decay/APA/background output and comparison plot.
 
 | Step | Elapsed (s) | Peak RSS (MB) | CPU % |
 | --- | ---: | ---: | ---: |
-| preprocess-cache-k562 | 288.1 | 11,813 | 653% |
-| local-decay-call | 244.2 | 12,294 | 964% |
-| apa-aggregate-trp | 161.6 | 25,127 | 406% |
-| apa-aggregate-flv | 146.9 | 22,296 | 405% |
-| background-compare | 133.8 | 281 | 123% |
-| background-count-trp | 71.2 | 22,202 | 467% |
-| preprocess-cache-trp | 79.5 | 4,431 | 708% |
-| preprocess-cache-flv | 71.7 | 3,912 | 699% |
-| background-count-flv | 62.6 | 19,732 | 467% |
-| apa-aggregate-dmso | 19.3 | 3,348 | 443% |
-| local-decay-plot | 11.2 | 211 | 40% |
-| preprocess-cache-dmso | 11.5 | 942 | 632% |
-| background-count-dmso | 9.5 | 2,733 | 467% |
-| apa-compare-{flv,trp}-vs-dmso | 2.8 each | 212 | 110% |
-| local-decay-assign-pair-types | 1.8 | 105 | 90% |
+| preprocess-cache-k562 | 273.7 | 11,914 | 638% |
+| local-decay-call | 243.6 | 12,399 | 972% |
+| apa-aggregate-trp | 95.4 | 10,457 | 318% |
+| apa-aggregate-flv | 86.5 | 9,298 | 323% |
+| preprocess-cache-trp | 77.1 | 4,207 | 730% |
+| preprocess-cache-flv | 69.6 | 3,676 | 720% |
+| background-compare | 135.2 | 279 | 123% |
+| apa-aggregate-dmso | 12.3 | 1,637 | 326% |
+| preprocess-cache-dmso | 10.5 | 946 | 690% |
+| background-count-trp | 8.9 | 6,536 | 309% |
+| background-count-flv | 8.5 | 5,814 | 302% |
+| local-decay-plot | 9.9 | 211 | 42% |
+| apa-compare-{flv,trp}-vs-dmso | 2.8 each | 213 | 110% |
+| background-count-dmso | 3.1 | 1,086 | 202% |
+| local-decay-assign-pair-types | 1.8 | 134 | 89% |
 
-The `preprocess-cache-dmso/flv/trp` rows above no longer exist as of this
-writing: they cost 162.7s (12% of that run's total) building NPZ caches that
-nothing downstream reads, since `apa aggregate`/`background count` have no
-cache-consuming path (unlike `local-decay call`'s `--index-strategy
-cache`/`--cache-dir`/`--require-cache`) — confirmed by reading
-`aggregate_apa`/`count_ep_and_background`, which call `build_contact_indexes`
-directly on the raw pairs file every time. `reference_replication.py` now
-only builds the K562 cache `local-decay-call` actually consumes. The same gap
-means `apa-aggregate-flv` and `background-count-flv` each separately re-parse
-the same FLV pairs file from scratch (~65s + ~57s); adding cache support to
-`apa`/`background` themselves would remove that duplication too, but is a
-public CLI/API change scoped separately from this benchmark script fix.
+These numbers already reflect two fixes this table motivated (see git history
+for the full before/after): the `preprocess-cache-dmso/flv/trp` steps used to
+build NPZ caches nothing downstream read (162.7s wasted, ~12% of the run);
+`apa aggregate`/`background count` now support `--index-strategy cache`, so
+those same per-sample caches (built once, with strand metadata since APA
+needs it) are shared between both workflows via `--require-cache` instead of
+each re-parsing its sample's raw pairs file from scratch. Cache-build time is
+counted once, in `preprocess-cache-{dmso,flv,trp}` above -- `apa-aggregate-*`/
+`background-count-*` never rebuild it (`--require-cache` fails loudly if it's
+missing), so their numbers are pure cache-read cost, not bundled into
+cache-build cost. Effect on the raw-pairs-parse step specifically ("read
+inputs" in `report/command-timings.csv`): FLV 64.8s → 6.0s (apa), 57.3s →
+4.4s (background); TRP 71.9s → 6.7s (apa), 65.7s → 4.9s (background) -- and
+peak RSS for those same steps dropped by roughly half to two-thirds, since
+reading a compact pre-built NPZ shard is lighter than Polars parsing raw
+gzipped pairs text.
+
+`local-decay-call` (243.6s) and `preprocess-cache-k562` (273.7s) are
+untouched by either fix and remain the two largest single steps -- see
+"Runtime" above for the `_call_bait_contacts` `in_region`-masking candidate
+still on the table for `local-decay-call` specifically.
 
 CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `parallel=True` kernels, and local-decay's `--jobs` thread pool) — e.g.
