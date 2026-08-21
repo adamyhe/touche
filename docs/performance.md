@@ -165,20 +165,20 @@ arrays — no embedded R interpreter, no per-locus subprocess memory overhead.
 [`scripts/reference_replication.py`](../scripts/reference_replication.py) ran
 the full example end to end on a 16-core node against the real Danko-Lab
 inputs (K562 local-decay at 8.9GB of pairs; DMSO/FLV/TRP APA and
-EP/background at 433MB/2.8GB/3.15GB): **~949 seconds (~15.8 minutes)**
+EP/background at 433MB/2.8GB/3.15GB): **~841 seconds (~14.0 minutes)**
 total across all 16 profiled steps, from already-downloaded raw pairs to
 every local-decay/APA/background output and comparison plot -- down from an
-initial **~1,318 seconds (~22.0 minutes)** before the three fixes below.
+initial **~1,318 seconds (~22.0 minutes)** before the four fixes below.
 
 | Step | Elapsed (s) | Peak RSS (MB) | CPU % |
 | --- | ---: | ---: | ---: |
 | preprocess-cache-k562 | 271.3 | 11,854 | 692% |
 | local-decay-call | 139.7 | 9,821 | 737% |
-| background-compare | 134.3 | 243 | 123% |
 | apa-aggregate-trp | 97.3 | 10,383 | 313% |
 | apa-aggregate-flv | 88.4 | 9,225 | 319% |
 | preprocess-cache-trp | 81.3 | 4,551 | 695% |
 | preprocess-cache-flv | 73.1 | 3,836 | 686% |
+| background-compare | 25.9 | 242 | 114% |
 | apa-aggregate-dmso | 14.0 | 1,535 | 297% |
 | preprocess-cache-dmso | 11.7 | 861 | 623% |
 | background-count-trp | 10.0 | 6,457 | 281% |
@@ -188,8 +188,10 @@ initial **~1,318 seconds (~22.0 minutes)** before the three fixes below.
 | local-decay-plot | 3.5 | 171 | 94% |
 | local-decay-assign-pair-types | 2.4 | 90 | 87% |
 
-These numbers reflect three fixes this table motivated (see git history for
-the full before/after):
+Each step's number above is the best (least-contended) of two full runs --
+see the note after fix 4 below for why two runs were needed. These numbers
+reflect four fixes this table motivated (see git history for the full
+before/after):
 
 1. The `preprocess-cache-dmso/flv/trp` steps used to build NPZ caches
    nothing downstream read (162.7s wasted, ~12% of the original run) --
@@ -228,6 +230,16 @@ the full before/after):
    and new point coloring across all three sample pairs, plus a visual
    side-by-side confirming the two are indistinguishable. This only affects
    scatter-plot coloring, not `compare_background_ratios`'s numeric output.
+   A follow-up full-pipeline re-run confirms it end to end: `background-compare`
+   **134.3s → 25.9s (5.2x)** on the same real data, consistent with the
+   isolated per-plot verification. That re-run landed on a noisier node --
+   CPU% dropped across most unrelated steps (e.g. `local-decay-plot` 94% →
+   30%, `preprocess-cache-k562` 692% → 490%) and those steps ran 30-50%
+   slower as a result, even though none of their code changed between the
+   two runs. The table above reports each step's best (least-contended) time
+   across the two runs -- everything from the first run except
+   `background-compare`, which is this fix's confirmed number from the
+   second.
 
 `preprocess-cache-k562` (271.3s) remains the largest untouched step --
 profiling a synthetic 22M-row pairs file placed 66% of its time in the
@@ -241,12 +253,11 @@ inefficiency. One potential shortcut was ruled out empirically: BGZF
 block structure a BGZF-aware reader can decompress in parallel -- but
 `htsfile` against the real K562 input (`GSE206131_K562_cis_mapq30_pairs.txt.gz`)
 reports "unknown gzip-compressed data", not BGZF, so there's no block
-structure here to exploit. `background-compare`'s 134.3s predates fix 4
-above and should drop substantially on the next full re-run.
+structure here to exploit.
 
 CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `parallel=True` kernels, and local-decay's `--jobs` thread pool) — e.g.
-`local-decay-call` averaged ~9.6 of the node's 16 cores over its 244s wall
+`local-decay-call` averaged ~7.4 of the node's 16 cores over its 139.7s wall
 time.
 
 ## What isn't measured yet
