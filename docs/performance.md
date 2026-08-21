@@ -165,7 +165,7 @@ arrays — no embedded R interpreter, no per-locus subprocess memory overhead.
 [`scripts/reference_replication.py`](../scripts/reference_replication.py) ran
 the full example end to end on a 16-core node against the real Danko-Lab
 inputs (K562 local-decay at 8.9GB of pairs; DMSO/FLV/TRP APA and
-EP/background at 433MB/2.8GB/3.15GB): **~841 seconds (~14.0 minutes)**
+EP/background at 433MB/2.8GB/3.15GB): **~840 seconds (~14.0 minutes)**
 total across all 16 profiled steps, from already-downloaded raw pairs to
 every local-decay/APA/background output and comparison plot -- down from an
 initial **~1,318 seconds (~22.0 minutes)** before the four fixes below.
@@ -178,20 +178,20 @@ initial **~1,318 seconds (~22.0 minutes)** before the four fixes below.
 | apa-aggregate-flv | 88.4 | 9,225 | 319% |
 | preprocess-cache-trp | 81.3 | 4,551 | 695% |
 | preprocess-cache-flv | 73.1 | 3,836 | 686% |
-| background-compare | 25.9 | 242 | 114% |
+| background-compare | 25.7 | 242 | 113% |
 | apa-aggregate-dmso | 14.0 | 1,535 | 297% |
 | preprocess-cache-dmso | 11.7 | 861 | 623% |
 | background-count-trp | 10.0 | 6,457 | 281% |
 | background-count-flv | 9.9 | 5,740 | 268% |
 | apa-compare-{flv,trp}-vs-dmso | ~4.1 each | 179 | ~98% |
 | background-count-dmso | 4.2 | 1,009 | 169% |
-| local-decay-plot | 3.5 | 171 | 94% |
-| local-decay-assign-pair-types | 2.4 | 90 | 87% |
+| local-decay-plot | 2.9 | 176 | 113% |
+| local-decay-assign-pair-types | 1.8 | 89 | 114% |
 
-Each step's number above is the best (least-contended) of two full runs --
-see the note after fix 4 below for why two runs were needed. These numbers
-reflect four fixes this table motivated (see git history for the full
-before/after):
+Each step's number above is the best (least-contended) across three full
+runs -- see the note after fix 4 below for why more than one run was
+needed. These numbers reflect four fixes this table motivated (see git
+history for the full before/after):
 
 1. The `preprocess-cache-dmso/flv/trp` steps used to build NPZ caches
    nothing downstream read (162.7s wasted, ~12% of the original run) --
@@ -230,16 +230,21 @@ before/after):
    and new point coloring across all three sample pairs, plus a visual
    side-by-side confirming the two are indistinguishable. This only affects
    scatter-plot coloring, not `compare_background_ratios`'s numeric output.
-   A follow-up full-pipeline re-run confirms it end to end: `background-compare`
-   **134.3s → 25.9s (5.2x)** on the same real data, consistent with the
-   isolated per-plot verification. That re-run landed on a noisier node --
-   CPU% dropped across most unrelated steps (e.g. `local-decay-plot` 94% →
-   30%, `preprocess-cache-k562` 692% → 490%) and those steps ran 30-50%
-   slower as a result, even though none of their code changed between the
-   two runs. The table above reports each step's best (least-contended) time
-   across the two runs -- everything from the first run except
-   `background-compare`, which is this fix's confirmed number from the
-   second.
+   Follow-up full-pipeline re-runs confirm it end to end and reproducibly:
+   `background-compare` **134.3s → 25.9s, then 25.7s (5.2x)** on the same
+   real data across two independent re-runs, consistent with the isolated
+   per-plot verification. Both re-runs also landed on a noisier node, each
+   time in different unrelated steps -- the first saw `local-decay-plot`
+   drop 94% → 30% CPU and `preprocess-cache-k562` 692% → 490% (both 30-50%
+   slower with no code change); the second instead hit `apa-aggregate-trp`
+   (313% → 136% CPU, 97.3s → 284.7s) and `apa-compare-flv-vs-dmso` (98% →
+   31% CPU, 4.1s → 92.9s). Different steps stalling on different runs, with
+   no correlation to what code changed between them, is exactly what
+   shared-node contention looks like rather than a regression. The table
+   above reports each step's best (least-contended) time across all three
+   runs -- all from the first run except `local-decay-plot`,
+   `local-decay-assign-pair-types`, and `background-compare`, whose best
+   times came from later runs.
 
 `preprocess-cache-k562` (271.3s) remains the largest untouched step --
 profiling a synthetic 22M-row pairs file placed 66% of its time in the
