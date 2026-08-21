@@ -32,7 +32,7 @@ from touche.backends import (
 )
 from touche.contacts import (
     build_contact_indexes,
-    build_npz_cache,
+    ensure_npz_cache,
     load_npz_cache,
     load_npz_cache_manifest,
 )
@@ -128,11 +128,12 @@ def call_local_decay(
     if index_strategy == "cache":
         cache_dir = _resolve_cache_dir(cache_dir, out_path)
         with instrument.step("prepare contact cache"):
-            _ensure_local_decay_cache(
+            ensure_npz_cache(
                 pairs_path,
                 cache_dir=cache_dir,
                 cache_prefix=cache_prefix,
                 source=source,
+                include_metadata=False,
                 require_cache=require_cache,
             )
         calls = _call_local_decay_from_cache(
@@ -203,34 +204,6 @@ def _resolve_cache_dir(cache_dir: str | Path | None, out_path: str | Path) -> Pa
     if cache_dir is not None:
         return Path(cache_dir)
     return Path(out_path).parent / "contact_index_cache"
-
-
-def _ensure_local_decay_cache(
-    pairs_path: str | Path,
-    *,
-    cache_dir: str | Path,
-    cache_prefix: str,
-    source: str,
-    require_cache: bool = False,
-) -> None:
-    """Build the NPZ cache if its manifest is missing, unless `require_cache` demands it exist."""
-    manifest_path = Path(cache_dir) / f"{cache_prefix}.manifest.json"
-    if manifest_path.exists():
-        return
-    if require_cache:
-        raise FileNotFoundError(
-            f"Required local-decay cache manifest is missing: {manifest_path}. "
-            "Run `touche preprocess build-cache` first or disable require_cache."
-        )
-    build_npz_cache(
-        pairs_path,
-        cache_dir,
-        source=source,
-        prefix=cache_prefix,
-        cis_only=True,
-        include_metadata=False,
-        index_strategy="chromosome",
-    )
 
 
 def _call_local_decay_by_chromosome(
@@ -449,6 +422,7 @@ def compute_local_decay(
             if index is None or chrom_preys.is_empty():
                 continue
             normalized = _ordered_cis_index(index)
+            max_span = int(np.max(normalized.pos_b - normalized.pos_a)) if normalized.pos_a.size else 0
             prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
             bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
 
@@ -472,7 +446,9 @@ def compute_local_decay(
                 )
                 for bait_center, candidate_preys in bait_iter:
                     records.extend(
-                        _call_bait_contacts(normalized, bait_center, candidate_preys, **bait_kwargs)
+                        _call_bait_contacts(
+                            normalized, bait_center, candidate_preys, max_span=max_span, **bait_kwargs
+                        )
                     )
             else:
                 futures = [
@@ -482,6 +458,7 @@ def compute_local_decay(
                         bait_center,
                         candidate_preys,
                         threads_per_job,
+                        max_span,
                         bait_kwargs,
                     )
                     for bait_center, candidate_preys in work_items
@@ -507,13 +484,14 @@ def _call_bait_contacts_threaded(
     bait_center: int,
     candidate_preys: np.ndarray,
     threads_per_job: int,
+    max_span: int,
     bait_kwargs: dict,
 ) -> list[dict[str, float | int | str]]:
     """`ThreadPoolExecutor` entry point: cap this worker's numba thread budget, then call `_call_bait_contacts`."""
     from numba import set_num_threads
 
     set_num_threads(threads_per_job)
-    return _call_bait_contacts(index, bait_center, candidate_preys, **bait_kwargs)
+    return _call_bait_contacts(index, bait_center, candidate_preys, max_span=max_span, **bait_kwargs)
 
 
 def assign_pair_types(
@@ -657,6 +635,42 @@ def _ordered_cis_index(index: ContactIndex) -> ContactIndex:
     )
 
 
+def _bait_window_contacts(
+    index: ContactIndex, bait_center: int, *, dist: int, max_span: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Contacts with either endpoint within `bait_center +/- dist`.
+
+    `index.pos_a` is sorted ascending and `pos_a <= pos_b` always
+    (`_ordered_cis_index`), so this resolves via `np.searchsorted` instead of
+    a full O(n_contacts) boolean mask re-run for every bait. Contacts with
+    `pos_a` in the window are a direct sorted-array slice. Contacts that
+    start before the window but span into it (`pos_a < lo <= pos_b <= hi`)
+    are bounded to `pos_a >= lo - max_span` -- `max_span` is the
+    chromosome's largest observed `pos_b - pos_a`, so `pos_b <= pos_a +
+    max_span` bounds how far left a spanning contact's `pos_a` can be. That
+    bounded candidate slice still needs a boolean mask on `pos_b`, but only
+    across a small range instead of the whole chromosome.
+    """
+    lo = bait_center - dist
+    hi = bait_center + dist
+    pos_a_all = index.pos_a
+    pos_b_all = index.pos_b
+
+    direct_start = int(np.searchsorted(pos_a_all, lo, side="left"))
+    direct_stop = int(np.searchsorted(pos_a_all, hi, side="right"))
+    span_start = int(np.searchsorted(pos_a_all, lo - max_span, side="left"))
+    if span_start >= direct_start:
+        return pos_a_all[direct_start:direct_stop], pos_b_all[direct_start:direct_stop]
+
+    span_pos_a = pos_a_all[span_start:direct_start]
+    span_pos_b = pos_b_all[span_start:direct_start]
+    spanning = (span_pos_b >= lo) & (span_pos_b <= hi)
+    return (
+        np.concatenate([span_pos_a[spanning], pos_a_all[direct_start:direct_stop]]),
+        np.concatenate([span_pos_b[spanning], pos_b_all[direct_start:direct_stop]]),
+    )
+
+
 def _call_bait_contacts(
     index: ContactIndex,
     bait_center: int,
@@ -670,16 +684,13 @@ def _call_bait_contacts(
     lowess_backend: str,
     fisher_backend: str,
     lowess_iterations: int,
+    max_span: int,
 ) -> list[dict[str, float | int | str]]:
     """Call one bait's contacts against `prey_centers`: fit local decay, then Fisher-test each prey.
 
     Returns one output record per prey surviving the `min_distance` filter.
     """
-    in_region = ((bait_center - dist) <= index.pos_a) & (index.pos_a <= (bait_center + dist)) | (
-        ((bait_center - dist) <= index.pos_b) & (index.pos_b <= (bait_center + dist))
-    )
-    pos_a = index.pos_a[in_region]
-    pos_b = index.pos_b[in_region]
+    pos_a, pos_b = _bait_window_contacts(index, bait_center, dist=dist, max_span=max_span)
     if pos_a.size == 0:
         return []
 

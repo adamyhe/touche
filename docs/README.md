@@ -29,6 +29,9 @@ CPUs and x86-64 Python on Apple Silicon under Rosetta.
   commands for reproducing the local-decay, APA, and EP/background plots from
   the upstream [Danko-Lab/E-P_contacts](https://github.com/Danko-Lab/E-P_contacts)
   workflows.
+- [Performance vs. the reference implementation](performance.md): how
+  `touche`'s runtime, intermediate-file, and memory behavior compares to the
+  reference bash/R/Python scripts, and why.
 - [Notebook API](api.md): provisional in-memory APIs for notebooks,
   reusable contact indexes, and figure-returning plot helpers.
 - [Testing and publishing](testing-and-publishing.md): CI, local checks, PyPI

@@ -166,10 +166,19 @@ def run_background_pipeline(
     source: str = "auto",
     min_ep_cpb: float = 8.0,
     reference_style: bool = True,
+    index_strategy: str = "all",
+    cache_dir: str | Path | None = None,
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
-    """Run per-sample EP/background counts and treatment comparisons."""
+    """Run per-sample EP/background counts and treatment comparisons.
+
+    `cache_dir`, if given, is a base directory namespaced per sample
+    (`cache_dir/sample.name`) so samples' NPZ caches never collide -- each
+    defaults to a `contact_index_cache/` directory next to that sample's own
+    count output.
+    """
 
     started = perf_counter()
     instrument = make_instrumentation(progress, profile=profile)
@@ -195,6 +204,9 @@ def run_background_pipeline(
                 min_bg_distance=min_bg_distance,
                 max_bg_distance=max_bg_distance,
                 source=source,
+                index_strategy=index_strategy,
+                cache_dir=Path(cache_dir) / sample.name if cache_dir is not None else None,
+                require_cache=require_cache,
                 progress=instrument,
             )
         count_paths[sample.name] = sample_out
@@ -230,6 +242,9 @@ def run_background_pipeline(
             "source": source,
             "min_ep_cpb": min_ep_cpb,
             "reference_style": reference_style,
+            "index_strategy": index_strategy,
+            "cache_dir": str(cache_dir) if cache_dir is not None else None,
+            "require_cache": require_cache,
         },
         outputs={
             "counts": {name: str(path) for name, path in count_paths.items()},
@@ -262,10 +277,19 @@ def run_apa_pipeline(
     bait_count: int | None = None,
     prey_count: int | None = None,
     reference_style: bool = True,
+    index_strategy: str = "all",
+    cache_dir: str | Path | None = None,
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
-    """Run aggregate APA for two samples and compare treatment to control."""
+    """Run aggregate APA for two samples and compare treatment to control.
+
+    `cache_dir`, if given, is a base directory namespaced per sample
+    (`cache_dir/control.name`, `cache_dir/treatment.name`) so the two
+    samples' NPZ caches never collide -- each defaults to a
+    `contact_index_cache/` directory next to that sample's own output dir.
+    """
 
     started = perf_counter()
     instrument = make_instrumentation(progress, profile=profile)
@@ -287,6 +311,9 @@ def run_apa_pipeline(
             source=source,
             shift=shift,
             reference_style=reference_style,
+            index_strategy=index_strategy,
+            cache_dir=Path(cache_dir) / control.name if cache_dir is not None else None,
+            require_cache=require_cache,
             progress=instrument,
         )
     with instrument.step(f"aggregate apa {treatment.name}"):
@@ -302,6 +329,9 @@ def run_apa_pipeline(
             source=source,
             shift=shift,
             reference_style=reference_style,
+            index_strategy=index_strategy,
+            cache_dir=Path(cache_dir) / treatment.name if cache_dir is not None else None,
+            require_cache=require_cache,
             progress=instrument,
         )
     compare_dir.mkdir(parents=True, exist_ok=True)
@@ -348,6 +378,9 @@ def run_apa_pipeline(
             "bait_count": inferred_bait_count,
             "prey_count": inferred_prey_count,
             "reference_style": reference_style,
+            "index_strategy": index_strategy,
+            "cache_dir": str(cache_dir) if cache_dir is not None else None,
+            "require_cache": require_cache,
         },
         outputs={
             "control": {key: str(value) for key, value in control_outputs.items()},

@@ -410,6 +410,42 @@ uv run touche background compare \
 The `--min-ep-cpb` threshold filters pairs by control EP contacts per billion
 contacts before plotting comparisons.
 
+`background count`/`background run` default to `--index-strategy all` (parse
+`--pairs` directly, matching prior behavior). Pass `--index-strategy cache` to
+read a persistent NPZ `ContactIndex` cache instead -- useful when `apa
+aggregate`/`apa run` also runs against the same sample, since both would
+otherwise each re-parse the same pairs file:
+
+```bash
+uv run touche preprocess build-cache \
+  --pairs dmso.nodups_30_intra.pairs.gz \
+  --source touche \
+  --cache-dir .cache/touche/dmso \
+  --prefix dmso
+
+uv run touche background count \
+  --pairs dmso.nodups_30_intra.pairs.gz \
+  --baits promoters.bed \
+  --preys enhancers.bed \
+  --min-distance 25000 \
+  --max-distance 150000 \
+  --window 10000 \
+  --min-bg-distance 10000 \
+  --max-bg-distance 150000 \
+  --out results/background/counts/DMSO_EP_and_BG_contacts.tsv \
+  --index-strategy cache \
+  --cache-dir .cache/touche/dmso \
+  --cache-prefix dmso \
+  --require-cache
+```
+
+`background run`'s `--cache-dir` is a base directory namespaced per sample
+(`--cache-dir/DMSO`, `--cache-dir/FLV`, ...) rather than a single shared
+manifest, since each sample's cache is distinct. If omitted, each sample's
+cache defaults to a `contact_index_cache/` directory next to that sample's own
+count output. `--require-cache` fails the command instead of building a
+missing cache implicitly.
+
 ## APA
 
 `touche apa` runs aggregate peak analysis for bait/prey pairs and can compare
@@ -487,6 +523,37 @@ uv run touche apa compare \
 `apa run` can infer `--bait-count` and `--prey-count` from the anchor files. The
 standalone `apa compare` command requires them because it only receives the
 already aggregated APA and signal files.
+
+`apa aggregate`/`apa run` default to `--index-strategy all` (parse `--pairs`
+directly, matching prior behavior). Pass `--index-strategy cache` to read a
+persistent NPZ `ContactIndex` cache instead -- built with strand metadata
+(not `--no-metadata`), since APA needs it. This cache can be shared with
+`background count`/`background run` on the same sample:
+
+```bash
+uv run touche preprocess build-cache \
+  --pairs dmso.nodups_30_intra.pairs.gz \
+  --source touche \
+  --cache-dir .cache/touche/dmso \
+  --prefix dmso
+
+uv run touche apa aggregate \
+  --pairs dmso.nodups_30_intra.pairs.gz \
+  --baits promoters.bed \
+  --preys enhancers.bed \
+  --min-distance 25000 \
+  --max-distance 150000 \
+  --window 10000 \
+  --pixels 50 \
+  --out-dir results/apa/DMSO \
+  --index-strategy cache \
+  --cache-dir .cache/touche/dmso \
+  --cache-prefix dmso \
+  --require-cache
+```
+
+`apa run`'s `--cache-dir` is namespaced per sample the same way `background
+run`'s is (`--cache-dir/DMSO`, `--cache-dir/FLV`, ...).
 
 ## Output and manifests
 

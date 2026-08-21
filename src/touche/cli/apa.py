@@ -75,6 +75,27 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         help="Shift contact endpoints before APA counting to match reference coordinates.",
     )
+    apa_aggregate.add_argument(
+        "--index-strategy",
+        choices=["all", "cache"],
+        default="all",
+        help=(
+            "Contact-index strategy. cache reads a persistent NPZ ContactIndex cache "
+            "(building it first if missing) instead of re-parsing --pairs -- useful when "
+            "background count also runs against the same sample."
+        ),
+    )
+    apa_aggregate.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="Directory containing or receiving chromosome-sharded contact cache files.",
+    )
+    apa_aggregate.add_argument("--cache-prefix", default="contacts", help="Cache manifest/shard prefix.")
+    apa_aggregate.add_argument(
+        "--require-cache",
+        action="store_true",
+        help="Require an existing cache instead of building one implicitly.",
+    )
     add_instrumentation_args(apa_aggregate)
     apa_aggregate.add_argument(
         "--reference-style",
@@ -209,6 +230,29 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         help="Optional prey count for normalization. Defaults to the number of prey anchors.",
     )
+    apa_run.add_argument(
+        "--index-strategy",
+        choices=["all", "cache"],
+        default="all",
+        help=(
+            "Contact-index strategy. cache reads a persistent NPZ ContactIndex cache per "
+            "sample (building it first if missing) instead of re-parsing each pairs file -- "
+            "useful when background run also runs against the same samples."
+        ),
+    )
+    apa_run.add_argument(
+        "--cache-dir",
+        type=Path,
+        help=(
+            "Base directory for per-sample contact caches (one subdirectory per sample name). "
+            "Defaults to a contact_index_cache/ directory next to each sample's own output."
+        ),
+    )
+    apa_run.add_argument(
+        "--require-cache",
+        action="store_true",
+        help="Require existing caches instead of building them implicitly.",
+    )
     add_instrumentation_args(apa_run)
     apa_run.add_argument(
         "--reference-style",
@@ -233,6 +277,10 @@ def _aggregate_apa(args: argparse.Namespace) -> None:
         source=args.source,
         shift=args.shift,
         reference_style=args.reference_style,
+        index_strategy=args.index_strategy,
+        cache_dir=args.cache_dir,
+        cache_prefix=args.cache_prefix,
+        require_cache=args.require_cache,
         progress=instrument,
     )
     print_json(add_timings({key: str(value) for key, value in outputs.items()}, instrument))
@@ -281,6 +329,9 @@ def _run_apa(args: argparse.Namespace) -> None:
         bait_count=args.bait_count,
         prey_count=args.prey_count,
         reference_style=args.reference_style,
+        index_strategy=args.index_strategy,
+        cache_dir=args.cache_dir,
+        require_cache=args.require_cache,
         progress=instrument,
     )
     print_json(manifest)

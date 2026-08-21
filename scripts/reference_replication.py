@@ -13,6 +13,7 @@ import email.utils
 import hashlib
 import http.client
 import json
+import os
 import random
 import sys
 import time
@@ -30,6 +31,25 @@ from _report import (
     run_profiled_step,
     write_profile_report,
 )
+
+
+def available_cores() -> int:
+    """Cores actually usable by this process.
+
+    Prefers `NUMBA_NUM_THREADS` (what numba's own kernels will use, if set),
+    then `os.sched_getaffinity` (respects scheduler/cgroup CPU pinning on
+    Linux -- unlike `os.cpu_count()`, which reports the whole node's core
+    count regardless of what a shared-HPC job was actually allocated), then
+    falls back to `os.cpu_count()` on platforms without `sched_getaffinity`
+    (e.g. macOS).
+    """
+    env_threads = os.environ.get("NUMBA_NUM_THREADS")
+    if env_threads and env_threads.isdigit():
+        return max(1, int(env_threads))
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return os.cpu_count() or 1
 
 REFERENCE_RAW_BASE = "https://raw.githubusercontent.com/Danko-Lab/E-P_contacts/main/Input_files"
 GEO_BASE = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE206nnn/GSE206131/suppl"
@@ -73,8 +93,15 @@ def main() -> int:
         "--jobs",
         "-j",
         type=int,
-        default=1,
-        help="local-decay call --jobs -- baits to process concurrently (default: 1, sequential).",
+        default=available_cores(),
+        help=(
+            "local-decay call --jobs -- baits to process concurrently (default: detected "
+            "available cores). Only local-decay's LOWESS kernel is numba-parallel; at real-data "
+            "scale most of its wall time is single-threaded per-bait glue code that only --jobs "
+            "parallelizes, not NUMBA_NUM_THREADS -- pass --jobs 1 for the sequential-baits "
+            "baseline instead, which is touche's own conservative CLI default (chosen for small "
+            "inputs, where this script's real Gasperini-bait scale doesn't apply)."
+        ),
     )
     parser.add_argument("--lowess-iterations", type=int, default=3)
     parser.add_argument("--poll-interval", type=float, default=0.25)
@@ -157,6 +184,7 @@ def main() -> int:
             data_dir=data_dir,
             output_dir=output_dir,
             k562_cache_dir=cache_paths["k562"],
+            mesc_cache_dirs={label: cache_paths[label] for label in ("dmso", "flv", "trp")},
             lowess_backend=args.lowess_backend,
             fisher_backend=args.fisher_backend,
             jobs=args.jobs,
@@ -302,7 +330,19 @@ def reference_downloads(data_dir: Path) -> list[Download]:
 def build_cache_steps(
     *, python: str, data_dir: Path, output_dir: Path, skip_existing: bool = False
 ) -> tuple[list[BenchmarkStep], dict[str, Path]]:
-    """NPZ caches shared by every downstream step."""
+    """NPZ cache(s) consumed by downstream steps.
+
+    K562's cache is position-only (`--no-metadata`), consumed only by
+    `local-decay-call` (`--index-strategy cache`/`--cache-dir`/
+    `--require-cache`). DMSO/FLV/TRP caches include strand metadata (no
+    `--no-metadata`) since `apa aggregate` needs it; `background count`
+    tolerates the extra metadata fine, so one cache per mESC sample is
+    shared between both workflows via the same flags -- confirmed on a real
+    benchmark run that building these and *not* consuming them wasted
+    ~163s (12% of total wall time), and that apa-aggregate/background-count
+    on the same sample separately re-parsing the same raw pairs file cost
+    another ~120-140s per sample.
+    """
 
     cache_dir = output_dir / "caches"
     steps: list[BenchmarkStep] = []
@@ -349,6 +389,7 @@ def build_steps(
     data_dir: Path,
     output_dir: Path,
     k562_cache_dir: Path,
+    mesc_cache_dirs: dict[str, Path],
     lowess_backend: str,
     fisher_backend: str,
     jobs: int,
@@ -492,6 +533,13 @@ def build_steps(
                     "50",
                     "--out-dir",
                     sample_dir,
+                    "--index-strategy",
+                    "cache",
+                    "--cache-dir",
+                    mesc_cache_dirs[label],
+                    "--cache-prefix",
+                    label,
+                    "--require-cache",
                     *common_profile,
                 ),
                 outputs=[
@@ -574,6 +622,13 @@ def build_steps(
                     "150000",
                     "--out",
                     background_counts[label],
+                    "--index-strategy",
+                    "cache",
+                    "--cache-dir",
+                    mesc_cache_dirs[label],
+                    "--cache-prefix",
+                    label,
+                    "--require-cache",
                     *common_profile,
                 ),
                 outputs=[background_counts[label]],

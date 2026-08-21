@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 
 from touche.anchors import read_bed_anchors
-from touche.contacts import build_contact_indexes
+from touche.contacts import build_contact_indexes, load_cached_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex
 
@@ -64,14 +64,38 @@ def aggregate_apa(
     source: str = "auto",
     shift: int = 75,
     reference_style: bool = True,
+    index_strategy: str = "all",
+    cache_dir: str | Path | None = None,
+    cache_prefix: str = "contacts",
+    require_cache: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Path]:
-    """Aggregate APA matrix and 1D anchor signal without per-bait temp files."""
+    """Aggregate APA matrix and 1D anchor signal without per-bait temp files.
+
+    `index_strategy="cache"` reads a persistent NPZ `ContactIndex` cache
+    (building it first if missing) instead of re-parsing `pairs_path` --
+    useful when `background count` is also run against the same sample,
+    since both would otherwise each pay their own full pairs-file parse.
+    """
+
+    if index_strategy not in {"all", "cache"}:
+        raise ValueError("index_strategy must be one of: all, cache")
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
-        indexes = build_contact_indexes(pairs_path, source=source, cis_only=True)
+        if index_strategy == "cache":
+            cache_dir = _resolve_cache_dir(cache_dir, out_dir)
+            indexes = load_cached_contact_indexes(
+                pairs_path,
+                cache_dir=cache_dir,
+                cache_prefix=cache_prefix,
+                source=source,
+                include_metadata=True,
+                require_cache=require_cache,
+            )
+        else:
+            indexes = build_contact_indexes(pairs_path, source=source, cis_only=True)
         baits = read_bed_anchors(baits_path)
         preys = read_bed_anchors(preys_path)
     result = compute_apa(
@@ -339,6 +363,13 @@ def _apa_matrix_numba(
 def _strand_codes(strands: pl.Series) -> np.ndarray:
     """Map a `"+"`/`"-"` strand series to `+1`/`-1`."""
     return np.where(strands.to_numpy() == "-", -1, 1).astype(np.int64)
+
+
+def _resolve_cache_dir(cache_dir: str | Path | None, out_dir: str | Path) -> Path:
+    """Default to a `contact_index_cache/` directory next to `out_dir`."""
+    if cache_dir is not None:
+        return Path(cache_dir)
+    return Path(out_dir) / "contact_index_cache"
 
 
 def write_apa_result(

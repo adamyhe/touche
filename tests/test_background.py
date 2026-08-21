@@ -4,9 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import polars as pl
+from scipy.stats import gaussian_kde
 
 from touche.background import (
+    _safe_kde,
     compare_background_ratios,
     parse_named_depth,
     parse_named_path,
@@ -79,6 +82,45 @@ class BackgroundCompareTests(unittest.TestCase):
         import matplotlib.pyplot as plt
 
         plt.close(fig)
+
+
+class SafeKdeTests(unittest.TestCase):
+    def test_safe_kde_degenerate_input_returns_ones(self) -> None:
+        np.testing.assert_array_equal(_safe_kde(np.zeros((2, 0))), np.ones(0))
+        np.testing.assert_array_equal(_safe_kde(np.zeros((2, 1))), np.ones(1))
+
+    def test_safe_kde_below_threshold_matches_unsubsampled_gaussian_kde(self) -> None:
+        rng = np.random.default_rng(0)
+        values = rng.normal(size=(2, 300))
+
+        result = _safe_kde(values, max_fit_points=5000)
+        expected = gaussian_kde(values)(values)
+
+        np.testing.assert_allclose(result, expected)
+
+    def test_safe_kde_above_threshold_is_deterministic_and_close_to_full_fit(self) -> None:
+        rng = np.random.default_rng(1)
+        values = rng.normal(size=(2, 2000))
+
+        subsampled = _safe_kde(values, max_fit_points=200)
+        repeat = _safe_kde(values, max_fit_points=200)
+        full = gaussian_kde(values)(values)
+
+        self.assertEqual(subsampled.shape, (2000,))
+        self.assertTrue(np.all(np.isfinite(subsampled)))
+        np.testing.assert_array_equal(subsampled, repeat)
+        correlation = np.corrcoef(subsampled, full)[0, 1]
+        self.assertGreater(correlation, 0.9)
+
+    def test_safe_kde_different_seeds_still_correlate_closely(self) -> None:
+        rng = np.random.default_rng(2)
+        values = rng.normal(size=(2, 2000))
+
+        seed_a = _safe_kde(values, max_fit_points=200, seed=0)
+        seed_b = _safe_kde(values, max_fit_points=200, seed=1)
+
+        correlation = np.corrcoef(seed_a, seed_b)[0, 1]
+        self.assertGreater(correlation, 0.9)
 
 
 if __name__ == "__main__":

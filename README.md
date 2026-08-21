@@ -143,6 +143,9 @@ Detailed usage notes live under `docs/`:
   and custom scripts.
 - [Reproducing reference plots](docs/reproducing-reference-plots.md): end-to-end
   commands for the reference local-decay, APA, and EP/background plots.
+- [Performance vs. the reference implementation](docs/performance.md): how
+  `touche`'s runtime, intermediate-file, and memory behavior compares to the
+  reference implementation, and why.
 - [Testing and publishing](docs/testing-and-publishing.md): CI, local checks,
   and PyPI release workflow for the `ep-touche` distribution.
 
@@ -151,12 +154,12 @@ Implementation plans, experiment logs, and agent-facing notes belong in
 
 ## Development
 
-Development is managed with `uv`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setting up a development checkout,
+running tests/lint, and pull request guidelines.
 
-```bash
-git clone https://github.com/adamyhe/touche.git
-cd touche/
-uv sync --dev
-uv run touche --help
-uv run pytest
-```
+## Citation
+
+If you use `touche`, please cite it -- and the original Danko Lab
+E-P_contacts reference implementation and its associated paper, since
+`touche` is a refactor of that reference workflow. See
+[CITATION.cff](CITATION.cff).
