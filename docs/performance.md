@@ -165,7 +165,7 @@ arrays — no embedded R interpreter, no per-locus subprocess memory overhead.
 [`scripts/reference_replication.py`](../scripts/reference_replication.py) ran
 the full example end to end on a 16-core node against the real Danko-Lab
 inputs (K562 local-decay at 8.9GB of pairs; DMSO/FLV/TRP APA and
-EP/background at 433MB/2.8GB/3.15GB): **~840 seconds (~14.0 minutes)**
+EP/background at 433MB/2.8GB/3.15GB): **~836 seconds (~13.9 minutes)**
 total across all 16 profiled steps, from already-downloaded raw pairs to
 every local-decay/APA/background output and comparison plot -- down from an
 initial **~1,318 seconds (~22.0 minutes)** before the four fixes below.
@@ -178,17 +178,17 @@ initial **~1,318 seconds (~22.0 minutes)** before the four fixes below.
 | apa-aggregate-flv | 88.4 | 9,225 | 319% |
 | preprocess-cache-trp | 81.3 | 4,551 | 695% |
 | preprocess-cache-flv | 73.1 | 3,836 | 686% |
-| background-compare | 25.7 | 242 | 113% |
+| background-compare | 22.4 | 243 | 126% |
 | apa-aggregate-dmso | 14.0 | 1,535 | 297% |
 | preprocess-cache-dmso | 11.7 | 861 | 623% |
 | background-count-trp | 10.0 | 6,457 | 281% |
 | background-count-flv | 9.9 | 5,740 | 268% |
-| apa-compare-{flv,trp}-vs-dmso | ~4.1 each | 179 | ~98% |
-| background-count-dmso | 4.2 | 1,009 | 169% |
+| apa-compare-{flv,trp}-vs-dmso | ~3.9 each | ~180 | ~116% |
+| background-count-dmso | 3.9 | 1,009 | 197% |
 | local-decay-plot | 2.9 | 176 | 113% |
 | local-decay-assign-pair-types | 1.8 | 89 | 114% |
 
-Each step's number above is the best (least-contended) across three full
+Each step's number above is the best (least-contended) across four full
 runs -- see the note after fix 4 below for why more than one run was
 needed. These numbers reflect four fixes this table motivated (see git
 history for the full before/after):
@@ -231,20 +231,22 @@ history for the full before/after):
    side-by-side confirming the two are indistinguishable. This only affects
    scatter-plot coloring, not `compare_background_ratios`'s numeric output.
    Follow-up full-pipeline re-runs confirm it end to end and reproducibly:
-   `background-compare` **134.3s → 25.9s, then 25.7s (5.2x)** on the same
-   real data across two independent re-runs, consistent with the isolated
-   per-plot verification. Both re-runs also landed on a noisier node, each
-   time in different unrelated steps -- the first saw `local-decay-plot`
-   drop 94% → 30% CPU and `preprocess-cache-k562` 692% → 490% (both 30-50%
-   slower with no code change); the second instead hit `apa-aggregate-trp`
-   (313% → 136% CPU, 97.3s → 284.7s) and `apa-compare-flv-vs-dmso` (98% →
-   31% CPU, 4.1s → 92.9s). Different steps stalling on different runs, with
-   no correlation to what code changed between them, is exactly what
-   shared-node contention looks like rather than a regression. The table
-   above reports each step's best (least-contended) time across all three
-   runs -- all from the first run except `local-decay-plot`,
-   `local-decay-assign-pair-types`, and `background-compare`, whose best
-   times came from later runs.
+   `background-compare` **134.3s → 25.9s → 25.7s → 22.4s (up to 6.0x)**
+   on the same real data across three independent re-runs, consistent with
+   the isolated per-plot verification. Two of those re-runs also landed on
+   a noisier node, each time in different unrelated steps -- the first saw
+   `local-decay-plot` drop 94% → 30% CPU and `preprocess-cache-k562`
+   692% → 490% (both 30-50% slower with no code change); the second instead
+   hit `apa-aggregate-trp` (313% → 136% CPU, 97.3s → 284.7s) and
+   `apa-compare-flv-vs-dmso` (98% → 31% CPU, 4.1s → 92.9s). Different steps
+   stalling on different runs, with no correlation to what code changed
+   between them, is exactly what shared-node contention looks like rather
+   than a regression; the fourth re-run landed on an uncontended node and
+   reproduced every step at or near its best-observed time. The table above
+   reports each step's best (least-contended) time across all four runs --
+   mostly from the first and fourth runs, with `local-decay-plot` and
+   `local-decay-assign-pair-types` from the third and `background-compare`
+   from the fourth.
 
 `preprocess-cache-k562` (271.3s) remains the largest untouched step --
 profiling a synthetic 22M-row pairs file placed 66% of its time in the
