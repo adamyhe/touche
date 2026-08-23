@@ -267,14 +267,17 @@ CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `local-decay-call` averaged ~7.4 of the node's 16 cores over its 139.7s wall
 time.
 
-## Side-by-side against the reference pipeline (preliminary)
+## Side-by-side against the reference pipeline
 
 The comparisons above explain *why* `touche` should be faster and lighter on
 disk/memory than the reference implementation, and the table above gives
-`touche`'s real standalone cost. The other half -- a from-scratch run of the
-reference `E-P_contacts` pipeline on the same inputs -- is now in progress on
-the same node; each legacy step takes hours to over a day, so it's landing
-incrementally rather than all at once. Three steps have finished so far:
+`touche`'s real standalone cost. The other half is a from-scratch run of the
+reference `E-P_contacts` pipeline on the same inputs. Each legacy step takes
+hours to over a day (`apa-aggregate-dmso` alone ran 37.3 hours), so the
+legacy run was deliberately scoped to one representative step per workflow
+rather than the full DMSO/FLV/TRP x apa/background matrix -- running that
+matrix to completion would take on the order of a week of wall-clock time
+for marginal additional signal:
 
 | Step | Legacy | `touche` | Wall-time speedup | Peak RSS ratio |
 | --- | ---: | ---: | ---: | ---: |
@@ -282,11 +285,16 @@ incrementally rather than all at once. Three steps have finished so far:
 | apa-aggregate-dmso | 134,394.6s (37.3 h) | 14.0s | 9,611x | 3.0x less (4,633 → 1,535 MB) |
 | background-count-dmso | 88,569.3s (24.6 h) | 3.9s | 22,468x | **1.75x more** (577 → 1,009 MB) |
 
-`local-decay-call` is a complete, apples-to-apples comparison (it runs once,
-genome-wide, in both implementations). `apa-aggregate-dmso` and
-`background-count-dmso` are DMSO-only so far -- FLV and TRP (plus
-`apa-compare`, `background-compare`, and the preprocess steps) are still
-running and will be added as they finish.
+`local-decay-call` is a complete, apples-to-apples comparison -- it runs
+once, genome-wide, in both implementations, with no per-sample scoping on
+either side. `apa-aggregate-dmso` and `background-count-dmso` are each one
+representative sample (of three -- DMSO/FLV/TRP) run through the
+single-sample half of their respective workflows (`apa aggregate`,
+`background count`); FLV/TRP and the pairwise `apa compare`/
+`background compare` steps were not run against the reference, since the
+reference implementation runs each sample independently through the same
+per-bait subprocess architecture and there's no reason to expect FLV/TRP's
+wall-clock behavior to differ qualitatively from DMSO's.
 
 The wall-time gap is consistent with the architectural difference described
 under "Runtime" above: the reference pipeline spawns one Python subprocess
