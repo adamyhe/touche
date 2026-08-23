@@ -267,12 +267,49 @@ CPU% above 100% reflects multi-core parallelism (Polars' scan engine, Numba's
 `local-decay-call` averaged ~7.4 of the node's 16 cores over its 139.7s wall
 time.
 
-## What isn't measured yet
+## Side-by-side against the reference pipeline
 
 The comparisons above explain *why* `touche` should be faster and lighter on
-disk/memory than the reference implementation, verified where isolated fixes
-have before/after numbers, and the table above gives `touche`'s real
-standalone cost. What's still missing is the other half: a matching
-from-scratch run of the reference pipeline on the same inputs, to turn the
-structural comparisons above into a real side-by-side wall-clock/peak-RSS
-number.
+disk/memory than the reference implementation, and the table above gives
+`touche`'s real standalone cost. The other half is a from-scratch run of the
+reference `E-P_contacts` pipeline on the same inputs. Each legacy step takes
+hours to over a day (`apa-aggregate-dmso` alone ran 37.3 hours), so the
+legacy run was deliberately scoped to one representative step per workflow
+rather than the full DMSO/FLV/TRP x apa/background matrix -- running that
+matrix to completion would take on the order of a week of wall-clock time
+for marginal additional signal:
+
+| Step | Legacy | `touche` | Wall-time speedup | Peak RSS ratio |
+| --- | ---: | ---: | ---: | ---: |
+| local-decay-call | 20,381.7s (5.66 h) | 139.7s | 146x | 3.3x less (32,238 → 9,821 MB) |
+| apa-aggregate-dmso | 134,394.6s (37.3 h) | 14.0s | 9,611x | 3.0x less (4,633 → 1,535 MB) |
+| background-count-dmso | 88,569.3s (24.6 h) | 3.9s | 22,468x | **1.75x more** (577 → 1,009 MB) |
+
+`local-decay-call` is a complete, apples-to-apples comparison -- it runs
+once, genome-wide, in both implementations, with no per-sample scoping on
+either side. `apa-aggregate-dmso` and `background-count-dmso` are each one
+representative sample (of three -- DMSO/FLV/TRP) run through the
+single-sample half of their respective workflows (`apa aggregate`,
+`background count`); FLV/TRP and the pairwise `apa compare`/
+`background compare` steps were not run against the reference, since the
+reference implementation runs each sample independently through the same
+per-bait subprocess architecture and there's no reason to expect FLV/TRP's
+wall-clock behavior to differ qualitatively from DMSO's.
+
+The wall-time gap is consistent with the architectural difference described
+under "Runtime" above: the reference pipeline spawns one Python subprocess
+(with an embedded R interpreter via `rpy2`) per bait, capped at 30-60
+concurrent jobs by shell-level polling, versus `touche`'s single in-process
+pass over typed arrays with Numba/`searchsorted`. At `apa`/`background`'s
+per-locus scale that per-bait subprocess-and-interpreter overhead compounds
+into multiple orders of magnitude, not just a constant-factor win.
+
+`background-count-dmso` is the one step where `touche` used *more* peak
+memory than the reference, not less. `touche`'s `--index-strategy cache` path
+loads the whole DMSO genome's contact index into memory at once (81,577
+output rows is a tiny fraction of the ~10s-of-millions of underlying contact
+pairs held in memory to compute them); the reference implementation's
+per-chromosome `zcat` rescans never hold more than one chromosome's pairs at
+a time. This hasn't been root-caused further (e.g. how much is Polars/NumPy
+process baseline vs. the resident contact arrays themselves) -- flagged here
+rather than asserted.
