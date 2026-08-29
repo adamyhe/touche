@@ -51,7 +51,7 @@ Install the optional `legacy` extra only if you need that backend:
 
 ```bash
 pip install ep-touche[legacy]
-# or: uv sync --extra legacy
+# or: uv add "ep-touche[legacy]"
 ```
 
 ### Older CPUs and Rosetta
