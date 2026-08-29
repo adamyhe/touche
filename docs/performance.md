@@ -3,17 +3,20 @@
 `touche` reimplements the workflows from
 [Danko-Lab/E-P_contacts](https://github.com/Danko-Lab/E-P_contacts) (bash/awk
 scripts calling per-locus Python/R). This guide compares the two along three
-axes: runtime, intermediate/temp files written, and memory shape. It's based
-on reading the reference scripts directly (cited by file/function below), not
+axes — runtime, intermediate/temp files written, and memory shape — based on
+reading the reference scripts directly (cited by file/function below), not
 guesswork.
 
-End-to-end wall-clock and peak-RSS numbers from running both pipelines on the
-same real data are pending a controlled run (see
-[`scripts/reference_replication.py`](../scripts/reference_replication.py)) and
-will be added here once collected. Everything below is a structural
-comparison: what each pipeline actually does per bait/prey/chromosome, and the
-isolated, already-verified speedups from `touche`'s own optimization history
-(`notes/numba-implementation-plan.md`).
+"Runtime", "Intermediate/temp files", and "Memory" below are a structural
+comparison: what each pipeline actually does per bait/prey/chromosome, plus
+the isolated, already-verified speedups from `touche`'s own optimization
+history (`notes/numba-implementation-plan.md`). The two sections after that
+give the real numbers: `touche`'s own wall-clock/peak-RSS profile on the full
+example end to end, and a genuine side-by-side run of both pipelines on the
+same inputs, via
+[`scripts/reference_replication.py`](../scripts/reference_replication.py) and
+[`scripts/legacy_timing_comparison.py`](../scripts/legacy_timing_comparison.py)
+respectively.
 
 ## Runtime
 
@@ -70,7 +73,7 @@ now a direct `np.searchsorted` slice (O(log n) instead of O(n) per bait);
 contacts that start before the window but span into it (`pos_a < lo <= pos_b
 <= hi`) are bounded to `pos_a >= lo - max_span`, where `max_span` is the
 chromosome's largest observed `pos_b - pos_a` (computed once per chromosome,
-not per bait) -- `pos_b <= pos_a + max_span` bounds how far left such a
+not per bait) — `pos_b <= pos_a + max_span` bounds how far left such a
 contact's `pos_a` can be, so that candidate slice stays small and still only
 needs a boolean mask across a narrow range, not the whole chromosome.
 Verified bit-identical against the pre-fix mask via `git stash` (randomized
@@ -119,7 +122,7 @@ and re-decompressing the source pairs file three times. Fusing them into one
 gzipped pairs file, and this scan is shared between `preprocess qc`,
 `preprocess summarize`, and cache building, so the fix benefits all three.
 
-## Intermediate / temp files
+## Intermediate/temp files
 
 The reference scripts write a full directory tree of intermediate files that
 outlive no step of the run — they're read back by the next `awk`/`cat`/`zcat`
@@ -127,7 +130,7 @@ in the pipeline, then left on disk:
 
 | Workflow | Intermediate directories (reference) | Roughly how many files |
 | --- | --- | --- |
-| local-decay | `baits_by_chrom/`, `preys_by_chrom/` (1/chromosome), `preys_in_baits/` (1/bait), `confile_by_chrom/` (1/chromosome), `conFile/temp_*.gz` (1/bait), per-bait `.txt` before the final `cat` | ~3-4 per bait + a handful per chromosome — 1,500+ on a ~500-bait real run |
+| local-decay | `baits_by_chrom/`, `preys_by_chrom/` (1/chromosome), `preys_in_baits/` (1/bait), `confile_by_chrom/` (1/chromosome), `conFile/temp_*.gz` (1/bait), per-bait `.txt` before the final `cat` | ~3–4 per bait + a handful per chromosome — 1,500+ on a ~500-bait real run |
 | APA | `contacts_shifted_by_chrom/`, `baits_by_chrom/`, `preys_by_chrom/` (1/chromosome each), `preys_IN_baits_folder/`, `baits_IN_contacts_folder/`, `per_bait_matrices_folder/` (1/bait each), `preys_IN_contacts_folder/` (1/prey) | tens of thousands at the benchmark's 10,530-bait/27,900-prey scale |
 | EP/background | `contacts_by_chrom/`, `baits_by_chrom/`, `preys_by_chrom/` (1/chromosome each), `preys_IN_baits_folder/`, `baits_IN_contacts_folder/`, `preys_IN_contacts_folder/` (1/locus each) | same order of magnitude as APA |
 
@@ -167,7 +170,7 @@ the full example end to end on a 16-core node against the real Danko-Lab
 inputs (K562 local-decay at 8.9GB of pairs; DMSO/FLV/TRP APA and
 EP/background at 433MB/2.8GB/3.15GB): **~836 seconds (~13.9 minutes)**
 total across all 16 profiled steps, from already-downloaded raw pairs to
-every local-decay/APA/background output and comparison plot -- down from an
+every local-decay/APA/background output and comparison plot — down from an
 initial **~1,318 seconds (~22.0 minutes)** before the four fixes below.
 
 | Step | Elapsed (s) | Peak RSS (MB) | CPU % |
@@ -189,24 +192,24 @@ initial **~1,318 seconds (~22.0 minutes)** before the four fixes below.
 | local-decay-assign-pair-types | 1.8 | 89 | 114% |
 
 Each step's number above is the best (least-contended) across four full
-runs -- see the note after fix 4 below for why more than one run was
+runs — see the note after fix 4 below for why more than one run was
 needed. These numbers reflect four fixes this table motivated (see git
 history for the full before/after):
 
 1. The `preprocess-cache-dmso/flv/trp` steps used to build NPZ caches
-   nothing downstream read (162.7s wasted, ~12% of the original run) --
+   nothing downstream read (162.7s wasted, ~12% of the original run) —
    removed, then reinstated once they became genuinely shared.
 2. `apa aggregate`/`background count` now support `--index-strategy cache`,
    so those same per-sample caches (built once, with strand metadata since
    APA needs it) are shared between both workflows via `--require-cache`
    instead of each re-parsing its sample's raw pairs file from scratch.
    Cache-build time is counted once, in `preprocess-cache-{dmso,flv,trp}`
-   above -- `apa-aggregate-*`/`background-count-*` never rebuild it
+   above — `apa-aggregate-*`/`background-count-*` never rebuild it
    (`--require-cache` fails loudly if it's missing), so their numbers are
    pure cache-read cost. Effect on the raw-pairs-parse step specifically
    ("read inputs" in `report/command-timings.csv`): FLV 64.8s → 6.0s (apa),
    57.3s → 4.4s (background); TRP 71.9s → 6.7s (apa), 65.7s → 4.9s
-   (background) -- and peak RSS for those same steps dropped by roughly half
+   (background) — and peak RSS for those same steps dropped by roughly half
    to two-thirds.
 3. `_call_bait_contacts`'s `in_region` window filter (see "Runtime" above)
    now resolves via `np.searchsorted` instead of a full per-bait boolean
@@ -217,38 +220,36 @@ history for the full before/after):
    loop itself, where LOWESS/Fisher/histogram work (unaffected by this fix)
    also lives.
 4. `_safe_kde` (`src/touche/background.py`) used to call
-   `gaussian_kde(values)(values)` -- fitting *and* evaluating on every point,
-   O(n_fit x n_eval) with no faster path in scipy. At `background-compare`'s
+   `gaussian_kde(values)(values)` — fitting *and* evaluating on every point,
+   O(n_fit × n_eval) with no faster path in scipy. At `background-compare`'s
    real ~68k-row scale, run once per sample pair (three: DMSO/FLV, DMSO/TRP,
    FLV/TRP), this dominated its 134.3s. Fixed by capping the fit to a random
    subsample (default 5000 points, fixed seed) while still coloring every
-   point -- KDE bandwidth already smooths over local neighborhoods, so a
+   point — KDE bandwidth already smooths over local neighborhoods, so a
    several-thousand-point subsample gives a visually indistinguishable
    density estimate. Verified against the real `background_comparison.tsv`
-   from this benchmark run: **13.6-14.0x speedup per plot** (12.0s → 0.88s on
-   the machine used to verify) with **0.990-0.995 correlation** between old
+   from this benchmark run: **13.6–14.0x speedup per plot** (12.0s → 0.88s on
+   the machine used to verify) with **0.990–0.995 correlation** between old
    and new point coloring across all three sample pairs, plus a visual
    side-by-side confirming the two are indistinguishable. This only affects
    scatter-plot coloring, not `compare_background_ratios`'s numeric output.
-   Follow-up full-pipeline re-runs confirm it end to end and reproducibly:
-   `background-compare` **134.3s → 25.9s → 25.7s → 22.4s (up to 6.0x)**
-   on the same real data across three independent re-runs, consistent with
-   the isolated per-plot verification. Two of those re-runs also landed on
-   a noisier node, each time in different unrelated steps -- the first saw
-   `local-decay-plot` drop 94% → 30% CPU and `preprocess-cache-k562`
-   692% → 490% (both 30-50% slower with no code change); the second instead
-   hit `apa-aggregate-trp` (313% → 136% CPU, 97.3s → 284.7s) and
-   `apa-compare-flv-vs-dmso` (98% → 31% CPU, 4.1s → 92.9s). Different steps
-   stalling on different runs, with no correlation to what code changed
-   between them, is exactly what shared-node contention looks like rather
-   than a regression; the fourth re-run landed on an uncontended node and
-   reproduced every step at or near its best-observed time. The table above
-   reports each step's best (least-contended) time across all four runs --
-   mostly from the first and fourth runs, with `local-decay-plot` and
-   `local-decay-assign-pair-types` from the third and `background-compare`
-   from the fourth.
+   Three independent full-pipeline re-runs confirm the fix reproducibly:
+   `background-compare` **134.3s → 25.9s → 25.7s → 22.4s (up to 6.0x)** on
+   the same real data, consistent with the isolated per-plot verification
+   above. Two of those three re-runs happened to land on a noisier node,
+   each stalling a different, unrelated step for no code reason —
+   `local-decay-plot` (94% → 30% CPU) and `preprocess-cache-k562`
+   (692% → 490% CPU) on one; `apa-aggregate-trp` (313% → 136% CPU,
+   97.3s → 284.7s) and `apa-compare-flv-vs-dmso` (98% → 31% CPU,
+   4.1s → 92.9s) on the other. Different steps stalling on different runs,
+   uncorrelated with what code changed, is the signature of shared-node
+   contention rather than a regression; the fourth re-run landed on an
+   uncontended node and reproduced every step near its best-observed time.
+   The table above takes each step's best time across all four runs — mostly
+   the first and fourth, with `local-decay-plot`/`local-decay-assign-pair-types`
+   from the third and `background-compare` from the fourth.
 
-`preprocess-cache-k562` (271.3s) remains the largest untouched step --
+`preprocess-cache-k562` (271.3s) remains the largest untouched step —
 profiling a synthetic 22M-row pairs file placed 66% of its time in the
 single unavoidable full-file scan (gzip decompression + parsing into the
 local Parquet spool), with QC and all per-chromosome shard writes reading
@@ -257,7 +258,7 @@ identified; this looks like inherent I/O cost, not an algorithmic
 inefficiency. One potential shortcut was ruled out empirically: BGZF
 (block-gzip, used by pairtools/distiller-nf by convention to support
 `pairix`/`tabix` indexing) is a strict superset of gzip whose concatenated
-block structure a BGZF-aware reader can decompress in parallel -- but
+block structure a BGZF-aware reader can decompress in parallel — but
 `htsfile` against the real K562 input (`GSE206131_K562_cis_mapq30_pairs.txt.gz`)
 reports "unknown gzip-compressed data", not BGZF, so there's no block
 structure here to exploit.
@@ -269,14 +270,16 @@ time.
 
 ## Side-by-side against the reference pipeline
 
-The comparisons above explain *why* `touche` should be faster and lighter on
-disk/memory than the reference implementation, and the table above gives
-`touche`'s real standalone cost. The other half is a from-scratch run of the
-reference `E-P_contacts` pipeline on the same inputs. Each legacy step takes
-hours to over a day (`apa-aggregate-dmso` alone ran 37.3 hours), so the
-legacy run was deliberately scoped to one representative step per workflow
-rather than the full DMSO/FLV/TRP x apa/background matrix -- running that
-matrix to completion would take on the order of a week of wall-clock time
+The sections above explain *why* `touche` should be faster and lighter on
+disk/memory than the reference implementation, and the previous section gives
+`touche`'s real standalone cost. This section closes the loop with a
+from-scratch run of the reference `E-P_contacts` pipeline on the same inputs,
+produced by
+[`scripts/legacy_timing_comparison.py`](../scripts/legacy_timing_comparison.py).
+Each legacy step takes hours to over a day (`apa-aggregate-dmso` alone ran
+37.3 hours), so the run was deliberately scoped to one representative step
+per workflow rather than the full DMSO/FLV/TRP × apa/background matrix —
+completing that matrix would take on the order of a week of wall-clock time
 for marginal additional signal:
 
 | Step | Legacy | `touche` | Wall-time speedup | Peak RSS ratio |
@@ -285,10 +288,10 @@ for marginal additional signal:
 | apa-aggregate-dmso | 134,394.6s (37.3 h) | 14.0s | 9,611x | 3.0x less (4,633 → 1,535 MB) |
 | background-count-dmso | 88,569.3s (24.6 h) | 3.9s | 22,468x | **1.75x more** (577 → 1,009 MB) |
 
-`local-decay-call` is a complete, apples-to-apples comparison -- it runs
+`local-decay-call` is a complete, apples-to-apples comparison — it runs
 once, genome-wide, in both implementations, with no per-sample scoping on
 either side. `apa-aggregate-dmso` and `background-count-dmso` are each one
-representative sample (of three -- DMSO/FLV/TRP) run through the
+representative sample (of three — DMSO/FLV/TRP) run through the
 single-sample half of their respective workflows (`apa aggregate`,
 `background count`); FLV/TRP and the pairwise `apa compare`/
 `background compare` steps were not run against the reference, since the
@@ -298,7 +301,7 @@ wall-clock behavior to differ qualitatively from DMSO's.
 
 The wall-time gap is consistent with the architectural difference described
 under "Runtime" above: the reference pipeline spawns one Python subprocess
-(with an embedded R interpreter via `rpy2`) per bait, capped at 30-60
+(with an embedded R interpreter via `rpy2`) per bait, capped at 30–60
 concurrent jobs by shell-level polling, versus `touche`'s single in-process
 pass over typed arrays with Numba/`searchsorted`. At `apa`/`background`'s
 per-locus scale that per-bait subprocess-and-interpreter overhead compounds
@@ -311,5 +314,5 @@ output rows is a tiny fraction of the ~10s-of-millions of underlying contact
 pairs held in memory to compute them); the reference implementation's
 per-chromosome `zcat` rescans never hold more than one chromosome's pairs at
 a time. This hasn't been root-caused further (e.g. how much is Polars/NumPy
-process baseline vs. the resident contact arrays themselves) -- flagged here
+process baseline vs. the resident contact arrays themselves) — flagged here
 rather than asserted.
