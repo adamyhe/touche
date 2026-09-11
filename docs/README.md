@@ -22,6 +22,9 @@ CPUs and x86-64 Python on Apple Silicon under Rosetta.
 
 - [CLI reference](cli.md): command groups, common options, examples, outputs,
   and run-wrapper manifests.
+- [Statistics guide](statistics.md): what each inferential method tests, what
+  it assumes, what its q-values are corrected over, and which claims its
+  result supports. Read this before quoting a p-value or a q-value.
 - [Micro-C preprocessing](micro-c-preprocessing.md): how `touche` hands off
   from distiller-nf or equivalent pairs-producing workflows, then filters,
   converts, QC-summarizes, and caches pairs.

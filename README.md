@@ -20,6 +20,12 @@ The current implementation includes CLI tools+API for:
 - enhancer/promoter local-background counting and treatment comparison
 - pipeline `run` wrappers that preserve intermediate outputs and write JSON
   manifests
+- calibrated per-pair contact significance with FDR control, effect sizes,
+  clustered bootstrap intervals, quantitative APA scores, and zero-safe
+  differential EP/background testing -- every result self-describing, with
+  its null, test universe, and inference class recorded alongside it
+- explicit BEDPE pair lists, and import/export adapters for FitHiC2, MaxHiC,
+  HiC-DC+, Mustache, Peakachu, Chromosight, and HiCCUPS calls
 
 ## Installation
 
@@ -73,6 +79,7 @@ pip install "polars-lts-cpu>=1.0"
 
 ```bash
 touche preprocess --help
+touche pairs --help
 touche local-decay --help
 touche apa --help
 touche background --help
@@ -82,15 +89,21 @@ Available command groups:
 
 - `touche preprocess`: convert/filter pairs, write QC summaries, and build NPZ
   caches.
-- `touche local-decay`: call observed/expected contacts, assign pair types, plot
-  distributions, or run the full local-decay workflow.
-- `touche apa`: aggregate APA matrices, compare treatment/control APAs, or run a
-  paired APA workflow.
+- `touche pairs`: build an explicit BEDPE pair list, import external loop or
+  significance calls, and attach them to a pair list.
+- `touche local-decay`: call observed/expected contacts, test and FDR-adjust
+  them, compare groups of pairs, assign pair types, plot distributions, or run
+  the full local-decay workflow.
+- `touche apa`: aggregate APA matrices, score them over named submatrix masks,
+  compare treatment/control APAs, or run a paired APA workflow.
 - `touche background`: count EP/background contacts, compare treatment ratios,
-  or run the full EP/background workflow.
+  test the EP-versus-background change between libraries, or run the full
+  EP/background workflow.
 
 See the [CLI reference](docs/cli.md) for examples, common options, and expected
-outputs.
+outputs. The statistical commands are all opt-in: default runs produce exactly
+the output they did before, and the [statistics guide](docs/statistics.md)
+documents what each method tests and what its result supports.
 
 ## Typical workflow
 
@@ -137,6 +150,9 @@ Detailed usage notes live under `docs/`:
   conventions.
 - [CLI reference](docs/cli.md): command groups, common options, examples,
   outputs, and run-wrapper manifests.
+- [Statistics guide](docs/statistics.md): each inferential method's null, unit
+  of replication, assumptions, FDR family, and failure modes -- and which
+  claims its result does and does not support.
 - [Micro-C preprocessing](docs/micro-c-preprocessing.md): distiller-nf boundary,
   pairs format expectations, filtering, QC, and cache building.
 - [API](docs/api.md): provisional in-memory APIs for notebooks, interactive analyses,

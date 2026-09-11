@@ -11,7 +11,9 @@ The notebook-friendly pattern is:
 3. display figures directly
 4. write outputs only when needed
 
-This API is provisional while the result-object layer matures.
+This API is provisional while the result-object layer matures. Statistical
+functions already return the `StatResult` objects described under
+[Statistics](#statistics).
 
 ## CPU usage
 
@@ -149,6 +151,87 @@ counts = tt.compute_ep_and_background(
     max_bg_distance=150_000,
 )
 ```
+
+## Pair lists
+
+`tt.build_pair_table` materializes the bait/prey universe that `compute_apa`
+and `compute_ep_and_background` otherwise build implicitly, so it can be
+inspected, filtered, and passed back in:
+
+```python
+pairs = tt.build_pair_table(baits, preys, min_distance=25_000, max_distance=150_000)
+pairs = pairs.filter(pl.col("distance") > 50_000)
+
+apa = tt.compute_apa(indexes, baits, preys, pairs=pairs, window=10_000, pixels=50,
+                     min_distance=25_000, max_distance=150_000)
+```
+
+`tt.read_bedpe` reads an explicit list from disk and `tt.write_bedpe` writes
+one. Every row carries a `pair_id` that is center-based and
+anchor-order-invariant, so the same pair joins across local-decay, APA,
+background, and imported external calls.
+
+## Statistics
+
+Every statistical function returns a `StatResult`: a polars table plus a
+`MethodInfo` describing what was tested and what kind of claim the answer
+supports. Read `result.info` before quoting `result.table`.
+
+```python
+result = tt.test_contacts(calls, method="binomial", fdr="bh")
+
+result.info.inference_class   # "technical": about read sampling in this library
+result.info.fdr_family        # "all called pairs"
+result.info.warnings          # assumption violations, untestable rows, ...
+result.table                  # pair_id, p_value, q_value, n_trials, p_null, ...
+result.write("calls.tested.tsv")   # writes calls.tested.tsv.meta.json too
+```
+
+`compute_local_decay(..., method="binomial", schema="tidy")` computes the
+same p-values during calling. `tt.assess_calibration` checks whether a
+p-value column is actually uniform on a null pair set.
+
+Group comparisons take a `cluster_by` column and resample whole clusters for
+their confidence interval, because pairs sharing a promoter or enhancer are
+not independent observations:
+
+```python
+comparison = tt.compare_groups(
+    assignments,
+    value_col="log2_oe",
+    group_col="PosNeg",
+    cluster_by="bait_id",
+    bootstrap=1000,
+)
+```
+
+`tt.compare_paired`, `tt.correlate`, `tt.match_pairs`, and
+`tt.balance_table` round out the descriptive layer;
+`tt.test_background_change` is the zero-safe EP-versus-background comparison
+between two libraries.
+
+Quantitative APA scores need per-chromosome pileups for their intervals,
+since the resampling unit is the chromosome and never the pixel:
+
+```python
+apa = tt.compute_apa(..., keep_chromosomes=True)
+summary = tt.summarize_apa(apa, bootstrap=1000)
+```
+
+The [statistics guide](statistics.md) documents each method's null, unit of
+replication, assumptions, FDR family, and failure modes.
+
+## External calls
+
+```python
+calls = tt.read_loop_calls("fithic2.significances.txt", format="fithic2")
+annotated = tt.annotate_pairs(pairs, calls, slop=2000)
+tt.write_loop_calls(pairs, "pairs.bedpe")
+```
+
+Supported formats are in `tt.LOOP_FORMATS`. Matching is by anchor
+containment in both anchor orders, not `pair_id` equality, because `touche`
+anchors are points and external callers report bins.
 
 ## Saving Figures
 

@@ -35,6 +35,7 @@ touche --help
 
 ```bash
 uv run touche preprocess --help
+uv run touche pairs --help
 uv run touche local-decay --help
 uv run touche background --help
 uv run touche apa --help
@@ -83,6 +84,90 @@ uv run touche background run ...
 Use individual commands such as `local-decay call`, `apa aggregate`, or
 `background count` when debugging, benchmarking, or replacing one stage of a
 larger workflow.
+
+### Statistics and interoperability commands
+
+These are opt-in additions; none of them change what the commands above
+produce by default. Each is documented in full, with its null hypothesis,
+unit of replication, and FDR family, in the
+[statistics guide](statistics.md).
+
+```bash
+# Materialize the bait/prey pair universe as a BEDPE pair list
+uv run touche pairs build ...
+# Import FitHiC2 / MaxHiC / HiC-DC+ / Mustache / Peakachu / Chromosight /
+# HiCCUPS calls, and attach them to a pair list by anchor overlap
+uv run touche pairs import-calls ...
+uv run touche pairs annotate ...
+
+# Calibrated per-pair significance with BH q-values, and a calibration check
+uv run touche local-decay call --method binomial --schema tidy ...
+uv run touche local-decay test ...
+uv run touche local-decay calibration ...
+# Effect size, rank test, and clustered bootstrap interval between groups
+uv run touche local-decay compare-groups ...
+
+# Quantitative APA mask scores
+uv run touche apa aggregate --summary-out ... --bootstrap 1000 ...
+uv run touche apa summarize ...
+
+# Zero-safe EP-versus-background comparison between two libraries
+uv run touche background diff ...
+```
+
+Every statistical command writes a `.meta.json` sidecar next to its table
+recording the method, hypothesis, null, test universe, FDR family, unit of
+analysis, clustering unit, seed, and any assumption warnings.
+
+## Pairs
+
+`touche pairs` manages the explicit bait/prey pair list that `apa` and
+`background` can analyze in place of the implicit "every bait crossed with
+every prey inside a distance window" universe.
+
+```bash
+uv run touche pairs build \
+  --baits promoters.bed \
+  --preys enhancers.bed \
+  --min-distance 20000 \
+  --max-distance 1000000 \
+  --out pairs.bedpe
+```
+
+The written BEDPE carries a stable `pair_id` in its name column. Filter,
+subset, or annotate it, then pass it back with `--pairs-list`:
+
+```bash
+uv run touche background count --pairs sample.pairs.gz --pairs-list pairs.bedpe ...
+uv run touche apa aggregate     --pairs sample.pairs.gz --pairs-list pairs.bedpe ...
+```
+
+The list is the pair universe exactly as given. The distance window does not
+prune it, and it is never expanded back to a product.
+
+### Import and attach external calls
+
+```bash
+uv run touche pairs import-calls \
+  --input fithic2.significances.txt \
+  --format fithic2 \
+  --out calls.tsv \
+  --bedpe-out calls.bedpe
+
+uv run touche pairs annotate \
+  --pairs pairs.bedpe \
+  --calls calls.bedpe \
+  --format bedpe \
+  --slop 2000 \
+  --out annotated.tsv
+```
+
+Supported `--format` values: `fithic2`, `hicdcplus`, `maxhic`, `mustache`,
+`chromosight`, `peakachu`, `hiccups`, `bedpe`. Use `--column FIELD=COLUMN`
+(repeatable) when a tool's header differs from the built-in mapping; a
+mismatch fails with the header it actually found rather than mapping the
+wrong column. Chromosome naming is not translated, so harmonize `chr1`
+versus `1` before annotating.
 
 ## CPU usage
 
@@ -340,6 +425,59 @@ passes; lower values are faster but can change expected-contact estimates.
 1 when `NUMBA_NUM_THREADS` already saturates the available cores. Try a higher
 value only after checking `--profile` timings and CPU utilization.
 
+### Calibrated significance and q-values
+
+`local-decay call` defaults to `--method legacy_fisher --schema legacy`,
+which writes the reference nine-column headerless TSV with the reference
+workflow's numbers. Opt in to the calibrated path with:
+
+```bash
+uv run touche local-decay call \
+  --baits baits.tsv --preys preys.tsv --pairs sample.pairs.gz \
+  --out results/calls.tsv \
+  --method binomial \
+  --schema tidy \
+  --fdr bh
+```
+
+`--schema tidy` writes a headed table on the canonical pair schema with
+`pair_id`, `n_trials`, `p_null`, `log2_oe`, and `q_value`, plus a
+`.meta.json` sidecar. `--method binomial` tests the observed count against
+the model's own trial total and null probability instead of the legacy
+Fisher table, which is retained for reproducibility but is not a calibrated
+test. `--fdr-scope COLUMN` (repeatable) declares a stratified FDR family
+instead of one global family.
+
+Retest an existing tidy table without recounting contacts, and check whether
+its p-values are actually uniform under the null:
+
+```bash
+uv run touche local-decay test --calls results/calls.tsv --out retested.tsv --method poisson
+uv run touche local-decay calibration --calls null_pairs.tsv --strata chrom
+```
+
+Run `calibration` on a null set — distance- and coverage-matched shifted or
+random pairs — not on real enhancer-promoter pairs.
+
+### Compare groups of pairs
+
+```bash
+uv run touche local-decay compare-groups \
+  --table results/assignments.tsv \
+  --value-col log2_oe \
+  --group-col PosNeg \
+  --cluster bait_id \
+  --bootstrap 1000 \
+  --out comparison.tsv
+```
+
+Reports both group medians, their difference with a bootstrap confidence
+interval, Cliff's delta, and a Mann-Whitney U p-value. Pass `--cluster` with
+the column pairs actually share (a promoter or enhancer id): without it the
+interval treats every pair as independent evidence and will be too narrow.
+`--correlate-with COLUMN` switches to a Spearman or Pearson correlation
+instead.
+
 ## Background
 
 `touche background` counts enhancer-promoter contacts and local background
@@ -445,6 +583,38 @@ manifest, since each sample's cache is distinct. If omitted, each sample's
 cache defaults to a `contact_index_cache/` directory next to that sample's own
 count output. `--require-cache` fails the command instead of building a
 missing cache implicitly.
+
+`background count` accepts `--pairs-list pairs.bedpe` in place of
+`--baits`/`--preys` to count an explicit pair list; see [Pairs](#pairs).
+
+### Test the EP-versus-background change between two libraries
+
+```bash
+uv run touche background diff \
+  --control DMSO=results/background/counts/DMSO_EP_and_BG_contacts.tsv \
+  --treatment FLV=results/background/counts/FLV_EP_and_BG_contacts.tsv \
+  --out results/background/DMSO_vs_FLV.tsv
+```
+
+Per pair, this is the log odds ratio of the 2x2 table of (EP, background) by
+(control, treatment), with BH-adjusted q-values. Testing EP relative to its
+own local background is what makes the comparison robust to a difference in
+library depth.
+
+Zeros are kept: a pair with contacts in one library and none in the other is
+a complete gain or loss, and the raw `log2_ratio_change` stays infinite for
+it. A separate `log2_ratio_change_display` column applies
+`--display-pseudocount` purely so a plot has something finite to draw.
+
+With one library per condition this is inference about read sampling
+conditional on those two libraries, not evidence of biological variation
+between conditions. The result's metadata says so.
+
+`background compare` is the plotting path and keeps its reference-reproducing
+defaults, including the filter that requires positive EP signal in every
+sample. `--zero-policy keep` turns that filter off, and `--scale per_billion`
+switches the `EP_CPB_*` divisor from the historical `depth / 1e10` to
+`depth / 1e9`.
 
 ## APA
 
@@ -554,6 +724,43 @@ uv run touche apa aggregate \
 
 `apa run`'s `--cache-dir` is namespaced per sample the same way `background
 run`'s is (`--cache-dir/DMSO`, `--cache-dir/FLV`, ...).
+
+### Quantitative APA scores
+
+`apa aggregate` can write a tidy score table alongside the matrix:
+
+```bash
+uv run touche apa aggregate \
+  --pairs dmso.nodups_30_intra.pairs.gz \
+  --baits promoters.bed \
+  --preys enhancers.bed \
+  --min-distance 25000 --max-distance 150000 \
+  --window 10000 --pixels 50 \
+  --out-dir results/apa/DMSO \
+  --summary-out results/apa/DMSO/summary.tsv \
+  --bootstrap 1000
+```
+
+The summary reports central enrichment, P2LL, P2M, promoter- and
+enhancer-stripe enrichment, ring enrichment, and dot-to-stripe ratios, each
+with its own numerator, denominator, and pixel counts. Masks are defined in
+base pairs of offset, so the same `--masks` file means the same thing at any
+resolution.
+
+`--bootstrap` resamples whole **chromosomes**, not pixels — pixels within one
+pileup are not independent observations — so it keeps one pileup per
+chromosome in memory for the run. To score a matrix that was already written,
+use:
+
+```bash
+uv run touche apa summarize --matrix results/apa/DMSO/AggMat.csv --out summary.tsv
+```
+
+That path has no per-chromosome pileups, so it reports scores without
+confidence intervals.
+
+`apa aggregate` also accepts `--pairs-list pairs.bedpe` in place of
+`--baits`/`--preys`; see [Pairs](#pairs).
 
 ## Output and manifests
 
