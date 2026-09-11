@@ -109,6 +109,19 @@ METHOD_REGISTRY: dict[str, dict[str, str]] = {
         "unit_of_analysis": "bait-prey pair within one library pair",
         "reference": "Per-pair contingency comparison; not a biological-replicate test",
     },
+    "ranking_evaluation": {
+        "inference_class": "descriptive",
+        "hypothesis": (
+            "How well each score ranks validated functional enhancer-promoter pairs above "
+            "non-functional ones, measured by average precision and ROC AUC."
+        ),
+        "null": (
+            "A score with no information ranks at the positive-class prevalence (AUPRC) and "
+            "at 0.5 (ROC AUC). Compare against those, and against a distance-only baseline."
+        ),
+        "unit_of_analysis": "labelled bait-prey pair",
+        "reference": "Enhancer-prediction evaluation practice; AUPRC primary for imbalanced labels",
+    },
     "apa_mask": {
         "inference_class": "descriptive",
         "hypothesis": "None; a summary of aggregated pileup signal over named submatrix masks.",

@@ -225,7 +225,11 @@ low-coverage pairs, which are exactly the pairs you care about.
 `touche`'s own test suite simulates from the declared binomial null and
 asserts that type-I error is controlled at 0.01 and 0.05 within Monte Carlo
 error, and that BH controls the false discovery proportion over a wholly
-null family.
+null family. That checks the *test*; it does not check the expected-count
+model the test consumes. For that, and for whether any of this improves
+functional prediction, run `scripts/gasperini_benchmark.py` -- see
+[its guide](../scripts/gasperini_benchmark.md) and the warning under
+[Known issues](#known-issues).
 
 ### Running it
 
@@ -539,6 +543,44 @@ workflow's published `--min-ep-cpb 8` threshold reproduces its plots, so it
 remains the default as `--scale legacy`. `--scale per_billion` uses
 `depth / 1e9`, the conventionally named unit, for new analyses. Both are
 recorded in the command's JSON summary.
+
+## Known issues
+
+### The fitted decay density loses mass
+
+`touche.local_decay.fit_distance_decay_model` returns a background density
+that integrates to roughly **0.54** rather than 1, while the raw distance
+histogram it smooths integrates to ~1. Both LOWESS backends agree, so this
+is the chunked smooth-and-merge itself, not a backend approximation.
+
+The consequence is that `p_null` -- and therefore `expected` -- is roughly
+a factor of two too small. On distance-preserving null pairs the benchmark
+measures `observed / expected` at about **1.8**, roughly uniformly across
+distance strata.
+
+This predates the calibrated tests: `legacy_fisher` consumed the same
+`expected`. It mattered less there only because that test placed `expected`
+in a contingency table against a background of hundreds of thousands of
+histogram bins, where a factor of two barely moved a p-value that was
+pinned near 0.5 regardless. `binomial` and `poisson` use `expected`
+directly, so they inherit the bias and reject roughly twice as often as
+their nominal level.
+
+**Consequence for use:** treat `q_value` from `binomial`/`poisson` as a
+ranking, not as a calibrated FDR, until this is resolved. The *ranking* is
+unaffected -- a near-uniform multiplicative bias in `p_null` is monotone,
+so it does not reorder pairs -- which is why the benchmark's AUPRC
+comparison is still meaningful.
+
+It is not yet known whether the reference R implementation has the same
+behaviour (in which case `touche` is faithfully reproducing it) or whether
+this is a porting defect in the chunked merge. Resolving that needs the
+reference sources, and fixing it would change `expected` in the reference
+nine-column output, so it is deliberately not changed here.
+
+Reproduce with `scripts/gasperini_benchmark.py --demo`, which reports
+`observed_over_expected` in `expected_bias.tsv` and flags anticonservative
+methods in its summary verdict.
 
 ## Not yet implemented
 

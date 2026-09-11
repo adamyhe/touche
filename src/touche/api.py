@@ -16,7 +16,9 @@ Roughly grouped:
   `correlate`, `match_pairs`, `balance_table`, and the `touche.stats`
   primitives underneath them;
 - interoperability -- `read_loop_calls`, `write_loop_calls`,
-  `annotate_pairs`.
+  `annotate_pairs`;
+- evaluation -- `evaluate_scores`, `average_precision`, `roc_auc`, for
+  scoring contact predictions against functional labels.
 
 Every statistical function returns a `StatResult`: a polars table plus the
 `MethodInfo` describing what was tested, over what universe, under what
@@ -58,6 +60,7 @@ from touche.background import (
 from touche.compare import balance_table, compare_groups, compare_paired, correlate, match_pairs
 from touche.contacts import build_contact_indexes, build_npz_cache, load_npz_cache, write_npz_cache
 from touche.differential import test_background_change, zero_class_counts
+from touche.evaluate import average_precision, evaluate_scores, precision_recall_curve, roc_auc
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.local_decay import (
     assign_pair_types,
@@ -111,6 +114,7 @@ __all__ = [
     "assess_calibration",
     "assign_pair_types",
     "attach_pair_ids",
+    "average_precision",
     "balance_table",
     "binom_sf_greater",
     "bootstrap_ci",
@@ -132,6 +136,7 @@ __all__ = [
     "count_ep_and_background",
     "default_masks",
     "describe_method",
+    "evaluate_scores",
     "fisher_greater_batch",
     "load_npz_cache",
     "log2_fold_change",
@@ -147,6 +152,7 @@ __all__ = [
     "plot_pair_type_distribution",
     "plot_raw_apa_heatmap",
     "poisson_sf_greater",
+    "precision_recall_curve",
     "rank_biserial",
     "read_apa_matrix",
     "read_background_counts",
@@ -156,6 +162,7 @@ __all__ = [
     "read_local_decay_calls",
     "read_loop_calls",
     "read_masks",
+    "roc_auc",
     "split_pair_anchors",
     "summarize_apa",
     "test_background_change",

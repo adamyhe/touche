@@ -37,5 +37,8 @@ CPUs and x86-64 Python on Apple Silicon under Rosetta.
   reference bash/R/Python scripts, and why.
 - [Notebook API](api.md): provisional in-memory APIs for notebooks,
   reusable contact indexes, and figure-returning plot helpers.
+- [Gasperini benchmark](../scripts/gasperini_benchmark.md): null calibration
+  and functional-prediction comparison of the contact-significance methods
+  against the Gasperini K562 validated enhancer-promoter set.
 - [Testing and publishing](testing-and-publishing.md): CI, local checks, PyPI
   trusted publishing, and release checklist for the `ep-touche` distribution.
