@@ -231,7 +231,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--decay-model",
         choices=["legacy", "normalized"],
-        default="legacy",
+        default="normalized",
         help="Background-density scaling passed to local-decay; see touche's --decay-model.",
     )
     parser.add_argument("--dist", type=int, default=1_000_000)

@@ -142,6 +142,7 @@ class LocalDecayStatisticsCommandTests(unittest.TestCase):
             sidecar = json.loads((tmp_path / "ld.tsv.meta.json").read_text(encoding="utf-8"))
 
         self.assertEqual(summary["method"], "binomial")
+        self.assertEqual(summary["decay_model"], "normalized")
         self.assertEqual(summary["schema"], "legacy")
         self.assertEqual(table.width, 9, "the default must not change the output layout")
         self.assertEqual(sidecar["method"], "binomial")
@@ -151,7 +152,7 @@ class LocalDecayStatisticsCommandTests(unittest.TestCase):
             tmp_path = Path(tmp)
             _fixture(tmp_path)
 
-            summary = self._call(tmp_path, "--method", "legacy_fisher")
+            summary = self._call(tmp_path, "--method", "legacy_fisher", "--decay-model", "legacy")
             table = pl.read_csv(tmp_path / "ld.tsv", separator="\t", has_header=False)
             has_sidecar = (tmp_path / "ld.tsv.meta.json").exists()
 

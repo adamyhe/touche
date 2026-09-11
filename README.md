@@ -102,9 +102,11 @@ Available command groups:
 
 See the [CLI reference](docs/cli.md) for examples, common options, and expected
 outputs. `local-decay call` now defaults to the calibrated binomial test
-rather than the reference workflow's Fisher score; the output layout is
-unchanged, and `--method legacy_fisher` reproduces the reference numbers
-exactly. Everything else is opt-in. The
+over a corrected distance-decay background, rather than the reference
+workflow's Fisher score over its own background model (which integrates to
+about half of one on sparse data). The output layout is unchanged, and
+`--method legacy_fisher --decay-model legacy` reproduces the reference
+numbers exactly. Everything else is opt-in. The
 [statistics guide](docs/statistics.md) documents what each method tests and
 what its result supports.
 

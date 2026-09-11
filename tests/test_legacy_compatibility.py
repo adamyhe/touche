@@ -1,10 +1,13 @@
 """The reference workflow must stay exactly reproducible, and stay labelled.
 
-`--method legacy_fisher` reproduces the reference numbers byte for byte and
-leaves the output directory untouched. The default is now the calibrated
-binomial test, which writes the same nine-column layout with a different
-p-value column -- so these tests also pin the sidecar that makes that
-change attributable, since a headerless file cannot record it itself.
+`--method legacy_fisher --decay-model legacy` reproduces the reference
+numbers byte for byte and leaves the output directory untouched. Both flags
+are required: the first sets the p-value column, the second the
+expected-count columns. The defaults are now the calibrated binomial test
+over the corrected background density, which write the same nine-column
+layout with different numbers in it -- so these tests also pin the sidecar
+that makes that difference attributable, since a headerless file cannot
+record it itself.
 """
 
 from __future__ import annotations
@@ -89,7 +92,7 @@ class LegacyLocalDecayTests(unittest.TestCase):
             calls = call_local_decay(
                 tmp_path / "baits.tsv", tmp_path / "preys.tsv", tmp_path / "contacts.pairs",
                 tmp_path / "calls.tsv", cache_dir=tmp_path / "cache",
-                method="legacy_fisher", **CALL_KWARGS,
+                method="legacy_fisher", decay_model="legacy", **CALL_KWARGS,
             )
             written = pl.read_csv(tmp_path / "calls.tsv", separator="\t", has_header=False)
             has_sidecar = (tmp_path / "calls.tsv.meta.json").exists()
@@ -115,6 +118,7 @@ class LegacyLocalDecayTests(unittest.TestCase):
         self.assertEqual(calls.columns, LOCAL_DECAY_OUTPUT_COLUMNS)
         self.assertEqual(written.width, 9, "the default must not change the reference layout")
         self.assertEqual(sidecar["method"], "binomial")
+        self.assertEqual(sidecar["parameters"]["decay_model"], "normalized")
         self.assertEqual(sidecar["inference_class"], "technical")
         self.assertIsNone(sidecar["fdr_method"], "the legacy layout has no q_value column")
         self.assertEqual(sidecar["rows"], calls.height)

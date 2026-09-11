@@ -442,11 +442,16 @@ def build_steps(
                     "1000000",
                     "--cap",
                     "2000",
-                    # touche's own default is the calibrated binomial test.
-                    # This script exists to reproduce the reference workflow,
-                    # so it pins the reference's null explicitly.
+                    # touche defaults to the calibrated binomial test over
+                    # the corrected background density. This script exists to
+                    # reproduce the reference workflow, so it pins both of
+                    # the reference's choices explicitly -- the method sets
+                    # the p-value column and the decay model sets the
+                    # expected-count columns.
                     "--method",
                     "legacy_fisher",
+                    "--decay-model",
+                    "legacy",
                     "--index-strategy",
                     "cache",
                     "--cache-dir",

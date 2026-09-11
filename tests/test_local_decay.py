@@ -302,9 +302,12 @@ class LocalDecayTests(unittest.TestCase):
                 cap=100,
                 min_distance=1_000,
                 lowess_window=500,
-                # These p-values are the reference workflow's Fisher values;
-                # touche's own default is the calibrated binomial test.
+                # These are the reference workflow's numbers throughout;
+                # touche defaults to the calibrated binomial test over the
+                # corrected background density, which changes both the
+                # p-value and the expected-count columns.
                 method="legacy_fisher",
+                decay_model="legacy",
             )
 
             expected = pl.DataFrame(
@@ -367,6 +370,7 @@ class LocalDecayTests(unittest.TestCase):
                 # this the two calls would run the binomial test and agree
                 # trivially.
                 "method": "legacy_fisher",
+                "decay_model": "legacy",
             }
 
             scipy_calls = compute_local_decay(

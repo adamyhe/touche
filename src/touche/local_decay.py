@@ -164,7 +164,7 @@ def call_local_decay(
     cache_prefix: str = "contacts",
     require_cache: bool = False,
     method: str = "binomial",
-    decay_model: str = "legacy",
+    decay_model: str = "normalized",
     schema: str = "legacy",
     fdr: str = "bh",
     fdr_scope: str | list[str] | None = None,
@@ -178,18 +178,22 @@ def call_local_decay(
 
     `method` defaults to `"binomial"`: the calibrated upper-tail test against
     the bait's own fitted distance decay, using the trial total and null
-    probability the model already computes. `method="legacy_fisher"`
-    reproduces the reference workflow's numbers exactly and is what the
-    reference-replication scripts pass; it is a reproducibility mode, not a
-    calibrated test.
+    probability the model already computes. `decay_model` defaults to
+    `"normalized"`, the corrected background density; the reference's own
+    model integrates to roughly half of one on sparse data, which biases
+    every expected count (see `docs/statistics.md`).
+
+    Reproducing the reference workflow's numbers therefore takes **both**
+    `method="legacy_fisher"` and `decay_model="legacy"`, which is what the
+    reference-replication scripts pass. That combination is a
+    reproducibility mode, not a calibrated analysis.
 
     `schema` still defaults to `"legacy"`, so the written file keeps the
-    reference nine-column, headerless layout -- only the p-value column's
-    meaning changes with `method`. Because that layout has no header and no
-    room for a `q_value`, a non-`legacy_fisher` run also writes a
-    `.meta.json` sidecar recording which null produced column five; a
-    `legacy_fisher` run writes none, leaving the reference output directory
-    byte-identical.
+    reference nine-column, headerless layout. Because that layout has no
+    header and no room for a `q_value`, any run that does not reproduce the
+    reference exactly also writes a `.meta.json` sidecar recording the null
+    and background model behind its numbers; a fully reference-reproducing
+    run writes none, leaving that output directory byte-identical.
 
     `schema="tidy"` writes a headed table on the canonical pair schema
     (`TIDY_LOCAL_DECAY_COLUMNS`) with `q_value` and the sidecar.
@@ -295,11 +299,12 @@ def call_local_decay(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if schema == "legacy":
             calls.write_csv(out_path, include_header=False, separator="\t")
-            if method != "legacy_fisher":
+            if not _reproduces_reference(method, decay_model):
                 # The reference layout is headerless and has no q_value
                 # column, so this sidecar is the only record of which null
-                # produced column five. A legacy_fisher run writes none, so
-                # reproducing the reference leaves the directory unchanged.
+                # and which background model produced its numbers. A fully
+                # reference-reproducing run writes none, leaving that
+                # output directory byte-identical to the reference's.
                 from touche.significance import contact_method_info
 
                 contact_method_info(
@@ -482,7 +487,7 @@ def compute_local_decay(
     lowess_iterations: int = 3,
     n_jobs: int = 1,
     method: str = "binomial",
-    decay_model: str = "legacy",
+    decay_model: str = "normalized",
     schema: str = "legacy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
@@ -667,6 +672,16 @@ def to_tidy_calls(calls: pl.DataFrame, *, method: str, id_style: str = "coord") 
         )
     )
     return tidy.select(TIDY_LOCAL_DECAY_COLUMNS)
+
+
+def _reproduces_reference(method: str, decay_model: str) -> bool:
+    """Whether this configuration reproduces the reference workflow's numbers exactly.
+
+    Both choices matter: `method` sets the p-value column and `decay_model`
+    sets the expected-count columns, so reproducing the reference output
+    requires the legacy setting of each.
+    """
+    return method == "legacy_fisher" and decay_model == "legacy"
 
 
 def _empty_schema(schema: str) -> dict[str, pl.DataType]:
@@ -883,7 +898,7 @@ def _call_bait_contacts(
     lowess_iterations: int,
     max_span: int,
     method: str = "binomial",
-    decay_model: str = "legacy",
+    decay_model: str = "normalized",
 ) -> list[dict[str, float | int | str]]:
     """Call one bait's contacts against `prey_centers`: fit local decay, then test each prey.
 

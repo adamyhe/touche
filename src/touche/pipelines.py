@@ -47,7 +47,7 @@ def run_local_decay_pipeline(
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     method: str = "binomial",
-    decay_model: str = "legacy",
+    decay_model: str = "normalized",
     n_jobs: int = 1,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,
@@ -58,10 +58,12 @@ def run_local_decay_pipeline(
 ) -> dict[str, Any]:
     """Run local-decay call, pair assignment, and violin plotting.
 
-    Writes the reference nine-column contact table throughout, so `method`
-    only changes its p-value column. Pair assignment and the violin plot read
-    observed and expected counts, not p-values, so they are unaffected by it.
-    Pass `method="legacy_fisher"` to reproduce the reference workflow.
+    Writes the reference nine-column contact table throughout. `method`
+    changes its p-value column and `decay_model` its expected-count columns,
+    so reproducing the reference workflow takes `method="legacy_fisher"`
+    *and* `decay_model="legacy"`. Pair assignment reads observed and expected
+    counts rather than p-values, and the violin plot reads their ratio, so
+    the plotted figure is unaffected by `method`.
     """
 
     started = perf_counter()

@@ -158,9 +158,9 @@ The test is then
 - Assumptions: contacts anchored at the bait are independent draws;
   `p0_i` is correctly specified.
 - Expected/offset source: the per-bait LOWESS fit, described above.
-- Failure modes: **with the default `decay_model="legacy"` this test is
-  anticonservative**, because `p_null` is systematically too small -- see
-  [The distance-decay background model](#the-distance-decay-background-model);
+- Failure modes: **with `--decay-model legacy` this test is
+  anticonservative**, because `p_null` is then systematically too small --
+  see [The distance-decay background model](#the-distance-decay-background-model);
   `n_trials = 0` makes a pair untestable (reported as NaN in
   the output, excluded from the FDR family, never reported as
   non-significant); small `n_trials` makes the discrete p-value coarse, so
@@ -519,11 +519,14 @@ downstream tools.
 
 ## Compatibility
 
-One default numerical behaviour changed: the per-pair null. The output
-*layout* did not, so a reader of the nine-column table still finds nine
-columns in the same order — column five now holds a binomial p-value rather
-than a Fisher score. `--method legacy_fisher` restores the reference numbers
-exactly, and is what the reference-replication script and guide pass.
+Two default numerical behaviours changed: the per-pair null, and the
+background density the expected counts are built from. The output *layout*
+did not, so a reader of the nine-column table still finds nine columns in
+the same order — column five now holds a binomial p-value rather than a
+Fisher score, and columns seven and nine hold corrected expected counts.
+`--method legacy_fisher --decay-model legacy` restores the reference
+numbers exactly, and is what the reference-replication script and guide
+pass.
 
 Untestable pairs (`n_trials = 0`) write `NaN` in that column rather than a
 misleading 1.0. Standard parsers read it as a floating-point NaN.
@@ -534,7 +537,7 @@ Everything else is unchanged:
 | --- | --- | --- |
 | `local-decay call` p-values | **calibrated `binomial`** (changed) | `--method legacy_fisher` |
 | `local-decay call` layout | reference nine-column headerless TSV | `--schema tidy` |
-| `local-decay call` expected counts | `legacy` (reference-identical, but biased) | `--decay-model normalized` |
+| `local-decay call` expected counts | **corrected `normalized`** (changed) | `--decay-model legacy` |
 | `background compare` filter | drops pairs without positive EP signal in every sample | `--zero-policy keep` |
 | `EP_CPB_*` divisor | `depth / 1e10` | `--scale per_billion` |
 | APA pileup universe | distance-filtered bait x prey product | `--pairs-list` |
@@ -621,19 +624,25 @@ whether a `q_value` means what it says.
 
 ### Which to use
 
-| | `legacy` (default) | `normalized` |
+| | `legacy` | `normalized` (default) |
 | --- | --- | --- |
 | Reproduces reference `expected` | yes, bit-identical | no |
 | `p_null` integrates to 1 | no (~0.54 when sparse) | yes |
 | `binomial` q-values FDR-controlled | **no** | yes |
 | Pair ranking | same | same |
 
-`legacy` remains the default so `expected` and `expected_background` in the
-reference nine-column output do not move. That means the shipped default
-pairs a calibrated *test* with a biased *expectation*: `touche` detects
-that combination and attaches a warning to the result metadata saying the
-q-values are a ranking, not an FDR-controlled discovery set. Use
-`--decay-model normalized` for any analysis that quotes a q-value.
+`normalized` is the default, because pairing a calibrated *test* with a
+biased *expectation* would ship a known-miscalibrated result. Selecting
+`--decay-model legacy` with a calibrated method is still allowed and still
+useful for comparison, and `touche` attaches a warning to that
+combination's metadata saying its q-values are a ranking rather than an
+FDR-controlled discovery set.
+
+Reproducing the reference output now takes **both**
+`--method legacy_fisher` and `--decay-model legacy`: the first sets the
+p-value column, the second the expected-count columns. A run with both
+writes no metadata sidecar, so a reference-reproduction directory stays
+byte-identical.
 
 Reproduce all of the above with `scripts/gasperini_benchmark.py --demo`,
 which reports `observed_over_expected` in `expected_bias.tsv` and flags
@@ -656,6 +665,8 @@ not mistaken for something it is not:
 - **Cross-validated null fitting.** `p_null` is fitted from the same bait
   window the pair is tested in; the reuse is recorded but not removed.
 - **A validated replacement for the LOWESS decay fit.**
-  `decay_model="normalized"` corrects the scale but keeps the reference's
-  chunked-LOWESS shape. A spline or isotonic fit to the binned histogram
-  would likely be both better behaved and faster, and has not been tried.
+  the default `decay_model="normalized"` corrects the scale but keeps the
+  reference's chunked-LOWESS shape. Residual `observed / expected` still
+  ranges about 0.69-1.00 across distance strata on the demo data. A spline
+  or isotonic fit to the binned histogram would likely be both better
+  behaved and faster, and has not been tried.

@@ -428,26 +428,54 @@ value only after checking `--profile` timings and CPU utilization.
 
 ### Calibrated significance and q-values
 
-`local-decay call` defaults to `--method legacy_fisher --schema legacy`,
-which writes the reference nine-column headerless TSV with the reference
-workflow's numbers. Opt in to the calibrated path with:
+`local-decay call` defaults to `--method binomial --decay-model normalized
+--schema legacy`: the calibrated test over a corrected distance-decay
+background, written into the reference nine-column headerless layout. The
+layout is unchanged from the reference workflow; the p-value and
+expected-count columns are not. Because a headerless file cannot record
+that, such a run also writes a `.meta.json` sidecar.
+
+Add `--schema tidy` to get q-values, which the nine-column layout has no
+room for:
 
 ```bash
 uv run touche local-decay call \
-  --baits baits.tsv --preys preys.tsv --pairs sample.pairs.gz \
+  --baits baits.tsv --preys enhancers.tsv --pairs sample.pairs.gz \
   --out results/calls.tsv \
-  --method binomial \
   --schema tidy \
   --fdr bh
 ```
 
-`--schema tidy` writes a headed table on the canonical pair schema with
-`pair_id`, `n_trials`, `p_null`, `log2_oe`, and `q_value`, plus a
-`.meta.json` sidecar. `--method binomial` tests the observed count against
-the model's own trial total and null probability instead of the legacy
-Fisher table, which is retained for reproducibility but is not a calibrated
-test. `--fdr-scope COLUMN` (repeatable) declares a stratified FDR family
-instead of one global family.
+That writes a headed table on the canonical pair schema with `pair_id`,
+`n_trials`, `p_null`, `log2_oe`, and `q_value`, plus the sidecar.
+`--fdr-scope COLUMN` (repeatable) declares a stratified FDR family instead
+of one global family.
+
+**To reproduce the reference workflow's numbers exactly, pass
+`--method legacy_fisher --decay-model legacy`.** Both are needed: the
+method sets the p-value column and the decay model sets the expected-count
+columns. That combination is a reproducibility mode, not a calibrated
+analysis, and it writes no sidecar so a reference-reproduction directory
+stays byte-identical.
+
+### Choosing a background model
+
+`--decay-model` selects how the per-bait distance-decay background becomes
+a density.
+
+`normalized` (the default) rescales the fit to integrate to 1 and drops the
+robust reweighting that biases a sparse count histogram downward.
+
+`legacy` reproduces the reference background model exactly, including a
+scale error that makes expected counts roughly half what they should be on
+sparse data — by an amount that varies with per-bait coverage. Combining it
+with a calibrated method produces p-values that reject several times more
+often than their nominal level, and `touche` says so in the result
+metadata.
+
+Pair *rankings* are unchanged either way; what changes is whether a
+`q_value` means what it says. See the
+[statistics guide](statistics.md#the-distance-decay-background-model).
 
 Retest an existing tidy table without recounting contacts, and check whether
 its p-values are actually uniform under the null:
