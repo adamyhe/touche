@@ -31,6 +31,14 @@ if TYPE_CHECKING:
 
 BACKGROUND_COLUMNS = ["chr", "promoter", "enhancer", "EP_contacts", "BG_contacts"]
 PAIR_COLUMNS = ["chr", "promoter", "enhancer"]
+# Historical divisor for the column named `EP_CPB_*`. Despite the name,
+# `legacy` divides by depth / 1e10, so the unit is contacts per *ten* billion,
+# not per billion. Verified against the reference workflow's published
+# `--min-ep-cpb 8` threshold, which only reproduces the reference plots at
+# this divisor. It stays the default so historical numbers do not move;
+# `per_billion` is the conventionally-named unit for new analyses.
+CPB_SCALES = {"legacy": 10_000_000_000, "per_billion": 1_000_000_000}
+
 _BACKGROUND_SCHEMA = {
     "chr": pl.Utf8,
     "promoter": pl.Int64,
@@ -266,22 +274,43 @@ def compare_background_ratios(
     depths: dict[str, int],
     *,
     min_ep_cpb: float = 8.0,
+    scale: str = "legacy",
+    zero_policy: str = "drop",
     out_dir: str | Path | None = None,
     table_out: str | Path | None = None,
     reference_style: bool = True,
 ) -> tuple[pl.DataFrame, dict[str, Path]]:
-    """Compare EP/background ratios across control and treatment samples."""
+    """Compare EP/background ratios across control and treatment samples.
+
+    This is the plotting path, and its defaults reproduce the reference
+    workflow exactly: `scale="legacy"` keeps the historical `EP_CPB_*`
+    divisor (see `CPB_SCALES`), and `zero_policy="drop"` keeps the
+    reference's requirement that every sample have positive scaled EP signal
+    before a pair is plotted.
+
+    That filter is a *visualization* filter, not an analysis population.
+    Dropping a pair because one library has zero enhancer-promoter contacts
+    removes complete gains and losses, which are usually the largest real
+    effects. `zero_policy="keep"` retains them (their log-log scatter point
+    is simply not drawable, and `plot_background_scatter` skips it), and
+    `touche.differential.test_background_change` is the inferential path
+    that keeps the full pair universe by default.
+    """
 
     if not treatments:
         raise ValueError("At least one treatment sample is required")
+    if scale not in CPB_SCALES:
+        raise ValueError(f"scale must be one of: {', '.join(sorted(CPB_SCALES))}")
+    if zero_policy not in {"drop", "keep"}:
+        raise ValueError("zero_policy must be one of: drop, keep")
     sample_order = [control.name] + [sample.name for sample in treatments]
     missing_depths = [sample for sample in sample_order if sample not in depths]
     if missing_depths:
         raise ValueError(f"Missing sequencing depths for samples: {', '.join(missing_depths)}")
 
-    merged = _merge_samples([control, *treatments])
+    merged = merge_background_counts([control, *treatments])
     for sample in sample_order:
-        depth_scale = depths[sample] / 10_000_000_000
+        depth_scale = depths[sample] / CPB_SCALES[scale]
         merged = merged.with_columns(
             (pl.col(f"EP_contacts_{sample}") / depth_scale).alias(f"EP_CPB_{sample}")
         )
@@ -289,16 +318,19 @@ def compare_background_ratios(
     passes_threshold = pl.any_horizontal(
         [pl.col(f"EP_CPB_{sample}") > min_ep_cpb for sample in sample_order]
     )
-    positive_all = pl.all_horizontal([pl.col(f"EP_CPB_{sample}") > 0 for sample in sample_order])
-    merged = merged.filter(passes_threshold & positive_all)
-
-    numeric_columns = [c for c, dtype in zip(merged.columns, merged.dtypes) if dtype.is_numeric()]
-    merged = merged.with_columns(
-        [
-            pl.when(pl.col(c).is_infinite()).then(None).otherwise(pl.col(c)).alias(c)
-            for c in numeric_columns
-        ]
-    ).drop_nulls()
+    merged = merged.filter(passes_threshold)
+    if zero_policy == "drop":
+        positive_all = pl.all_horizontal(
+            [pl.col(f"EP_CPB_{sample}") > 0 for sample in sample_order]
+        )
+        merged = merged.filter(positive_all)
+        numeric_columns = [c for c, dtype in zip(merged.columns, merged.dtypes) if dtype.is_numeric()]
+        merged = merged.with_columns(
+            [
+                pl.when(pl.col(c).is_infinite()).then(None).otherwise(pl.col(c)).alias(c)
+                for c in numeric_columns
+            ]
+        ).drop_nulls()
 
     if table_out is not None:
         Path(table_out).parent.mkdir(parents=True, exist_ok=True)
@@ -342,7 +374,13 @@ def plot_background_scatter(
 
     x_col = f"ratio_{x_sample}"
     y_col = f"ratio_{y_sample}"
-    plot_data = data.filter((pl.col(x_col) > 0) & (pl.col(y_col) > 0))
+    # Log-log axes can only show finite positive ratios. Under
+    # `zero_policy="keep"` the input legitimately contains zeros (complete
+    # loss) and infinities (zero background), so filter for plottability here
+    # rather than making the analysis table drop them.
+    plot_data = data.filter(
+        (pl.col(x_col) > 0) & (pl.col(y_col) > 0) & pl.col(x_col).is_finite() & pl.col(y_col).is_finite()
+    )
     x_values = plot_data[x_col].to_numpy()
     y_values = plot_data[y_col].to_numpy()
     values = np.vstack([x_values, y_values])
@@ -389,8 +427,13 @@ def parse_named_depth(value: str) -> NamedDepth:
     return NamedDepth(name=name, depth=int(raw_depth))
 
 
-def _read_background(path: str | Path, sample: str) -> pl.DataFrame:
-    """Read one sample's `count_ep_and_background` TSV output and suffix its columns by `sample`."""
+def read_background_counts(path: str | Path, sample: str) -> pl.DataFrame:
+    """Read one sample's `count_ep_and_background` TSV output and suffix its columns by `sample`.
+
+    `ratio_{sample}` is the raw EP/BG ratio, including the infinities a zero
+    background produces -- those are real complete-gain observations and are
+    left for the caller to handle deliberately rather than filtered here.
+    """
     data = pl.read_csv(path, separator="\t", has_header=False, new_columns=BACKGROUND_COLUMNS)
     data = data.with_columns(
         (pl.col("EP_contacts") / pl.col("BG_contacts")).alias(f"ratio_{sample}")
@@ -403,11 +446,20 @@ def _read_background(path: str | Path, sample: str) -> pl.DataFrame:
     )
 
 
-def _merge_samples(samples: list[NamedPath]) -> pl.DataFrame:
-    """Inner-join every sample's background counts on shared bait/prey pairs."""
-    merged = _read_background(samples[0].path, samples[0].name)
+def merge_background_counts(samples: list[NamedPath], *, how: str = "inner") -> pl.DataFrame:
+    """Join every sample's background counts on shared bait/prey pairs.
+
+    `how="inner"` restricts to the pair universe every sample measured, which
+    is the only universe a cross-sample comparison is defined on. A pair
+    missing from one sample's file was not in that sample's candidate set --
+    which is not the same as having zero contacts there, so it is dropped
+    rather than filled with a zero that would read as a complete loss.
+    """
+    merged = read_background_counts(samples[0].path, samples[0].name)
     for sample in samples[1:]:
-        merged = merged.join(_read_background(sample.path, sample.name), how="inner", on=PAIR_COLUMNS)
+        merged = merged.join(
+            read_background_counts(sample.path, sample.name), how=how, on=PAIR_COLUMNS
+        )
     return merged
 
 

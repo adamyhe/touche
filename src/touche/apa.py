@@ -36,6 +36,12 @@ class ApaResult:
     prey_signal: pl.DataFrame
     window: int
     pixels: int
+    # Per-chromosome pileups, kept only when `compute_apa(keep_chromosomes=True)`
+    # asked for them. They exist so `touche.apa_masks.summarize_apa` can build
+    # confidence intervals by resampling whole chromosomes -- the smallest unit
+    # of an APA pileup that is plausibly independent. Row order matches
+    # `matrix`, so a resampled sum can be scored with the same masks.
+    chrom_matrices: dict[str, "np.ndarray"] | None = None
 
     def plot(self, *, reference_style: bool = True) -> "Figure":
         """Render the pixel-binned matrix as a heatmap; see `plot_raw_apa_heatmap`."""
@@ -123,10 +129,18 @@ def compute_apa(
     window: int,
     pixels: int,
     shift: int = 75,
+    keep_chromosomes: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> ApaResult:
-    """Compute APA matrix and 1D anchor signal from in-memory indexes and anchors."""
+    """Compute APA matrix and 1D anchor signal from in-memory indexes and anchors.
+
+    `keep_chromosomes=True` additionally retains each chromosome's own
+    pileup on the result, which is what
+    `touche.apa_masks.summarize_apa(..., bootstrap=N)` resamples to build
+    confidence intervals. It costs one extra matrix per chromosome
+    (a few megabytes at typical window/pixel settings), not one per pair.
+    """
 
     if window % pixels != 0:
         raise ValueError("window must be divisible by pixels")
@@ -138,6 +152,7 @@ def compute_apa(
     bait_signal_arr = np.zeros(n, dtype=np.int64)
     prey_signal_arr = np.zeros(n, dtype=np.int64)
 
+    chrom_matrices: dict[str, np.ndarray] = {}
     chrom_list = baits["chr"].unique(maintain_order=True).to_list()
     chrom_iter = instrument.iter(
         chrom_list,
@@ -157,8 +172,12 @@ def compute_apa(
         pos_a, pos_b = _shifted_positions(index, shift=shift)
         long_range = np.abs(pos_b - pos_a) > (min_distance - window)
 
+        # When per-chromosome pileups are wanted, accumulate into a scratch
+        # matrix and fold it into the total afterwards, so the genome-wide
+        # matrix stays bit-identical to the single-accumulator path.
+        target = np.zeros((n, n), dtype=np.int64) if keep_chromosomes else matrix_arr
         _add_chrom_apa_numba(
-            matrix_arr,
+            target,
             bait_signal_arr,
             prey_signal_arr,
             pos_a,
@@ -171,6 +190,9 @@ def compute_apa(
             window=window,
             pixels=pixels,
         )
+        if keep_chromosomes:
+            matrix_arr += target
+            chrom_matrices[str(chrom)] = target[::-1]
 
     matrix_df = _matrix_to_frame(list(reversed(labels)), labels, matrix_arr[::-1])
     bait_signal_df = pl.DataFrame({"bin_label": labels, "contacts": bait_signal_arr})
@@ -181,6 +203,7 @@ def compute_apa(
         prey_signal=prey_signal_df,
         window=window,
         pixels=pixels,
+        chrom_matrices=chrom_matrices if keep_chromosomes else None,
     )
 
 
