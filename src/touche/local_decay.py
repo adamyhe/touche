@@ -222,6 +222,7 @@ def call_local_decay(
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
             method=method,
+            schema=schema,
             progress=instrument,
         )
     elif index_strategy == "chromosome":
@@ -240,6 +241,7 @@ def call_local_decay(
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
             method=method,
+            schema=schema,
             progress=instrument,
         )
     else:
@@ -264,14 +266,13 @@ def call_local_decay(
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
             method=method,
-            schema="tidy",
+            schema=schema,
             progress=instrument,
         )
     with instrument.step("write calls"):
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if schema == "legacy":
-            calls = tidy_to_legacy(calls)
             calls.write_csv(out_path, include_header=False, separator="\t")
         else:
             from touche.significance import test_contacts
@@ -305,6 +306,7 @@ def _call_local_decay_by_chromosome(
     lowess_iterations: int,
     n_jobs: int,
     method: str,
+    schema: str,
     progress: Instrumentation,
 ) -> pl.DataFrame:
     """`index_strategy="chromosome"`: re-scan the pairs file once per bait chromosome.
@@ -351,12 +353,12 @@ def _call_local_decay_by_chromosome(
                 lowess_iterations=lowess_iterations,
                 n_jobs=n_jobs,
                 method=method,
-                schema="tidy",
+                schema=schema,
                 progress=progress,
             )
         )
     if not frames:
-        return pl.DataFrame(schema=_TIDY_SCHEMA)
+        return pl.DataFrame(schema=_empty_schema(schema))
     return pl.concat(frames)
 
 
@@ -376,6 +378,7 @@ def _call_local_decay_from_cache(
     lowess_iterations: int,
     n_jobs: int,
     method: str,
+    schema: str,
     progress: Instrumentation,
 ) -> pl.DataFrame:
     """`index_strategy="cache"` (the default): load one chromosome-sharded NPZ shard at a time.
@@ -417,12 +420,12 @@ def _call_local_decay_from_cache(
                 lowess_iterations=lowess_iterations,
                 n_jobs=n_jobs,
                 method=method,
-                schema="tidy",
+                schema=schema,
                 progress=progress,
             )
         )
     if not frames:
-        return pl.DataFrame(schema=_TIDY_SCHEMA)
+        return pl.DataFrame(schema=_empty_schema(schema))
     return pl.concat(frames)
 
 
@@ -584,8 +587,12 @@ def compute_local_decay(
             executor.shutdown(wait=True)
 
     calls = pl.DataFrame(records, schema=_LOCAL_DECAY_SCHEMA)
-    tidy = to_tidy_calls(calls, method=method)
-    return tidy if schema == "tidy" else tidy_to_legacy(tidy)
+    # The legacy layout discards every tidy-only column, so don't build them:
+    # the pair_id/bait_id/prey_id string columns alone cost roughly a second
+    # and half a gigabyte per five million rows on a genome-scale run.
+    if schema == "legacy":
+        return calls.select(LOCAL_DECAY_OUTPUT_COLUMNS)
+    return to_tidy_calls(calls, method=method)
 
 
 def to_tidy_calls(calls: pl.DataFrame, *, method: str, id_style: str = "coord") -> pl.DataFrame:
@@ -617,17 +624,11 @@ def to_tidy_calls(calls: pl.DataFrame, *, method: str, id_style: str = "coord") 
     return tidy.select(TIDY_LOCAL_DECAY_COLUMNS)
 
 
-def tidy_to_legacy(tidy: pl.DataFrame) -> pl.DataFrame:
-    """Project a tidy call frame back onto the reference nine-column, headerless layout.
-
-    Column names, order, and values are byte-identical to what the reference
-    `ContactCaller_microC` workflow wrote, so `schema="legacy"` output does
-    not change when a tidy column is added above it.
-    """
-    return tidy.select(
-        pl.col("chrom").alias("chr"),
-        *LOCAL_DECAY_OUTPUT_COLUMNS[1:],
-    )
+def _empty_schema(schema: str) -> dict[str, pl.DataType]:
+    """Column layout for a run that produced no calls, matching what a non-empty one would."""
+    if schema == "tidy":
+        return _TIDY_SCHEMA
+    return {name: _LOCAL_DECAY_SCHEMA[name] for name in LOCAL_DECAY_OUTPUT_COLUMNS}
 
 
 def _call_bait_contacts_threaded(
