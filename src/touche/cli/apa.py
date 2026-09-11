@@ -1,4 +1,4 @@
-"""`touche apa` subcommands: aggregate, compare, and run APA workflows.
+"""`touche apa` subcommands: aggregate, summarize, compare, and run APA workflows.
 
 `add_apa_parser` is the public entry point called from `cli/main.py`. Every
 `_`-prefixed function below is an argparse `func=` callback, not meant to be
@@ -11,9 +11,16 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from touche.apa import aggregate_apa, compare_apa_change
+from touche.apa import aggregate_apa, compare_apa_change, read_apa_matrix
+from touche.apa_masks import read_masks, summarize_apa
 from touche.background import parse_named_path
-from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
+from touche.cli.utils import (
+    add_instrumentation_args,
+    add_timings,
+    make_cli_instrumentation,
+    print_json,
+    require_anchors_or_pair_list,
+)
 from touche.pipelines import run_apa_pipeline
 
 
@@ -31,8 +38,17 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     apa_aggregate.add_argument("--pairs", required=True, type=Path, help="Input pairs file.")
-    apa_aggregate.add_argument("--baits", required=True, type=Path, help="BED-like bait anchors.")
-    apa_aggregate.add_argument("--preys", required=True, type=Path, help="BED-like prey anchors.")
+    apa_aggregate.add_argument("--baits", type=Path, help="BED-like bait anchors.")
+    apa_aggregate.add_argument("--preys", type=Path, help="BED-like prey anchors.")
+    apa_aggregate.add_argument(
+        "--pairs-list",
+        type=Path,
+        help=(
+            "BEDPE of explicit bait/prey pairs to pile up, replacing --baits/--preys. The "
+            "list is the pair universe exactly as given; the distance window does not "
+            "prune it."
+        ),
+    )
     apa_aggregate.add_argument(
         "--min-distance",
         required=True,
@@ -103,7 +119,31 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
         default=True,
         help="Use reference-style plot formatting.",
     )
+    _add_summary_args(apa_aggregate)
+    apa_aggregate.add_argument(
+        "--bootstrap",
+        default=0,
+        type=int,
+        help=(
+            "Bootstrap resamples for the summary's confidence intervals. Resampling is over "
+            "chromosomes, so this keeps one pileup per chromosome in memory."
+        ),
+    )
+    apa_aggregate.add_argument("--seed", default=0, type=int, help="Random seed for the bootstrap.")
     apa_aggregate.set_defaults(func=_aggregate_apa)
+
+    apa_summarize = apa_sub.add_parser(
+        "summarize",
+        help="Score a written APA matrix over named submatrix masks",
+        description=(
+            "Turn an AggMat.csv into central enrichment, P2LL, P2M, and stripe/ring scores, "
+            "each with its numerator, denominator, and pixel counts. Confidence intervals "
+            "need per-chromosome pileups, so use `apa aggregate --bootstrap` for those."
+        ),
+    )
+    apa_summarize.add_argument("--matrix", required=True, type=Path, help="AggMat.csv from aggregate.")
+    _add_summary_args(apa_summarize, required_out=True)
+    apa_summarize.set_defaults(func=_summarize_apa)
 
     apa_compare = apa_sub.add_parser(
         "compare",
@@ -263,8 +303,28 @@ def add_apa_parser(subparsers: argparse._SubParsersAction) -> None:
     apa_run.set_defaults(func=_run_apa)
 
 
+def _add_summary_args(parser: argparse.ArgumentParser, *, required_out: bool = False) -> None:
+    """Register the shared mask-summary output flags."""
+    parser.add_argument(
+        "--summary-out" if not required_out else "--out",
+        dest="summary_out",
+        required=required_out,
+        type=Path,
+        help="Write the quantitative mask summary TSV (plus a .meta.json sidecar) here.",
+    )
+    parser.add_argument(
+        "--masks",
+        type=Path,
+        help=(
+            "JSON or YAML file of mask definitions in bp offsets. Defaults to the built-in "
+            "dot/stripe/ring/lower-left/background set scaled to --window."
+        ),
+    )
+
+
 def _aggregate_apa(args: argparse.Namespace) -> None:
     instrument = make_cli_instrumentation(args)
+    require_anchors_or_pair_list(args)
     outputs = aggregate_apa(
         args.pairs,
         args.baits,
@@ -274,6 +334,7 @@ def _aggregate_apa(args: argparse.Namespace) -> None:
         max_distance=args.max_distance,
         window=args.window,
         pixels=args.pixels,
+        pairs_list=args.pairs_list,
         source=args.source,
         shift=args.shift,
         reference_style=args.reference_style,
@@ -281,9 +342,22 @@ def _aggregate_apa(args: argparse.Namespace) -> None:
         cache_dir=args.cache_dir,
         cache_prefix=args.cache_prefix,
         require_cache=args.require_cache,
+        summary_out=args.summary_out,
+        masks=args.masks,
+        bootstrap=args.bootstrap,
+        seed=args.seed,
         progress=instrument,
     )
     print_json(add_timings({key: str(value) for key, value in outputs.items()}, instrument))
+
+
+def _summarize_apa(args: argparse.Namespace) -> None:
+    result = summarize_apa(
+        read_apa_matrix(args.matrix), masks=read_masks(args.masks) if args.masks else None
+    )
+    result.write(args.summary_out)
+    scores = {row["metric"]: row["value"] for row in result.table.iter_rows(named=True)}
+    print_json({**result.to_dict(), "scores": scores, "out": str(args.summary_out)})
 
 
 def _compare_apa(args: argparse.Namespace) -> None:

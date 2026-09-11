@@ -76,6 +76,10 @@ def aggregate_apa(
     cache_dir: str | Path | None = None,
     cache_prefix: str = "contacts",
     require_cache: bool = False,
+    summary_out: str | Path | None = None,
+    masks: str | Path | None = None,
+    bootstrap: int = 0,
+    seed: int = 0,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Path]:
@@ -92,6 +96,11 @@ def aggregate_apa(
     given, which is what makes a pileup over a restricted hypothesis (a
     functional enhancer-promoter set, an imported loop call set) mean what
     it says. `baits_path`/`preys_path` are unused when it is supplied.
+
+    `summary_out` additionally writes the quantitative mask summary (see
+    `touche.apa_masks.summarize_apa`) and its metadata sidecar. `bootstrap`
+    adds confidence intervals to that summary, which requires keeping
+    per-chromosome pileups in memory for the duration of the run.
     """
 
     if index_strategy not in {"all", "cache"}:
@@ -124,10 +133,51 @@ def aggregate_apa(
         pixels=pixels,
         pairs=explicit_pairs,
         shift=shift,
+        keep_chromosomes=bootstrap > 0,
         progress=instrument,
     )
     with instrument.step("write apa outputs"):
-        return write_apa_result(result, out_dir, reference_style=reference_style)
+        outputs = write_apa_result(result, out_dir, reference_style=reference_style)
+    if summary_out is not None:
+        with instrument.step("summarize apa"):
+            from touche.apa_masks import read_masks, summarize_apa
+
+            summary = summarize_apa(
+                result,
+                masks=read_masks(masks) if masks is not None else None,
+                bootstrap=bootstrap,
+                seed=seed,
+            )
+            outputs.update(
+                {key: value for key, value in summary.write(summary_out).items()},
+            )
+            outputs["summary"] = outputs.pop("table")
+            outputs["summary_metadata"] = outputs.pop("metadata")
+    return outputs
+
+
+def read_apa_matrix(path: str | Path) -> ApaResult:
+    """Read a written `AggMat.csv` back into an `ApaResult`, inferring window and resolution.
+
+    The matrix's own column labels are signed bp offsets, so `window` is the
+    largest of them and `pixels` is half their count -- no need to re-supply
+    the settings the pileup was built with. The result carries no
+    per-chromosome matrices, so summaries computed from it cannot be
+    bootstrapped; re-run `aggregate_apa` for that.
+    """
+
+    matrix = pl.read_csv(path)
+    labels = [int(name) for name in matrix.columns if name != "bin_label"]
+    if not labels:
+        raise ValueError(f"{path} has no signed-offset matrix columns")
+    signal = pl.DataFrame({"bin_label": labels, "contacts": [0] * len(labels)})
+    return ApaResult(
+        matrix=matrix,
+        bait_signal=signal,
+        prey_signal=signal,
+        window=max(abs(label) for label in labels),
+        pixels=len(labels) // 2,
+    )
 
 
 def compute_apa(

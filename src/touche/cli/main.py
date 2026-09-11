@@ -8,6 +8,7 @@ from touche import __version__
 from touche.cli.apa import add_apa_parser
 from touche.cli.background import add_background_parser
 from touche.cli.local_decay import add_local_decay_parser
+from touche.cli.pairs import add_pairs_parser
 from touche.cli.preprocess import add_preprocess_parser
 from touche.cli.utils import ToucheArgumentParser
 
@@ -25,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_preprocess_parser(subparsers)
+    add_pairs_parser(subparsers)
     add_local_decay_parser(subparsers)
     add_background_parser(subparsers)
     add_apa_parser(subparsers)

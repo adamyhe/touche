@@ -1,4 +1,4 @@
-"""`touche local-decay` subcommands: call, run, assign-pair-types, and plot.
+"""`touche local-decay` subcommands: call, run, test, compare-groups, calibration, assign-pair-types, and plot.
 
 `add_local_decay_parser` is the public entry point called from
 `cli/main.py`. Every `_`-prefixed function below is an argparse `func=`
@@ -11,10 +11,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import polars as pl
+
 from touche.backends import DEFAULT_FISHER_BACKEND, DEFAULT_LOWESS_BACKEND
 from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
-from touche.local_decay import assign_pair_types, call_local_decay, plot_pair_type_distribution
+from touche.compare import compare_groups, correlate
+from touche.local_decay import SIGNIFICANCE_METHODS, assign_pair_types, call_local_decay, plot_pair_type_distribution
 from touche.pipelines import run_local_decay_pipeline
+from touche.significance import assess_calibration, read_local_decay_calls, test_contacts
+from touche.stats import ADJUST_METHODS
 
 
 def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -115,8 +120,103 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         help="Number of baits to process concurrently. Use 1 for sequential processing.",
     )
+    _add_significance_args(call_parser)
+    call_parser.add_argument(
+        "--schema",
+        choices=["legacy", "tidy"],
+        default="legacy",
+        help=(
+            "Output layout. legacy writes the reference nine-column headerless TSV; tidy "
+            "writes the canonical pair schema with pair_id, n_trials, p_null, log2_oe, "
+            "q_value, and a .meta.json sidecar."
+        ),
+    )
     add_instrumentation_args(call_parser)
     call_parser.set_defaults(func=_call_local_decay)
+
+    test_parser = local_decay_sub.add_parser(
+        "test",
+        help="Recompute per-pair significance and attach FDR-adjusted q-values",
+        description=(
+            "Retest an existing contact-call table under a named null and add q_value. "
+            "method=binomial needs n_trials/p_null, so the calls must have been written "
+            "with --schema tidy; the legacy nine-column layout does not carry them."
+        ),
+    )
+    test_parser.add_argument("--calls", required=True, type=Path, help="Contact-call TSV from call.")
+    test_parser.add_argument("--out", required=True, type=Path, help="Output tidy TSV path.")
+    _add_significance_args(test_parser, default_method="binomial")
+    test_parser.set_defaults(func=_test_contacts)
+
+    calibration_parser = local_decay_sub.add_parser(
+        "calibration",
+        help="Check whether a p-value column is uniform under the null",
+        description=(
+            "Report KS uniformity and empirical rejection rates per stratum. Run this on "
+            "null pairs (distance- and coverage-matched shifted or random pairs), not on "
+            "real enhancer-promoter pairs, which are not expected to be null."
+        ),
+    )
+    calibration_parser.add_argument("--calls", required=True, type=Path, help="Contact-call TSV.")
+    calibration_parser.add_argument("--out", type=Path, help="Optional output TSV path.")
+    calibration_parser.add_argument(
+        "--strata",
+        action="append",
+        default=[],
+        help="Column to stratify calibration by, e.g. --strata chrom. Repeatable.",
+    )
+    calibration_parser.set_defaults(func=_assess_calibration)
+
+    compare_parser = local_decay_sub.add_parser(
+        "compare-groups",
+        help="Compare a value between two labelled groups of pairs",
+        description=(
+            "Effect size, rank test, and clustered bootstrap interval between two groups "
+            "of pairs. This is a descriptive comparison: pairs are not biological "
+            "replicates, so pass --cluster to resample the unit pairs actually share."
+        ),
+    )
+    compare_parser.add_argument(
+        "--table", required=True, type=Path, help="Headed TSV of pair-level rows."
+    )
+    compare_parser.add_argument("--out", type=Path, help="Optional output TSV path.")
+    compare_parser.add_argument(
+        "--value-col", required=True, help="Numeric column to compare between groups."
+    )
+    compare_parser.add_argument("--group-col", required=True, help="Column holding the group labels.")
+    compare_parser.add_argument(
+        "--groups",
+        nargs=2,
+        metavar=("X", "Y"),
+        help="The two group levels to compare. Defaults to the two most frequent.",
+    )
+    compare_parser.add_argument(
+        "--cluster",
+        help=(
+            "Column to resample whole clusters of for the confidence interval "
+            "(e.g. a promoter or enhancer id). Strongly recommended."
+        ),
+    )
+    compare_parser.add_argument(
+        "--correlate-with",
+        help="Instead of a group comparison, correlate --value-col against this column.",
+    )
+    compare_parser.add_argument(
+        "--correlation-method", choices=["spearman", "pearson"], default="spearman",
+        help="Correlation used by --correlate-with.",
+    )
+    compare_parser.add_argument(
+        "--statistic", choices=["median", "mean"], default="median",
+        help="Group summary whose difference is estimated.",
+    )
+    compare_parser.add_argument(
+        "--bootstrap", default=1000, type=int, help="Bootstrap resamples for the interval."
+    )
+    compare_parser.add_argument(
+        "--confidence", default=0.95, type=float, help="Confidence level for the interval."
+    )
+    compare_parser.add_argument("--seed", default=0, type=int, help="Random seed for the bootstrap.")
+    compare_parser.set_defaults(func=_compare_groups)
 
     run_parser = local_decay_sub.add_parser(
         "run",
@@ -302,6 +402,35 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     plot_parser.set_defaults(func=_plot_pair_type_distribution)
 
 
+def _add_significance_args(parser: argparse.ArgumentParser, *, default_method: str = "legacy_fisher") -> None:
+    """Register the shared `--method`/`--fdr`/`--fdr-scope` significance flags."""
+    parser.add_argument(
+        "--method",
+        choices=sorted(SIGNIFICANCE_METHODS),
+        default=default_method,
+        help=(
+            "Per-pair null. legacy_fisher reproduces the reference workflow's numbers but is "
+            "not a calibrated test; binomial uses the model's own trial total and null "
+            "probability."
+        ),
+    )
+    parser.add_argument(
+        "--fdr",
+        choices=sorted(ADJUST_METHODS),
+        default="bh",
+        help="Multiple-testing correction applied to p_value to produce q_value.",
+    )
+    parser.add_argument(
+        "--fdr-scope",
+        action="append",
+        default=[],
+        help=(
+            "Column defining a stratified FDR family, e.g. --fdr-scope chrom. Repeatable. "
+            "Omit for one global family over every called pair."
+        ),
+    )
+
+
 def _call_local_decay(args: argparse.Namespace) -> None:
     instrument = make_cli_instrumentation(args)
     calls = call_local_decay(
@@ -323,17 +452,74 @@ def _call_local_decay(args: argparse.Namespace) -> None:
         cache_dir=args.cache_dir,
         cache_prefix=args.cache_prefix,
         require_cache=args.require_cache,
+        method=args.method,
+        schema=args.schema,
+        fdr=args.fdr,
+        fdr_scope=args.fdr_scope or None,
         progress=instrument,
     )
     print_json(
         add_timings(
             {
                 "rows": int(len(calls)),
+                "method": args.method,
+                "schema": args.schema,
                 "out": str(args.out),
             },
             instrument,
         )
     )
+
+
+def _test_contacts(args: argparse.Namespace) -> None:
+    result = test_contacts(
+        read_local_decay_calls(args.calls),
+        method=args.method,
+        fdr=args.fdr,
+        fdr_scope=args.fdr_scope or None,
+    )
+    result.write(args.out)
+    print_json({**result.to_dict(), "out": str(args.out)})
+
+
+def _assess_calibration(args: argparse.Namespace) -> None:
+    calibration = assess_calibration(
+        read_local_decay_calls(args.calls), strata=args.strata or None
+    )
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        calibration.write_csv(args.out, separator="\t")
+    print_json({"strata": calibration.to_dicts(), "out": str(args.out) if args.out else None})
+
+
+def _compare_groups(args: argparse.Namespace) -> None:
+    table = pl.read_csv(args.table, separator="\t")
+    if args.correlate_with:
+        result = correlate(
+            table,
+            x_col=args.value_col,
+            y_col=args.correlate_with,
+            method=args.correlation_method,
+            cluster_by=args.cluster,
+            bootstrap=args.bootstrap,
+            confidence=args.confidence,
+            seed=args.seed,
+        )
+    else:
+        result = compare_groups(
+            table,
+            value_col=args.value_col,
+            group_col=args.group_col,
+            groups=tuple(args.groups) if args.groups else None,
+            cluster_by=args.cluster,
+            statistic=args.statistic,
+            bootstrap=args.bootstrap,
+            confidence=args.confidence,
+            seed=args.seed,
+        )
+    if args.out is not None:
+        result.write(args.out)
+    print_json({**result.to_dict(), "result": result.table.to_dicts()[0], "out": str(args.out) if args.out else None})
 
 
 def _run_local_decay(args: argparse.Namespace) -> None:

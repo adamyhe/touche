@@ -78,3 +78,17 @@ def add_timings(payload: dict[str, Any], instrument: Instrumentation) -> dict[st
     if instrument.profile:
         payload["timings"] = instrument.timings
     return payload
+
+
+def require_anchors_or_pair_list(args: argparse.Namespace) -> None:
+    """Fail fast when a command needing a pair universe was given neither source.
+
+    `--baits`/`--preys` and `--pairs-list` are alternative ways to say what
+    pairs to analyze, so neither can be `required=True` on its own; argparse
+    would otherwise let a command run with no pair universe at all and
+    produce a silently empty result.
+    """
+    if getattr(args, "pairs_list", None) is not None:
+        return
+    if args.baits is None or args.preys is None:
+        raise SystemExit("error: provide either --baits and --preys, or --pairs-list")
