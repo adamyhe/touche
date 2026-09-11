@@ -39,7 +39,8 @@ from touche.contacts import (
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.io import open_text
 from touche.models import ContactIndex
-from touche.stats import fisher_greater_batch
+from touche.pairs import make_pair_ids
+from touche.stats import binom_sf_greater, fisher_greater_batch, log2_fold_change, poisson_sf_greater
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -81,7 +82,58 @@ _LOCAL_DECAY_SCHEMA = {
     "expected": pl.Float64,
     "observed_background": pl.Int64,
     "expected_background": pl.Float64,
+    # Not part of the legacy nine-column output, but the two quantities that
+    # make a calibrated test possible: the number of contacts anchored at the
+    # bait in this prey's direction, and the local-decay null probability that
+    # such a contact lands in the prey window. `expected` is their product.
+    "n_trials": pl.Int64,
+    "p_null": pl.Float64,
 }
+
+# Column order of `schema="tidy"` output: the canonical pair identity, the
+# model quantities the test consumed, and the test result, in that order.
+TIDY_LOCAL_DECAY_COLUMNS = [
+    "pair_id",
+    "bait_id",
+    "prey_id",
+    "chrom",
+    "bait_center",
+    "prey_center",
+    "distance",
+    "directional_distance",
+    "observed",
+    "expected",
+    "n_trials",
+    "p_null",
+    "log2_oe",
+    "p_value",
+    "method",
+    "observed_background",
+    "expected_background",
+]
+
+_TIDY_SCHEMA: dict[str, pl.DataType] = {
+    "pair_id": pl.Utf8,
+    "bait_id": pl.Utf8,
+    "prey_id": pl.Utf8,
+    "chrom": pl.Utf8,
+    "bait_center": pl.Int64,
+    "prey_center": pl.Int64,
+    "distance": pl.Int64,
+    "directional_distance": pl.Int64,
+    "observed": pl.Int64,
+    "expected": pl.Float64,
+    "n_trials": pl.Int64,
+    "p_null": pl.Float64,
+    "log2_oe": pl.Float64,
+    "p_value": pl.Float64,
+    "method": pl.Utf8,
+    "observed_background": pl.Int64,
+    "expected_background": pl.Float64,
+}
+
+SIGNIFICANCE_METHODS = {"legacy_fisher", "binomial", "poisson"}
+LOCAL_DECAY_SCHEMAS = {"legacy", "tidy"}
 
 
 def call_local_decay(
@@ -104,14 +156,31 @@ def call_local_decay(
     cache_dir: str | Path | None = None,
     cache_prefix: str = "contacts",
     require_cache: bool = False,
+    method: str = "legacy_fisher",
+    schema: str = "legacy",
+    fdr: str = "bh",
+    fdr_scope: str | list[str] | None = None,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
     """Call bait-prey contacts normalized by local distance decay.
 
     This ports the reference ``ContactCaller_microC.py`` workflow without
-    materializing one contact file per bait. Output intentionally keeps the
-    reference nine-column, headerless layout.
+    materializing one contact file per bait.
+
+    Defaults are unchanged from the reference workflow: `method` is
+    `"legacy_fisher"` and `schema` is `"legacy"`, so the written file keeps
+    the reference nine-column, headerless layout with the same numbers. Set
+    `schema="tidy"` to write a headed table on the canonical pair schema
+    (`TIDY_LOCAL_DECAY_COLUMNS`) with a `q_value` column and a
+    `.meta.json` sidecar recording the method, test universe, and FDR family;
+    `method="binomial"` additionally swaps the legacy Fisher score for the
+    calibrated test. `fdr_scope=None` corrects over every called pair as one
+    family; pass a column name (e.g. `"chrom"`) to stratify.
+
+    q-values are only written under `schema="tidy"` -- the legacy layout has
+    no column to put them in, and appending one would break every downstream
+    reader of the reference format.
     """
 
     if dist <= 0:
@@ -120,6 +189,8 @@ def call_local_decay(
         raise ValueError("cap must be non-negative")
     if index_strategy not in {"all", "chromosome", "cache"}:
         raise ValueError("index_strategy must be one of: all, chromosome, cache")
+    if schema not in LOCAL_DECAY_SCHEMAS:
+        raise ValueError(f"schema must be one of: {', '.join(sorted(LOCAL_DECAY_SCHEMAS))}")
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
@@ -150,6 +221,7 @@ def call_local_decay(
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
+            method=method,
             progress=instrument,
         )
     elif index_strategy == "chromosome":
@@ -167,6 +239,7 @@ def call_local_decay(
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
+            method=method,
             progress=instrument,
         )
     else:
@@ -190,12 +263,22 @@ def call_local_decay(
             fisher_backend=fisher_backend,
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
+            method=method,
+            schema="tidy",
             progress=instrument,
         )
     with instrument.step("write calls"):
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        calls.write_csv(out_path, include_header=False, separator="\t")
+        if schema == "legacy":
+            calls = tidy_to_legacy(calls)
+            calls.write_csv(out_path, include_header=False, separator="\t")
+        else:
+            from touche.significance import test_contacts
+
+            result = test_contacts(calls, method=method, fdr=fdr, fdr_scope=fdr_scope, recompute=False)
+            result.write(out_path)
+            calls = result.table
     return calls
 
 
@@ -221,6 +304,7 @@ def _call_local_decay_by_chromosome(
     fisher_backend: str,
     lowess_iterations: int,
     n_jobs: int,
+    method: str,
     progress: Instrumentation,
 ) -> pl.DataFrame:
     """`index_strategy="chromosome"`: re-scan the pairs file once per bait chromosome.
@@ -266,11 +350,13 @@ def _call_local_decay_by_chromosome(
                 fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
                 n_jobs=n_jobs,
+                method=method,
+                schema="tidy",
                 progress=progress,
             )
         )
     if not frames:
-        return pl.DataFrame(schema=_LOCAL_DECAY_SCHEMA)
+        return pl.DataFrame(schema=_TIDY_SCHEMA)
     return pl.concat(frames)
 
 
@@ -289,6 +375,7 @@ def _call_local_decay_from_cache(
     fisher_backend: str,
     lowess_iterations: int,
     n_jobs: int,
+    method: str,
     progress: Instrumentation,
 ) -> pl.DataFrame:
     """`index_strategy="cache"` (the default): load one chromosome-sharded NPZ shard at a time.
@@ -329,11 +416,13 @@ def _call_local_decay_from_cache(
                 fisher_backend=fisher_backend,
                 lowess_iterations=lowess_iterations,
                 n_jobs=n_jobs,
+                method=method,
+                schema="tidy",
                 progress=progress,
             )
         )
     if not frames:
-        return pl.DataFrame(schema=_LOCAL_DECAY_SCHEMA)
+        return pl.DataFrame(schema=_TIDY_SCHEMA)
     return pl.concat(frames)
 
 
@@ -351,15 +440,32 @@ def compute_local_decay(
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
     n_jobs: int = 1,
+    method: str = "legacy_fisher",
+    schema: str = "legacy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
-    """Call local-decay contacts from in-memory contact indexes and center anchors."""
+    """Call local-decay contacts from in-memory contact indexes and center anchors.
+
+    `method` selects the per-pair null: `"legacy_fisher"` (the default, which
+    reproduces the reference workflow's numbers exactly), `"binomial"`, or
+    `"poisson"`. `schema="legacy"` returns the reference nine-column layout;
+    `schema="tidy"` returns `TIDY_LOCAL_DECAY_COLUMNS`, which adds the
+    canonical `pair_id`, the `n_trials`/`p_null` the calibrated tests
+    consume, and `log2_oe`. No q-values are computed here -- FDR is a
+    property of the whole test universe, so it is applied once by
+    `call_local_decay`/`touche.significance.test_contacts` after every
+    chromosome's calls have been concatenated.
+    """
 
     if dist <= 0:
         raise ValueError("dist must be positive")
     if cap < 0:
         raise ValueError("cap must be non-negative")
+    if method not in SIGNIFICANCE_METHODS:
+        raise ValueError(f"method must be one of: {', '.join(sorted(SIGNIFICANCE_METHODS))}")
+    if schema not in LOCAL_DECAY_SCHEMAS:
+        raise ValueError(f"schema must be one of: {', '.join(sorted(LOCAL_DECAY_SCHEMAS))}")
     lowess_backend = validate_lowess_backend(lowess_backend)
     fisher_backend = validate_fisher_backend(fisher_backend)
     if lowess_iterations < 0:
@@ -395,6 +501,7 @@ def compute_local_decay(
         lowess_backend=lowess_backend,
         fisher_backend=fisher_backend,
         lowess_iterations=lowess_iterations,
+        method=method,
     )
 
     # Baits are fully independent (no shared mutable state, no randomness),
@@ -476,7 +583,51 @@ def compute_local_decay(
         if executor is not None:
             executor.shutdown(wait=True)
 
-    return pl.DataFrame(records, schema=_LOCAL_DECAY_SCHEMA)
+    calls = pl.DataFrame(records, schema=_LOCAL_DECAY_SCHEMA)
+    tidy = to_tidy_calls(calls, method=method)
+    return tidy if schema == "tidy" else tidy_to_legacy(tidy)
+
+
+def to_tidy_calls(calls: pl.DataFrame, *, method: str, id_style: str = "coord") -> pl.DataFrame:
+    """Reshape a raw local-decay call frame into `TIDY_LOCAL_DECAY_COLUMNS`.
+
+    Derives the canonical `pair_id`/`bait_id`/`prey_id` from the bait and
+    prey centers (see `touche.pairs`), the absolute `distance`, and
+    `log2_oe`, and stamps every row with the `method` that produced its
+    `p_value`. Kept public so a caller holding an in-memory
+    `compute_local_decay` result can move it onto the shared pair schema
+    without re-running the call.
+    """
+
+    if calls.is_empty():
+        return pl.DataFrame(schema={name: _TIDY_SCHEMA[name] for name in TIDY_LOCAL_DECAY_COLUMNS})
+    tidy = calls.rename({"chr": "chrom"}).with_columns(
+        make_pair_ids("chrom", "bait_center", "chrom", "prey_center", style=id_style),
+        (pl.col("chrom") + pl.lit(":") + pl.col("bait_center").cast(pl.Utf8)).alias("bait_id"),
+        (pl.col("chrom") + pl.lit(":") + pl.col("prey_center").cast(pl.Utf8)).alias("prey_id"),
+        pl.col("directional_distance").abs().alias("distance"),
+        pl.lit(method).alias("method"),
+    )
+    tidy = tidy.with_columns(
+        pl.Series(
+            "log2_oe",
+            log2_fold_change(tidy["observed"].to_numpy(), tidy["expected"].to_numpy()),
+        )
+    )
+    return tidy.select(TIDY_LOCAL_DECAY_COLUMNS)
+
+
+def tidy_to_legacy(tidy: pl.DataFrame) -> pl.DataFrame:
+    """Project a tidy call frame back onto the reference nine-column, headerless layout.
+
+    Column names, order, and values are byte-identical to what the reference
+    `ContactCaller_microC` workflow wrote, so `schema="legacy"` output does
+    not change when a tidy column is added above it.
+    """
+    return tidy.select(
+        pl.col("chrom").alias("chr"),
+        *LOCAL_DECAY_OUTPUT_COLUMNS[1:],
+    )
 
 
 def _call_bait_contacts_threaded(
@@ -685,10 +836,15 @@ def _call_bait_contacts(
     fisher_backend: str,
     lowess_iterations: int,
     max_span: int,
+    method: str = "legacy_fisher",
 ) -> list[dict[str, float | int | str]]:
-    """Call one bait's contacts against `prey_centers`: fit local decay, then Fisher-test each prey.
+    """Call one bait's contacts against `prey_centers`: fit local decay, then test each prey.
 
     Returns one output record per prey surviving the `min_distance` filter.
+    `method` selects the per-pair test; every record carries the `n_trials`
+    and `p_null` the calibrated tests consume regardless, so a table called
+    under one method can be retested under another by
+    `touche.significance.test_contacts` without recounting contacts.
     """
     pos_a, pos_b = _bait_window_contacts(index, bait_center, dist=dist, max_span=max_span)
     if pos_a.size == 0:
@@ -764,12 +920,14 @@ def _call_bait_contacts(
     exp_prob = np.where(valid_window, cumsum[safe_stop] - cumsum[safe_start], 0.0)
 
     expected = contact_counts.astype(np.float64) * exp_prob
-    p_values = fisher_greater_batch(
-        observed_values.astype(np.float64),
+    p_values = _contact_p_values(
+        observed_values,
         expected,
-        (histogram_bins - observed_values).astype(np.float64),
-        histogram_bins - expected,
-        backend=fisher_backend,
+        contact_counts,
+        exp_prob,
+        histogram_bins,
+        method=method,
+        fisher_backend=fisher_backend,
     )
 
     chrom = index.chrom if index.chrom.startswith("chr") else f"chr{index.chrom}"
@@ -784,11 +942,46 @@ def _call_bait_contacts(
             "expected": float(expected_value),
             "observed_background": int(histogram_bins - observed),
             "expected_background": float(histogram_bins - expected_value),
+            "n_trials": int(n_trial),
+            "p_null": float(null_probability),
         }
-        for prey_center, directional_distance, p_value, observed, expected_value in zip(
-            prey_centers, directional_distances, p_values, observed_values, expected, strict=True
+        for prey_center, directional_distance, p_value, observed, expected_value, n_trial, null_probability in zip(
+            prey_centers,
+            directional_distances,
+            p_values,
+            observed_values,
+            expected,
+            contact_counts,
+            exp_prob,
+            strict=True,
         )
     ]
+
+
+def _contact_p_values(
+    observed: np.ndarray,
+    expected: np.ndarray,
+    n_trials: np.ndarray,
+    p_null: np.ndarray,
+    histogram_bins: int,
+    *,
+    method: str,
+    fisher_backend: str,
+) -> np.ndarray:
+    """Per-prey upper-tail p-values under the requested null; see `touche.metadata.METHOD_REGISTRY`."""
+    if method == "legacy_fisher":
+        return fisher_greater_batch(
+            observed.astype(np.float64),
+            expected,
+            (histogram_bins - observed).astype(np.float64),
+            histogram_bins - expected,
+            backend=fisher_backend,
+        )
+    if method == "binomial":
+        return binom_sf_greater(observed, n_trials, p_null)
+    if method == "poisson":
+        return poisson_sf_greater(observed, expected)
+    raise ValueError(f"method must be one of: {', '.join(sorted(SIGNIFICANCE_METHODS))}")
 
 
 def _local_decay_observed_numba(
