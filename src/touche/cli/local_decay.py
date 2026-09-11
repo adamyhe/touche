@@ -85,7 +85,7 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         "--lowess-iterations",
         default=3,
         type=int,
-        help="Robust LOWESS residual reweighting iterations. Lower is faster.",
+        help="Robust LOWESS residual reweighting iterations. Under --decay-model normalized this applies only to the zero-inflation fit; the decay fit deliberately uses none, because reweighting biases a sparse count histogram downward.",
     )
     call_parser.add_argument(
         "--index-strategy",
@@ -295,7 +295,7 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         "--lowess-iterations",
         default=3,
         type=int,
-        help="Robust LOWESS residual reweighting iterations. Lower is faster.",
+        help="Robust LOWESS residual reweighting iterations. Under --decay-model normalized this applies only to the zero-inflation fit; the decay fit deliberately uses none, because reweighting biases a sparse count histogram downward.",
     )
     run_parser.add_argument(
         "--index-strategy",

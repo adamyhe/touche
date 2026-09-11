@@ -421,6 +421,8 @@ Alternative strategies are kept for small data and diagnostics:
 (`pip install ep-touche[legacy]` / `uv sync --extra legacy`). Use
 `--lowess-iterations` to change the number of robust residual reweighting
 passes; lower values are faster but can change expected-contact estimates.
+Under the default `--decay-model normalized` it applies only to the
+zero-inflation fit, since the decay fit deliberately uses none.
 
 `--jobs`/`-j` (default 1) processes that many baits concurrently. Leave it at
 1 when `NUMBA_NUM_THREADS` already saturates the available cores. Try a higher

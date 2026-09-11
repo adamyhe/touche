@@ -622,6 +622,11 @@ conservative, which is the safe direction.
 the functional labels is unchanged to three decimal places. What changes is
 whether a `q_value` means what it says.
 
+It is also *faster*, by about 30% on a small two-chromosome fixture, since
+skipping the robust reweighting removes three LOWESS passes over every
+bait's histogram. `--lowess-iterations` therefore only affects the
+zero-inflation fit under this model.
+
 ### Which to use
 
 | | `legacy` | `normalized` (default) |

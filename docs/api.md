@@ -123,6 +123,9 @@ reference comparisons; statsmodels requires the optional `legacy` extra
 
 Use `lowess_iterations` to change the number of robust residual reweighting
 passes. Lower values are faster but can change expected-contact estimates.
+With the default `decay_model="normalized"` it applies only to the
+zero-inflation fit; the decay fit uses none, because reweighting biases a
+sparse count histogram downward.
 
 `compute_local_decay(..., n_jobs=N)` processes up to `N` baits concurrently.
 Keep `n_jobs=1` when Numba is already using the available cores. Increase it
