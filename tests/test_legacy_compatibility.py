@@ -1,13 +1,15 @@
-"""The default path must stay numerically identical to the reference workflow.
+"""The reference workflow must stay exactly reproducible, and stay labelled.
 
-Every statistical addition is opt-in. These tests pin the properties that
-make that claim checkable: the legacy layout's exact shape and column order,
-that opting in to tidy output does not perturb the shared values, and that
-the legacy path never materializes the tidy-only columns it would discard.
+`--method legacy_fisher` reproduces the reference numbers byte for byte and
+leaves the output directory untouched. The default is now the calibrated
+binomial test, which writes the same nine-column layout with a different
+p-value column -- so these tests also pin the sidecar that makes that
+change attributable, since a headerless file cannot record it itself.
 """
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -79,7 +81,26 @@ def _anchors() -> tuple[pl.DataFrame, pl.DataFrame]:
 
 
 class LegacyLocalDecayTests(unittest.TestCase):
-    def test_legacy_output_keeps_the_reference_layout_and_no_sidecar(self) -> None:
+    def test_reproducing_the_reference_leaves_the_output_directory_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_fixture(tmp_path)
+
+            calls = call_local_decay(
+                tmp_path / "baits.tsv", tmp_path / "preys.tsv", tmp_path / "contacts.pairs",
+                tmp_path / "calls.tsv", cache_dir=tmp_path / "cache",
+                method="legacy_fisher", **CALL_KWARGS,
+            )
+            written = pl.read_csv(tmp_path / "calls.tsv", separator="\t", has_header=False)
+            has_sidecar = (tmp_path / "calls.tsv.meta.json").exists()
+
+        self.assertEqual(calls.columns, LOCAL_DECAY_OUTPUT_COLUMNS)
+        self.assertEqual(written.width, 9)
+        self.assertEqual(written.height, calls.height)
+        self.assertGreater(calls.height, 0)
+        self.assertFalse(has_sidecar, "a reference run must not add files to the output directory")
+
+    def test_default_keeps_the_reference_layout_but_records_its_null(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _write_fixture(tmp_path)
@@ -89,13 +110,27 @@ class LegacyLocalDecayTests(unittest.TestCase):
                 tmp_path / "calls.tsv", cache_dir=tmp_path / "cache", **CALL_KWARGS,
             )
             written = pl.read_csv(tmp_path / "calls.tsv", separator="\t", has_header=False)
-            has_sidecar = (tmp_path / "calls.tsv.meta.json").exists()
+            sidecar = json.loads((tmp_path / "calls.tsv.meta.json").read_text(encoding="utf-8"))
 
         self.assertEqual(calls.columns, LOCAL_DECAY_OUTPUT_COLUMNS)
-        self.assertEqual(written.width, 9)
-        self.assertEqual(written.height, calls.height)
-        self.assertGreater(calls.height, 0)
-        self.assertFalse(has_sidecar, "the legacy layout must not gain a metadata sidecar")
+        self.assertEqual(written.width, 9, "the default must not change the reference layout")
+        self.assertEqual(sidecar["method"], "binomial")
+        self.assertEqual(sidecar["inference_class"], "technical")
+        self.assertIsNone(sidecar["fdr_method"], "the legacy layout has no q_value column")
+        self.assertEqual(sidecar["rows"], calls.height)
+
+    def test_only_the_p_value_column_differs_between_the_two_nulls(self) -> None:
+        baits, preys = _anchors()
+        default = compute_local_decay(_indexes(), baits, preys, **CALL_KWARGS)
+        reference = compute_local_decay(
+            _indexes(), baits, preys, method="legacy_fisher", **CALL_KWARGS
+        )
+
+        self.assertTrue(default.drop("p_value").equals(reference.drop("p_value")))
+        self.assertFalse(
+            np.allclose(default["p_value"].to_numpy(), reference["p_value"].to_numpy()),
+            "the two nulls must actually produce different p-values",
+        )
 
     def test_legacy_path_does_not_materialize_tidy_only_columns(self) -> None:
         # Not cosmetic: pair_id/bait_id/prey_id are string columns costing
@@ -136,7 +171,9 @@ class LegacyLocalDecayTests(unittest.TestCase):
 
     def test_choosing_a_method_does_not_change_the_counts_it_tests(self) -> None:
         baits, preys = _anchors()
-        fisher = compute_local_decay(_indexes(), baits, preys, schema="tidy", **CALL_KWARGS)
+        fisher = compute_local_decay(
+            _indexes(), baits, preys, schema="tidy", method="legacy_fisher", **CALL_KWARGS
+        )
         binomial = compute_local_decay(
             _indexes(), baits, preys, schema="tidy", method="binomial", **CALL_KWARGS
         )

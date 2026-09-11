@@ -4,9 +4,11 @@ This guide documents every inferential method `touche` provides: what it
 tests, what it assumes, what its q-values are corrected over, and — most
 importantly — what kind of claim its result supports.
 
-Nothing here changes the numbers produced by a default run. Every statistical
-addition is opt-in behind a flag, and the reference workflow's outputs are
-byte-identical without those flags. See [Compatibility](#compatibility).
+One default did change: `local-decay call` now tests with the calibrated
+binomial null instead of the reference workflow's Fisher score. The output
+*layout* is unchanged, so only the p-value column moves, and
+`--method legacy_fisher` reproduces the reference numbers byte for byte.
+Everything else here is opt-in. See [Compatibility](#compatibility).
 
 ## Contents
 
@@ -130,34 +132,7 @@ so per-pair covariates can travel in the same file.
 
 ## Per-pair contact significance
 
-### `legacy_fisher` (default) — descriptive
-
-The reference `ContactCaller_microC` workflow builds this 2x2 table per pair:
-
-```text
-              observed          fitted expected
-  background  bins - observed   bins - fitted expected
-```
-
-where `bins` is the number of one-base distance-histogram bins, and applies
-a one-sided Fisher exact test. Two things about it are not a generative
-null: a *fitted expectation* appears where an observed count belongs, and
-the trial total is a count of histogram positions rather than a contact
-total.
-
-It is retained under this name, and as the default, because reproducing the
-reference workflow's published numbers matters. It should be read as a
-reproducibility-preserving score, not a calibrated p-value, and **adding BH
-correction to it does not fix that** — you must calibrate a null before you
-can control an error rate over it.
-
-- Null: not well defined (see above).
-- Alternative: greater.
-- Unit of analysis: bait-prey pair.
-- Failure mode: p-values are not uniform under any null you can construct;
-  `q < 0.05` language is not supportable.
-
-### `binomial` — technical
+### `binomial` (default) — technical
 
 The local-decay model already computes the two quantities a calibrated test
 needs. They are now emitted as columns:
@@ -183,17 +158,45 @@ The test is then
 - Assumptions: contacts anchored at the bait are independent draws;
   `p0_i` is correctly specified.
 - Expected/offset source: the per-bait LOWESS fit, described above.
-- Failure modes: `n_trials = 0` makes a pair untestable (reported as null,
-  excluded from the FDR family, never reported as non-significant); small
-  `n_trials` makes the discrete p-value coarse, so the achievable minimum
-  p-value can exceed your alpha — this is warned about when the median
-  `n_trials` is below 10; overdispersion relative to a binomial makes the
-  test anticonservative.
+- Failure modes: `n_trials = 0` makes a pair untestable (reported as NaN in
+  the output, excluded from the FDR family, never reported as
+  non-significant); small `n_trials` makes the discrete p-value coarse, so
+  the achievable minimum p-value can exceed your alpha — this is warned
+  about when the median `n_trials` is below 10; overdispersion relative to
+  a binomial makes the test anticonservative.
 - Caveat: `p0_i` is fitted from the same bait window the pair is tested in.
   That reuse is recorded in method metadata. Because the fit is a smooth
   function of distance over the whole ±`dist` window and each pair
   contributes a vanishing fraction of it, the leakage is small, but it is
   not zero — check calibration before quoting an FDR.
+
+### `legacy_fisher` — descriptive, for reproduction only
+
+The reference `ContactCaller_microC` workflow builds this 2x2 table per pair:
+
+```text
+              observed          fitted expected
+  background  bins - observed   bins - fitted expected
+```
+
+where `bins` is the number of one-base distance-histogram bins, and applies
+a one-sided Fisher exact test. Two things about it are not a generative
+null: a *fitted expectation* appears where an observed count belongs, and
+the trial total is a count of histogram positions rather than a contact
+total.
+
+It is retained under this name because reproducing the reference workflow's
+published numbers matters, and it is what `scripts/reference_replication.py`
+and [Reproducing reference plots](reproducing-reference-plots.md) pass. It
+should be read as a reproducibility-preserving score, not a calibrated
+p-value, and **adding BH correction to it does not fix that** — you must
+calibrate a null before you can control an error rate over it.
+
+- Null: not well defined (see above).
+- Alternative: greater.
+- Unit of analysis: bait-prey pair.
+- Failure mode: p-values are not uniform under any null you can construct;
+  `q < 0.05` language is not supportable.
 
 ### `poisson` — technical
 
@@ -227,20 +230,37 @@ null family.
 ### Running it
 
 ```bash
-# Calibrated call with q-values and a metadata sidecar
+# The default: calibrated binomial p-values in the reference layout
 uv run touche local-decay call \
   --baits promoters.tsv --preys enhancers.tsv --pairs sample.pairs.gz \
-  --out calls.tsv --method binomial --schema tidy
+  --out calls.tsv
+
+# Add --schema tidy for q-values and the canonical pair schema
+uv run touche local-decay call \
+  --baits promoters.tsv --preys enhancers.tsv --pairs sample.pairs.gz \
+  --out calls.tsv --schema tidy
+
+# Reproduce the reference workflow's numbers exactly
+uv run touche local-decay call \
+  --baits promoters.tsv --preys enhancers.tsv --pairs sample.pairs.gz \
+  --out calls.tsv --method legacy_fisher
 
 # Or retest an existing tidy table under a different null
 uv run touche local-decay test --calls calls.tsv --out retested.tsv --method poisson
 ```
 
+`--schema legacy` (still the default) writes the reference nine-column
+headerless layout and no q-values — there is no column to put them in, and
+appending one would break every existing reader of that format. Because that
+layout also cannot record which null produced its p-value column, a
+non-`legacy_fisher` run writes a `.meta.json` sidecar beside it; a
+`legacy_fisher` run writes none, leaving a reference-reproduction directory
+byte-identical.
+
 `--schema tidy` writes the canonical pair schema with `pair_id`,
-`n_trials`, `p_null`, `log2_oe`, `q_value`, and the sidecar. `--schema
-legacy` (the default) writes the reference nine-column headerless layout and
-no q-values — there is no column to put them in, and appending one would
-break every existing reader of that format.
+`n_trials`, `p_null`, `log2_oe`, `q_value`, and the sidecar. **Use it if you
+want q-values**: the default combination of a calibrated test and the legacy
+layout gives you calibrated p-values with no FDR control.
 
 ## Multiple testing
 
@@ -492,11 +512,21 @@ downstream tools.
 
 ## Compatibility
 
-No default numerical behaviour changed. Specifically:
+One default numerical behaviour changed: the per-pair null. The output
+*layout* did not, so a reader of the nine-column table still finds nine
+columns in the same order — column five now holds a binomial p-value rather
+than a Fisher score. `--method legacy_fisher` restores the reference numbers
+exactly, and is what the reference-replication script and guide pass.
+
+Untestable pairs (`n_trials = 0`) write `NaN` in that column rather than a
+misleading 1.0. Standard parsers read it as a floating-point NaN.
+
+Everything else is unchanged:
 
 | Behaviour | Default | Opt out |
 | --- | --- | --- |
-| `local-decay call` output | reference nine-column headerless TSV, `legacy_fisher` p-values | `--schema tidy`, `--method binomial` |
+| `local-decay call` p-values | **calibrated `binomial`** (changed) | `--method legacy_fisher` |
+| `local-decay call` layout | reference nine-column headerless TSV | `--schema tidy` |
 | `background compare` filter | drops pairs without positive EP signal in every sample | `--zero-policy keep` |
 | `EP_CPB_*` divisor | `depth / 1e10` | `--scale per_billion` |
 | APA pileup universe | distance-filtered bait x prey product | `--pairs-list` |

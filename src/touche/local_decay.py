@@ -156,7 +156,7 @@ def call_local_decay(
     cache_dir: str | Path | None = None,
     cache_prefix: str = "contacts",
     require_cache: bool = False,
-    method: str = "legacy_fisher",
+    method: str = "binomial",
     schema: str = "legacy",
     fdr: str = "bh",
     fdr_scope: str | list[str] | None = None,
@@ -168,19 +168,27 @@ def call_local_decay(
     This ports the reference ``ContactCaller_microC.py`` workflow without
     materializing one contact file per bait.
 
-    Defaults are unchanged from the reference workflow: `method` is
-    `"legacy_fisher"` and `schema` is `"legacy"`, so the written file keeps
-    the reference nine-column, headerless layout with the same numbers. Set
-    `schema="tidy"` to write a headed table on the canonical pair schema
-    (`TIDY_LOCAL_DECAY_COLUMNS`) with a `q_value` column and a
-    `.meta.json` sidecar recording the method, test universe, and FDR family;
-    `method="binomial"` additionally swaps the legacy Fisher score for the
-    calibrated test. `fdr_scope=None` corrects over every called pair as one
-    family; pass a column name (e.g. `"chrom"`) to stratify.
+    `method` defaults to `"binomial"`: the calibrated upper-tail test against
+    the bait's own fitted distance decay, using the trial total and null
+    probability the model already computes. `method="legacy_fisher"`
+    reproduces the reference workflow's numbers exactly and is what the
+    reference-replication scripts pass; it is a reproducibility mode, not a
+    calibrated test.
 
-    q-values are only written under `schema="tidy"` -- the legacy layout has
-    no column to put them in, and appending one would break every downstream
-    reader of the reference format.
+    `schema` still defaults to `"legacy"`, so the written file keeps the
+    reference nine-column, headerless layout -- only the p-value column's
+    meaning changes with `method`. Because that layout has no header and no
+    room for a `q_value`, a non-`legacy_fisher` run also writes a
+    `.meta.json` sidecar recording which null produced column five; a
+    `legacy_fisher` run writes none, leaving the reference output directory
+    byte-identical.
+
+    `schema="tidy"` writes a headed table on the canonical pair schema
+    (`TIDY_LOCAL_DECAY_COLUMNS`) with `q_value` and the sidecar.
+    `fdr_scope=None` corrects over every called pair as one family; pass a
+    column name (e.g. `"chrom"`) to stratify. q-values are only written under
+    `schema="tidy"` -- appending a column to the reference layout would break
+    every downstream reader of it.
     """
 
     if dist <= 0:
@@ -274,6 +282,16 @@ def call_local_decay(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if schema == "legacy":
             calls.write_csv(out_path, include_header=False, separator="\t")
+            if method != "legacy_fisher":
+                # The reference layout is headerless and has no q_value
+                # column, so this sidecar is the only record of which null
+                # produced column five. A legacy_fisher run writes none, so
+                # reproducing the reference leaves the directory unchanged.
+                from touche.significance import contact_method_info
+
+                contact_method_info(calls, method=method, recompute=False).write_sidecar(
+                    out_path, extra={"rows": calls.height}
+                )
         else:
             from touche.significance import test_contacts
 
@@ -443,16 +461,17 @@ def compute_local_decay(
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     lowess_iterations: int = 3,
     n_jobs: int = 1,
-    method: str = "legacy_fisher",
+    method: str = "binomial",
     schema: str = "legacy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
     """Call local-decay contacts from in-memory contact indexes and center anchors.
 
-    `method` selects the per-pair null: `"legacy_fisher"` (the default, which
-    reproduces the reference workflow's numbers exactly), `"binomial"`, or
-    `"poisson"`. `schema="legacy"` returns the reference nine-column layout;
+    `method` selects the per-pair null: `"binomial"` (the default calibrated
+    test), `"poisson"`, or `"legacy_fisher"` (which reproduces the reference
+    workflow's numbers exactly). `schema="legacy"` returns the reference
+    nine-column layout;
     `schema="tidy"` returns `TIDY_LOCAL_DECAY_COLUMNS`, which adds the
     canonical `pair_id`, the `n_trials`/`p_null` the calibrated tests
     consume, and `log2_oe`. No q-values are computed here -- FDR is a
@@ -837,7 +856,7 @@ def _call_bait_contacts(
     fisher_backend: str,
     lowess_iterations: int,
     max_span: int,
-    method: str = "legacy_fisher",
+    method: str = "binomial",
 ) -> list[dict[str, float | int | str]]:
     """Call one bait's contacts against `prey_centers`: fit local decay, then test each prey.
 

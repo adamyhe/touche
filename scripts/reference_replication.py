@@ -442,6 +442,11 @@ def build_steps(
                     "1000000",
                     "--cap",
                     "2000",
+                    # touche's own default is the calibrated binomial test.
+                    # This script exists to reproduce the reference workflow,
+                    # so it pins the reference's null explicitly.
+                    "--method",
+                    "legacy_fisher",
                     "--index-strategy",
                     "cache",
                     "--cache-dir",

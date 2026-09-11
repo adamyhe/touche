@@ -126,9 +126,10 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         choices=["legacy", "tidy"],
         default="legacy",
         help=(
-            "Output layout. legacy writes the reference nine-column headerless TSV; tidy "
-            "writes the canonical pair schema with pair_id, n_trials, p_null, log2_oe, "
-            "q_value, and a .meta.json sidecar."
+            "Output layout. legacy writes the reference nine-column headerless TSV, which has "
+            "no room for a q_value; tidy writes the canonical pair schema with pair_id, "
+            "n_trials, p_null, log2_oe, and q_value. Both write a .meta.json sidecar unless "
+            "--method legacy_fisher leaves the output identical to the reference workflow's."
         ),
     )
     add_instrumentation_args(call_parser)
@@ -145,7 +146,7 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     test_parser.add_argument("--calls", required=True, type=Path, help="Contact-call TSV from call.")
     test_parser.add_argument("--out", required=True, type=Path, help="Output tidy TSV path.")
-    _add_significance_args(test_parser, default_method="binomial")
+    _add_significance_args(test_parser)
     test_parser.set_defaults(func=_test_contacts)
 
     calibration_parser = local_decay_sub.add_parser(
@@ -328,6 +329,7 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         help="Number of baits to process concurrently. Use 1 for sequential processing.",
     )
+    _add_method_arg(run_parser)
     add_instrumentation_args(run_parser)
     run_parser.add_argument(
         "--plot-min-contacts",
@@ -402,18 +404,23 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     plot_parser.set_defaults(func=_plot_pair_type_distribution)
 
 
-def _add_significance_args(parser: argparse.ArgumentParser, *, default_method: str = "legacy_fisher") -> None:
-    """Register the shared `--method`/`--fdr`/`--fdr-scope` significance flags."""
+def _add_method_arg(parser: argparse.ArgumentParser) -> None:
+    """Register the shared `--method` flag and its guidance."""
     parser.add_argument(
         "--method",
         choices=sorted(SIGNIFICANCE_METHODS),
-        default=default_method,
+        default="binomial",
         help=(
-            "Per-pair null. legacy_fisher reproduces the reference workflow's numbers but is "
-            "not a calibrated test; binomial uses the model's own trial total and null "
-            "probability."
+            "Per-pair null. binomial tests the observed count against the model's own trial "
+            "total and null probability. legacy_fisher reproduces the reference workflow's "
+            "numbers but is a reproducibility mode, not a calibrated test."
         ),
     )
+
+
+def _add_significance_args(parser: argparse.ArgumentParser) -> None:
+    """Register the shared `--method`/`--fdr`/`--fdr-scope` significance flags."""
+    _add_method_arg(parser)
     parser.add_argument(
         "--fdr",
         choices=sorted(ADJUST_METHODS),
@@ -540,6 +547,7 @@ def _run_local_decay(args: argparse.Namespace) -> None:
         lowess_backend=args.lowess_backend,
         fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
+        method=args.method,
         n_jobs=args.jobs,
         index_strategy=args.index_strategy,
         cache_dir=args.cache_dir,

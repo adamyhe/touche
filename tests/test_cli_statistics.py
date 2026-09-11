@@ -132,17 +132,32 @@ class LocalDecayStatisticsCommandTests(unittest.TestCase):
         self.assertIn("q_value", table.columns)
         self.assertEqual(metadata["method"], "binomial")
 
-    def test_default_call_still_writes_the_legacy_layout(self) -> None:
+    def test_default_call_is_binomial_in_the_legacy_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _fixture(tmp_path)
 
             summary = self._call(tmp_path)
             table = pl.read_csv(tmp_path / "ld.tsv", separator="\t", has_header=False)
+            sidecar = json.loads((tmp_path / "ld.tsv.meta.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["method"], "binomial")
+        self.assertEqual(summary["schema"], "legacy")
+        self.assertEqual(table.width, 9, "the default must not change the output layout")
+        self.assertEqual(sidecar["method"], "binomial")
+
+    def test_legacy_fisher_reproduces_the_reference_run_with_no_extra_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _fixture(tmp_path)
+
+            summary = self._call(tmp_path, "--method", "legacy_fisher")
+            table = pl.read_csv(tmp_path / "ld.tsv", separator="\t", has_header=False)
+            has_sidecar = (tmp_path / "ld.tsv.meta.json").exists()
 
         self.assertEqual(summary["method"], "legacy_fisher")
         self.assertEqual(table.width, 9)
-        self.assertFalse((tmp_path / "ld.tsv.meta.json").exists())
+        self.assertFalse(has_sidecar)
 
     def test_test_subcommand_retests_and_writes_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -63,6 +63,13 @@ The original workflow runs `ContactCaller_microC.bsh`, concatenates per-bait
 outputs, assigns functional/nonfunctional/other pair labels, and plots
 observed/expected contacts.
 
+`--method legacy_fisher` is required here. `touche` defaults to the
+calibrated binomial test, which writes the same nine-column layout with a
+different p-value column; the reference's Fisher score is what reproduces
+the published table byte for byte. The pair assignment and violin plot read
+observed and expected counts rather than p-values, so the figure is the same
+either way -- but the contact table is not.
+
 With `touche`, the one-command pipeline is:
 
 ```bash
@@ -74,6 +81,7 @@ uv run touche local-decay run \
   --nonfunctional "$EP_CONTACTS_INPUTS/Gasperini_dREG_based_nonfunctional.csv" \
   --dist 1000000 \
   --cap 2000 \
+  --method legacy_fisher \
   --plot-min-contacts 1 \
   --plot-min-distance 15000 \
   --out-dir results/reference-plots/local-decay
@@ -97,6 +105,7 @@ uv run touche local-decay call \
   --pairs GSE206131_K562_cis_mapq30_pairs.txt.gz \
   --dist 1000000 \
   --cap 2000 \
+  --method legacy_fisher \
   --out results/reference-plots/local-decay/ContactCaller_microC_output.tsv
 
 uv run touche local-decay assign-pair-types \

@@ -101,9 +101,12 @@ Available command groups:
   EP/background workflow.
 
 See the [CLI reference](docs/cli.md) for examples, common options, and expected
-outputs. The statistical commands are all opt-in: default runs produce exactly
-the output they did before, and the [statistics guide](docs/statistics.md)
-documents what each method tests and what its result supports.
+outputs. `local-decay call` now defaults to the calibrated binomial test
+rather than the reference workflow's Fisher score; the output layout is
+unchanged, and `--method legacy_fisher` reproduces the reference numbers
+exactly. Everything else is opt-in. The
+[statistics guide](docs/statistics.md) documents what each method tests and
+what its result supports.
 
 ## Typical workflow
 

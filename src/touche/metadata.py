@@ -162,6 +162,21 @@ class MethodInfo:
     warnings: list[str] = field(default_factory=list)
     reference: str = "unspecified"
 
+    def write_sidecar(self, table_path: str | Path, *, extra: dict[str, Any] | None = None) -> Path:
+        """Write this metadata as `<table_path>.meta.json` and return that path.
+
+        Split out from `StatResult.write` because a result whose table is in
+        a fixed legacy layout -- which has nowhere to record a method -- still
+        needs one. `extra` merges in fields only the caller knows, such as the
+        row count.
+        """
+        table_path = Path(table_path)
+        meta_path = table_path.with_suffix(table_path.suffix + ".meta.json")
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {**self.to_dict(), **(extra or {})}
+        meta_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return meta_path
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable form, with the `touche` version and a UTC timestamp attached."""
         return {
@@ -224,6 +239,4 @@ class StatResult:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.table.write_csv(path, separator=separator)
-        meta_path = path.with_suffix(path.suffix + ".meta.json")
-        meta_path.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return {"table": path, "metadata": meta_path}
+        return {"table": path, "metadata": self.info.write_sidecar(path, extra={"rows": self.table.height})}

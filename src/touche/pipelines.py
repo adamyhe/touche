@@ -46,6 +46,7 @@ def run_local_decay_pipeline(
     reference_style: bool = True,
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
+    method: str = "binomial",
     n_jobs: int = 1,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,
@@ -54,7 +55,13 @@ def run_local_decay_pipeline(
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> dict[str, Any]:
-    """Run local-decay call, pair assignment, and violin plotting."""
+    """Run local-decay call, pair assignment, and violin plotting.
+
+    Writes the reference nine-column contact table throughout, so `method`
+    only changes its p-value column. Pair assignment and the violin plot read
+    observed and expected counts, not p-values, so they are unaffected by it.
+    Pass `method="legacy_fisher"` to reproduce the reference workflow.
+    """
 
     started = perf_counter()
     instrument = make_instrumentation(progress, profile=profile)
@@ -82,6 +89,7 @@ def run_local_decay_pipeline(
             lowess_delta=lowess_delta,
             lowess_backend=lowess_backend,
             fisher_backend=fisher_backend,
+            method=method,
             n_jobs=n_jobs,
             index_strategy=index_strategy,
             cache_dir=cache_dir,
@@ -127,6 +135,7 @@ def run_local_decay_pipeline(
             "reference_style": reference_style,
             "lowess_backend": lowess_backend,
             "fisher_backend": fisher_backend,
+            "method": method,
             "n_jobs": n_jobs,
             "index_strategy": index_strategy,
             "cache_dir": str(cache_dir) if cache_dir is not None else None,

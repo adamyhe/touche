@@ -156,14 +156,24 @@ code:
 Every statistical addition is opt-in and no default numerical behavior has
 changed. When touching these paths, keep it that way:
 
-- `local-decay call` defaults to `method="legacy_fisher"`,
-  `schema="legacy"` and writes the byte-identical reference nine-column
-  headerless TSV. `schema="tidy"` is the opt-in canonical-schema output with
-  `pair_id`/`n_trials`/`p_null`/`q_value` and a metadata sidecar.
-- `legacy_fisher` is retained for reproducibility only. Its 2x2 table uses a
-  fitted expectation as an observed cell and a histogram-bin count as a
+- `local-decay call` defaults to `method="binomial"` (the calibrated test)
+  with `schema="legacy"`, so the *layout* is still the reference
+  nine-column headerless TSV and only the p-value column's meaning differs.
+  `schema="tidy"` is the opt-in canonical-schema output with
+  `pair_id`/`n_trials`/`p_null`/`q_value`.
+- A metadata sidecar is written whenever `method != "legacy_fisher"`, even
+  under `schema="legacy"`: that layout is headerless and has no `q_value`
+  column, so the sidecar is the only record of which null produced column
+  five. `method="legacy_fisher"` writes none, keeping a
+  reference-reproduction directory byte-identical -- don't change that.
+- `legacy_fisher` is retained for reproducibility only, and is what
+  `scripts/reference_replication.py` and
+  `docs/reproducing-reference-plots.md` pass explicitly. Its 2x2 table uses
+  a fitted expectation as an observed cell and a histogram-bin count as a
   trial total, so it is not a calibrated test and its registry entry says
-  so. Do not present its q-values as an FDR-controlled discovery set.
+  so. Do not present its q-values as an FDR-controlled discovery set. Any
+  test that pins reference numbers, or that exercises `fisher_backend`,
+  must pass it explicitly or it will silently stop testing what it names.
 - `background compare` keeps its reference-reproducing zero filter
   (`zero_policy="drop"`) and CPB divisor (`scale="legacy"`, `depth / 1e10`
   -- contacts per *ten* billion despite the name). Inferential work belongs

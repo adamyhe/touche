@@ -29,7 +29,7 @@ from touche.local_decay import (
     TIDY_LOCAL_DECAY_COLUMNS,
     to_tidy_calls,
 )
-from touche.metadata import StatResult, method_info
+from touche.metadata import MethodInfo, StatResult, method_info
 from touche.stats import ADJUST_METHODS, adjust_pvalue_column, binom_sf_greater, fisher_greater_batch, poisson_sf_greater
 
 DEFAULT_ALPHA_LEVELS = (0.001, 0.01, 0.05, 0.1)
@@ -76,38 +76,14 @@ def test_contacts(
     table = table.with_columns(pl.lit(method).alias("method"))
     table = adjust_pvalue_column(table, p_col="p_value", q_col="q_value", method=fdr, groupby=fdr_scope)
 
-    n_input = table.height
-    n_tested = int(table["p_value"].is_finite().sum()) if n_input else 0
-    untestable = n_input - n_tested
-    if method == "legacy_fisher":
-        warnings.append(
-            "legacy_fisher is retained for reproducibility of the reference workflow. Its null "
-            "is not the contact-sampling process, so its p-values are not calibrated and the "
-            "derived q_value must not be reported as an FDR-controlled discovery set."
-        )
-    if untestable:
-        warnings.append(
-            f"{untestable} of {n_input} pairs were untestable under {method} (no trials or no "
-            "expectation) and carry null p_value/q_value; they are excluded from the FDR family."
-        )
-    if "n_trials" in table.columns and table.height:
-        median_trials = float(np.nanmedian(table["n_trials"].cast(pl.Float64).to_numpy()))
-        if median_trials < 10:
-            warnings.append(
-                f"Median n_trials is {median_trials:g}; discrete upper-tail p-values are coarse at "
-                "this depth and the achievable minimum p-value may exceed the chosen alpha."
-            )
-
-    info = method_info(
-        method,
-        alternative="greater",
-        n_input=n_input,
-        n_tested=n_tested,
-        fdr_method=fdr,
-        fdr_family="all called pairs" if fdr_scope is None else f"stratified by {fdr_scope}",
-        filtered={"untestable": untestable},
-        warnings=warnings,
-        parameters={"recompute": recompute, "fisher_backend": fisher_backend if method == "legacy_fisher" else None},
+    info = contact_method_info(
+        table,
+        method=method,
+        fdr=fdr,
+        fdr_scope=fdr_scope,
+        recompute=recompute,
+        fisher_backend=fisher_backend,
+        extra_warnings=warnings,
     )
     # q_value belongs next to the p_value it adjusts, not appended after the
     # provenance columns, so the two are read together.
@@ -115,6 +91,69 @@ def test_contacts(
     ordered.insert(ordered.index("p_value") + 1, "q_value")
     rest = [c for c in table.columns if c not in ordered]
     return StatResult(table=table.select([*ordered, *rest]), info=info)
+
+
+def contact_method_info(
+    calls: pl.DataFrame,
+    *,
+    method: str,
+    fdr: str | None = None,
+    fdr_scope: str | list[str] | None = None,
+    recompute: bool = True,
+    fisher_backend: str = "numba",
+    extra_warnings: list[str] | None = None,
+) -> MethodInfo:
+    """Describe a per-pair significance run: counts, FDR family, and assumption warnings.
+
+    Shared by `test_contacts` and by `call_local_decay`'s legacy-layout path.
+    The reference nine-column output has no header and no `q_value` column,
+    so when it is written under a non-default null its sidecar is the only
+    record of which null produced column five. Pass `fdr=None` for that case,
+    where no correction was applied.
+    """
+
+    warnings = list(extra_warnings or [])
+    n_input = calls.height
+    n_tested = int(calls["p_value"].is_finite().sum()) if n_input and "p_value" in calls.columns else 0
+    untestable = n_input - n_tested
+    if method == "legacy_fisher":
+        warnings.append(
+            "legacy_fisher is retained for reproducibility of the reference workflow. Its null "
+            "is not the contact-sampling process, so its p-values are not calibrated and any "
+            "derived q_value must not be reported as an FDR-controlled discovery set."
+        )
+    if untestable:
+        warnings.append(
+            f"{untestable} of {n_input} pairs were untestable under {method} (no trials or no "
+            "expectation) and carry a null p-value; they are excluded from the FDR family."
+        )
+    if "n_trials" in calls.columns and n_input:
+        median_trials = float(np.nanmedian(calls["n_trials"].cast(pl.Float64).to_numpy()))
+        if median_trials < 10:
+            warnings.append(
+                f"Median n_trials is {median_trials:g}; discrete upper-tail p-values are coarse at "
+                "this depth and the achievable minimum p-value may exceed the chosen alpha."
+            )
+    return method_info(
+        method,
+        alternative="greater",
+        n_input=n_input,
+        n_tested=n_tested,
+        fdr_method=fdr,
+        fdr_family=(
+            None
+            if fdr is None
+            else "all called pairs"
+            if fdr_scope is None
+            else f"stratified by {fdr_scope}"
+        ),
+        filtered={"untestable": untestable},
+        warnings=warnings,
+        parameters={
+            "recompute": recompute,
+            "fisher_backend": fisher_backend if method == "legacy_fisher" else None,
+        },
+    )
 
 
 # `test_contacts` is an analysis entry point, not a unit test. Marking it here
