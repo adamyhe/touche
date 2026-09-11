@@ -246,7 +246,7 @@ def read_loop_calls(
     if format not in LOOP_FORMATS:
         raise ValueError(f"format must be one of: {', '.join(sorted(LOOP_FORMATS))}")
     spec = LOOP_FORMATS[format]
-    mapping: dict[str, tuple[str, ...] | int] = {**spec.columns, **(columns or {})}
+    mapping: dict[str, tuple[str, ...] | str | int] = {**spec.columns, **(columns or {})}
 
     raw = pl.read_csv(
         path,
@@ -262,13 +262,15 @@ def read_loop_calls(
             f"{path} is missing the {format} column(s) for {', '.join(missing)}. "
             f"Header found: {', '.join(raw.columns)}. Pass columns={{...}} to map them explicitly."
         )
+    # Every `spec.required` field resolved, so these lookups are total.
+    required = {field: name for field, name in resolved.items() if name is not None}
 
     frame = pl.DataFrame(
         {
-            "bait_chrom": raw[resolved["bait_chrom"]].cast(pl.Utf8),
-            "prey_chrom": raw[resolved["prey_chrom"]].cast(pl.Utf8),
-            "bait_start": raw[resolved["bait_start"]].cast(pl.Int64),
-            "prey_start": raw[resolved["prey_start"]].cast(pl.Int64),
+            "bait_chrom": raw[required["bait_chrom"]].cast(pl.Utf8),
+            "prey_chrom": raw[required["prey_chrom"]].cast(pl.Utf8),
+            "bait_start": raw[required["bait_start"]].cast(pl.Int64),
+            "prey_start": raw[required["prey_start"]].cast(pl.Int64),
         }
     )
     frame = frame.with_columns(
@@ -386,7 +388,7 @@ def annotate_pairs(
 
 
 def _resolve_column(
-    raw: pl.DataFrame, field_name: str, source: tuple[str, ...] | int, spec: LoopFormat
+    raw: pl.DataFrame, field_name: str, source: tuple[str, ...] | str | int, spec: LoopFormat
 ) -> str | None:
     """Find the actual header name (or positional column) backing one canonical field."""
     if isinstance(source, int):
@@ -410,7 +412,7 @@ def _normalize(name: str) -> str:
 
 def _interval_end(
     raw: pl.DataFrame, column: str | None, start_field: str, spec: LoopFormat
-) -> pl.Expr:
+) -> pl.Expr | pl.Series:
     """Anchor end, taken from the file or synthesized as a one-base point anchor."""
     end_field = start_field.replace("_start", "_end")
     if column is not None and not spec.point_anchors:
@@ -418,7 +420,9 @@ def _interval_end(
     return (pl.col(start_field) + 1).alias(end_field)
 
 
-def _optional_column(raw: pl.DataFrame, column: str | None, name: str, spec: LoopFormat) -> pl.Expr:
+def _optional_column(
+    raw: pl.DataFrame, column: str | None, name: str, spec: LoopFormat
+) -> pl.Expr | pl.Series:
     """One optional score column, back-transformed from a negative-log scale if needed."""
     if column is None:
         return pl.lit(None, dtype=pl.Float64).alias(name)

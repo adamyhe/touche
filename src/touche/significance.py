@@ -91,8 +91,8 @@ def test_contacts(
             "expectation) and carry null p_value/q_value; they are excluded from the FDR family."
         )
     if "n_trials" in table.columns and table.height:
-        median_trials = table["n_trials"].median()
-        if median_trials is not None and median_trials < 10:
+        median_trials = float(np.nanmedian(table["n_trials"].cast(pl.Float64).to_numpy()))
+        if median_trials < 10:
             warnings.append(
                 f"Median n_trials is {median_trials:g}; discrete upper-tail p-values are coarse at "
                 "this depth and the achievable minimum p-value may exceed the chosen alpha."
@@ -120,7 +120,7 @@ def test_contacts(
 # `test_contacts` is an analysis entry point, not a unit test. Marking it here
 # means importing it into a pytest module does not get it collected and run as
 # a test with a missing `calls` fixture.
-test_contacts.__test__ = False
+test_contacts.__test__ = False  # type: ignore[attr-defined]
 
 
 def read_local_decay_calls(path: str | Path) -> pl.DataFrame:

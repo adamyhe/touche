@@ -194,7 +194,7 @@ def method_info(method: str, **overrides: Any) -> MethodInfo:
     every time they report a result, while still letting a caller record the
     run-specific fields (counts, seed, parameters, warnings).
     """
-    fields = describe_method(method)
+    fields: dict[str, Any] = dict(describe_method(method))
     fields.update(overrides)
     return MethodInfo(method=method, **fields)
 

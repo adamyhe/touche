@@ -329,9 +329,12 @@ def _mask_row(name: str, matrix: np.ndarray, selected: np.ndarray) -> dict[str, 
 def _score_row(score: ApaScore, matrix: np.ndarray, masks: dict[str, np.ndarray]) -> dict[str, Any]:
     """One ratio row, carrying both means and both pixel counts alongside the ratio."""
     numerator, n_numerator = _mask_mean(matrix, masks, score.numerator)
-    denominator, n_denominator = _mask_mean(matrix, masks, score.denominator)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        value = numerator / denominator if denominator is not None else numerator
+    if score.denominator is None:
+        denominator, n_denominator, value = None, None, numerator
+    else:
+        denominator, n_denominator = _mask_mean(matrix, masks, score.denominator)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            value = numerator / denominator
     return {
         "metric": score.name,
         "value": float(value),
@@ -344,10 +347,8 @@ def _score_row(score: ApaScore, matrix: np.ndarray, masks: dict[str, np.ndarray]
     }
 
 
-def _mask_mean(matrix: np.ndarray, masks: dict[str, np.ndarray], name: str | None) -> tuple[float | None, int | None]:
-    """Mean and pixel count of one named mask, or `(None, None)` for an absent denominator."""
-    if name is None:
-        return None, None
+def _mask_mean(matrix: np.ndarray, masks: dict[str, np.ndarray], name: str) -> tuple[float, int]:
+    """Mean and pixel count of one named mask; an empty mask means NaN, not an error."""
     if name not in masks:
         raise ValueError(f"Score references undefined mask {name!r}")
     values = matrix[masks[name]]

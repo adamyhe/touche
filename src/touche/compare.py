@@ -19,7 +19,7 @@ test no matter how small its p-value; for that, the unit must be the library.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 import polars as pl
@@ -33,7 +33,7 @@ from touche.stats import (
     rank_biserial,
 )
 
-STATISTICS = {"median": np.median, "mean": np.mean}
+STATISTICS: dict[str, Callable[[np.ndarray], float]] = {"median": np.median, "mean": np.mean}
 
 
 def compare_groups(
@@ -436,7 +436,7 @@ def _resolve_groups(
     return tuple(sorted(levels[:2]))
 
 
-def _summary(func: Any, values: np.ndarray) -> float:
+def _summary(func: Callable[[np.ndarray], float], values: np.ndarray) -> float:
     """Apply a summary statistic to the finite entries, NaN when there are none."""
     finite = values[np.isfinite(values)]
     return float(func(finite)) if finite.size else float("nan")
