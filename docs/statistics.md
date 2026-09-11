@@ -669,8 +669,8 @@ not mistaken for something it is not:
   replicate concordance, HiCRep SCC, or downsampling stability curves.
 - **Cross-validated null fitting.** `p_null` is fitted from the same bait
   window the pair is tested in; the reuse is recorded but not removed.
-- **A validated replacement for the LOWESS decay fit.**
-  the default `decay_model="normalized"` corrects the scale but keeps the
+- **A validated replacement for the LOWESS decay fit.** The default
+  `decay_model="normalized"` corrects the scale but keeps the
   reference's chunked-LOWESS shape. Residual `observed / expected` still
   ranges about 0.69-1.00 across distance strata on the demo data. A spline
   or isotonic fit to the binned histogram would likely be both better

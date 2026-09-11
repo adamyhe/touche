@@ -6,6 +6,27 @@
 > Audited revision: [`3a8ef67af8110f32e87522ee90e16f2e1db7600d`](https://github.com/adamyhe/touche/tree/3a8ef67af8110f32e87522ee90e16f2e1db7600d), dated 2026-08-29.  
 > Package version at audit: 0.1.4.
 
+## Status
+
+> **Implementation status appended after the Release A + C work landed.**
+> Checked boxes below are implemented and tested; `[~]` is partial. Two
+> defects were found and are recorded in
+> `docs/statistics.md`:
+>
+> 1. The reference's Fisher score is not a calibrated test (as this plan
+>    anticipated). `method` now defaults to `binomial`; `legacy_fisher`
+>    remains for reproduction.
+> 2. **Not anticipated by this plan:** the reference's distance-decay
+>    background model integrates to ~0.54 rather than 1 on sparse
+>    histograms, by an amount that varies with per-bait coverage, so every
+>    expected count it produces is biased. Verified bit-identical against
+>    the reference's own source, so this is an upstream defect faithfully
+>    ported. `decay_model` now defaults to the corrected `normalized`;
+>    reproducing the reference takes `legacy_fisher` *and* `legacy`.
+>
+> The largest outstanding gap is that the benchmark has only been run on
+> synthetic data. See "Not yet implemented" in `docs/statistics.md`.
+
 ## Task objective
 
 Extend Touché with literature-supported analyses and statistics that improve inferential validity, reproducibility, and interoperability while preserving its high-performance core and existing outputs.
@@ -509,16 +530,16 @@ Every statistical result should include:
 
 Implement as separate reviewable pull requests:
 
-- [ ] Define the canonical pair schema and stable `pair_id`.
-- [ ] Add explicit BEDPE/pair-list input shared by APA and background analysis.
-- [ ] Add BH-adjusted `q_value` with a documented test universe.
-- [ ] Rename current significance output to `legacy_fisher` without breaking old APIs.
-- [ ] Add one calibrated native significance mode and null-calibration tests.
-- [ ] Add effect sizes, rank tests, correlations, and bootstrap confidence intervals.
-- [ ] Add configurable APA masks and tidy summary output.
-- [ ] Preserve zeros in background inference; separate display transforms from modeling.
-- [ ] Verify CPB scaling and add a compatibility-preserving correction if warranted.
-- [ ] Add method/configuration metadata to all statistical outputs.
+- [x] Define the canonical pair schema and stable `pair_id`.
+- [x] Add explicit BEDPE/pair-list input shared by APA and background analysis.
+- [x] Add BH-adjusted `q_value` with a documented test universe.
+- [x] Rename current significance output to `legacy_fisher` without breaking old APIs.
+- [x] Add one calibrated native significance mode and null-calibration tests.
+- [x] Add effect sizes, rank tests, correlations, and bootstrap confidence intervals.
+- [x] Add configurable APA masks and tidy summary output.
+- [x] Preserve zeros in background inference; separate display transforms from modeling.
+- [x] Verify CPB scaling and add a compatibility-preserving correction if warranted.
+- [x] Add method/configuration metadata to all statistical outputs.
 
 Release A should avoid new mandatory dependencies beyond the existing NumPy/SciPy-style stack where feasible.
 
@@ -527,17 +548,17 @@ Release A should avoid new mandatory dependencies beyond the existing NumPy/SciP
 - [ ] Add a validated sample/design-table parser.
 - [ ] Add one replicate-aware differential backend behind a stable interface.
 - [ ] Support batch/block covariates, offsets, and condition-by-region contrasts.
-- [ ] Add cluster bootstrap for shared promoters/enhancers/components.
-- [ ] Add matched/weighted control construction with balance diagnostics.
+- [x] Add cluster bootstrap for shared promoters/enhancers/components.
+- [x] Add matched/weighted control construction with balance diagnostics.
 - [ ] Add distance-matched random-shift APA controls and expected normalization.
 - [ ] Add `P(s)`, replicate concordance, and deterministic depth/saturation QC.
 - [ ] Add simulations for type-I error, power, zero inflation, and overdispersion.
 
 ### Release C: interoperability and advanced analyses
 
-- [ ] Add FitHiC2, MaxHiC, and HiC-DC+ import/export adapters.
-- [ ] Add generic BEDPE loop imports for Mustache, Peakachu, Chromosight, and HiCCUPS.
-- [ ] Benchmark native and external significance methods.
+- [x] Add FitHiC2, MaxHiC, and HiC-DC+ import/export adapters.
+- [x] Add generic BEDPE loop imports for Mustache, Peakachu, Chromosight, and HiCCUPS.
+- [~] Benchmark native and external significance methods. (`scripts/gasperini_benchmark.py` compares the native methods against baselines on null calibration and functional prediction; external callers are importable but not yet run in it, and the benchmark has only been run on synthetic demo data.)
 - [ ] Add an experimental AbLE-compatible local-quantification module.
 - [ ] Add optional ABC scoring.
 - [ ] Add optional promoter-centric graph and stripe summaries.
