@@ -25,6 +25,7 @@ from touche.anchors import read_bed_anchors
 from touche.contacts import build_contact_indexes, load_cached_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex, NamedDepth, NamedPath
+from touche.pairs import PairAnchors, read_bedpe, split_pair_anchors
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -59,6 +60,7 @@ def count_ep_and_background(
     window: int,
     min_bg_distance: int,
     max_bg_distance: int,
+    pairs_list: str | Path | None = None,
     source: str = "auto",
     index_strategy: str = "all",
     cache_dir: str | Path | None = None,
@@ -75,6 +77,13 @@ def count_ep_and_background(
     both would otherwise each pay their own full pairs-file parse. The
     cache only needs positions (no strand/mapq), but a cache shared with
     `apa aggregate` may include metadata anyway -- harmless, just ignored.
+
+    `pairs_list` takes a BEDPE of explicit bait/prey pairs instead of
+    crossing every bait with every prey inside `[min_distance,
+    max_distance]`. When given, that list *is* the pair universe: no pair is
+    added to it and none is dropped from it by the distance filter, so a
+    restricted hypothesis stays restricted. `baits_path`/`preys_path` are
+    then unused.
     """
 
     if index_strategy not in {"all", "cache"}:
@@ -99,8 +108,9 @@ def count_ep_and_background(
                 cis_only=True,
                 include_metadata=False,
             )
-        baits = read_bed_anchors(baits_path)
-        preys = read_bed_anchors(preys_path)
+        explicit_pairs = read_bedpe(pairs_list, cis_only=True) if pairs_list is not None else None
+        baits = read_bed_anchors(baits_path) if explicit_pairs is None else pl.DataFrame()
+        preys = read_bed_anchors(preys_path) if explicit_pairs is None else pl.DataFrame()
     result = compute_ep_and_background(
         indexes,
         baits,
@@ -110,6 +120,7 @@ def count_ep_and_background(
         window=window,
         min_bg_distance=min_bg_distance,
         max_bg_distance=max_bg_distance,
+        pairs=explicit_pairs,
         progress=instrument,
     )
 
@@ -130,14 +141,23 @@ def compute_ep_and_background(
     window: int,
     min_bg_distance: int,
     max_bg_distance: int,
+    pairs: pl.DataFrame | None = None,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> pl.DataFrame:
-    """Count EP and local-background contacts from in-memory indexes and anchors."""
+    """Count EP and local-background contacts from in-memory indexes and anchors.
+
+    Pass `pairs` (a canonical pair table from `touche.pairs`) to count an
+    explicit pair list instead of the distance-filtered product of `baits`
+    and `preys`; `baits`/`preys` are then ignored.
+    """
 
     instrument = make_instrumentation(progress, profile=profile)
     frames: list[pl.DataFrame] = []
-    chrom_list = baits["chr"].unique(maintain_order=True).to_list()
+    explicit = split_pair_anchors(pairs) if pairs is not None else None
+    chrom_list = (
+        list(explicit) if explicit is not None else baits["chr"].unique(maintain_order=True).to_list()
+    )
 
     chrom_iter = instrument.iter(
         chrom_list,
@@ -149,20 +169,12 @@ def compute_ep_and_background(
         index = indexes.get(chrom)
         if index is None:
             continue
-        chrom_baits = baits.filter(pl.col("chr") == chrom)
-        chrom_preys = preys.filter(pl.col("chr") == chrom)
-        if chrom_preys.is_empty():
-            continue
-        prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
-        bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
-        pair_bait_indexes, pair_prey_indexes = _candidate_pair_indexes(
-            bait_centers,
-            prey_centers,
-            min_distance=min_distance,
-            max_distance=max_distance,
+        selection = _chromosome_selection(
+            chrom, baits, preys, explicit, min_distance=min_distance, max_distance=max_distance
         )
-        if not len(pair_bait_indexes):
+        if selection is None:
             continue
+        bait_centers, prey_centers, pair_bait_indexes, pair_prey_indexes = selection
 
         ep_counts, bg_counts = _count_ep_background_pairs_numba(
             index.pos_a,
@@ -191,6 +203,41 @@ def compute_ep_and_background(
     if not frames:
         return pl.DataFrame(schema=_BACKGROUND_SCHEMA)
     return pl.concat(frames)
+
+
+def _chromosome_selection(
+    chrom: str,
+    baits: pl.DataFrame,
+    preys: pl.DataFrame,
+    explicit: dict[str, PairAnchors] | None,
+    *,
+    min_distance: int,
+    max_distance: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Anchor centers and pair indexes for one chromosome, from an explicit list or the distance filter."""
+    if explicit is not None:
+        anchors = explicit.get(chrom)
+        if anchors is None:
+            return None
+        return (
+            anchors.baits["center"].to_numpy().astype(np.int64),
+            anchors.preys["center"].to_numpy().astype(np.int64),
+            anchors.bait_index,
+            anchors.prey_index,
+        )
+
+    chrom_baits = baits.filter(pl.col("chr") == chrom)
+    chrom_preys = preys.filter(pl.col("chr") == chrom)
+    if chrom_preys.is_empty():
+        return None
+    bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
+    prey_centers = chrom_preys["center"].to_numpy().astype(np.int64)
+    pair_bait_indexes, pair_prey_indexes = _candidate_pair_indexes(
+        bait_centers, prey_centers, min_distance=min_distance, max_distance=max_distance
+    )
+    if not len(pair_bait_indexes):
+        return None
+    return bait_centers, prey_centers, pair_bait_indexes, pair_prey_indexes
 
 
 def _candidate_pair_indexes(

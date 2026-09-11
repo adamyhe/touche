@@ -31,8 +31,10 @@ coordinates are still carried in the table as provenance.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 
 from touche.anchors import read_bed_anchors
@@ -76,6 +78,22 @@ PAIR_SCHEMA: dict[str, pl.DataType] = {
     "distance": pl.Int64,
     "directional_distance": pl.Int64,
 }
+
+@dataclass(frozen=True, slots=True)
+class PairAnchors:
+    """One chromosome's deduplicated anchors and the pair indexes selecting combinations of them.
+
+    `bait_index[i]`/`prey_index[i]` are row positions into `baits`/`preys`
+    for the pair whose id is `pair_ids[i]`, which is exactly the form the
+    Numba counting kernels take.
+    """
+
+    baits: pl.DataFrame
+    preys: pl.DataFrame
+    bait_index: np.ndarray
+    prey_index: np.ndarray
+    pair_ids: pl.Series
+
 
 BEDPE_CORE_COLUMNS = [
     "chrom1",
@@ -346,9 +364,63 @@ def write_bedpe(pairs: pl.DataFrame, path: str | Path, *, score_col: str | None 
     return path
 
 
+def split_pair_anchors(pairs: pl.DataFrame) -> dict[str, PairAnchors]:
+    """Split a canonical cis pair table into per-chromosome anchor frames plus pair indexes.
+
+    This is the bridge between an explicit pair list and the counting code,
+    which works on deduplicated anchor arrays plus index vectors selecting
+    which bait/prey combinations to count. The returned `baits`/`preys`
+    frames use `touche.anchors.read_bed_anchors` column names
+    (`chr`/`start`/`end`/`strand`/`center`), so they drop straight into
+    `compute_apa` and `compute_ep_and_background` in place of the frames
+    those functions would otherwise cross into a Cartesian product.
+
+    Trans pairs are dropped -- neither APA nor local-background counting is
+    defined across chromosomes.
+    """
+
+    anchors: dict[str, PairAnchors] = {}
+    cis = pairs.filter(pl.col("is_cis")) if "is_cis" in pairs.columns else pairs
+    if cis.is_empty():
+        return anchors
+    for key, part in cis.group_by(["chrom"], maintain_order=True):
+        chrom = str(key[0])
+        baits = _role_anchors(part, "bait")
+        preys = _role_anchors(part, "prey")
+        anchors[chrom] = PairAnchors(
+            baits=baits,
+            preys=preys,
+            bait_index=_anchor_positions(part["bait_id"], baits["anchor_id"]),
+            prey_index=_anchor_positions(part["prey_id"], preys["anchor_id"]),
+            pair_ids=part["pair_id"],
+        )
+    return anchors
+
+
 def read_pair_anchors(path: str | Path) -> pl.DataFrame:
     """Read a BED anchor file the way the pair table expects it; see `touche.anchors.read_bed_anchors`."""
     return read_bed_anchors(path)
+
+
+def _role_anchors(pairs: pl.DataFrame, role: str) -> pl.DataFrame:
+    """Deduplicated anchors for one role, in `read_bed_anchors` column names plus `anchor_id`."""
+    return (
+        pairs.select(
+            pl.col(f"{role}_chrom").alias("chr"),
+            pl.col(f"{role}_start").alias("start"),
+            pl.col(f"{role}_end").alias("end"),
+            pl.col(f"{role}_strand").alias("strand"),
+            pl.col(f"{role}_center").alias("center"),
+            pl.col(f"{role}_id").alias("anchor_id"),
+        )
+        .unique(subset="anchor_id", maintain_order=True)
+    )
+
+
+def _anchor_positions(ids: pl.Series, anchor_ids: pl.Series) -> np.ndarray:
+    """Row position in `anchor_ids` for each entry of `ids`."""
+    lookup = {value: position for position, value in enumerate(anchor_ids.to_list())}
+    return np.fromiter((lookup[value] for value in ids.to_list()), dtype=np.int64, count=ids.len())
 
 
 def _anchor_key(chrom: pl.Expr | str, center: pl.Expr | str) -> pl.Expr:

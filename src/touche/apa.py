@@ -22,6 +22,7 @@ from touche.anchors import read_bed_anchors
 from touche.contacts import build_contact_indexes, load_cached_contact_indexes
 from touche.instrumentation import Instrumentation, make_instrumentation
 from touche.models import ContactIndex
+from touche.pairs import PairAnchors, read_bedpe, split_pair_anchors
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -67,6 +68,7 @@ def aggregate_apa(
     max_distance: int,
     window: int,
     pixels: int,
+    pairs_list: str | Path | None = None,
     source: str = "auto",
     shift: int = 75,
     reference_style: bool = True,
@@ -83,6 +85,13 @@ def aggregate_apa(
     (building it first if missing) instead of re-parsing `pairs_path` --
     useful when `background count` is also run against the same sample,
     since both would otherwise each pay their own full pairs-file parse.
+
+    `pairs_list` takes a BEDPE of explicit bait/prey pairs instead of
+    piling up every bait crossed with every prey inside `[min_distance,
+    max_distance]`. That list is then the pileup's pair universe exactly as
+    given, which is what makes a pileup over a restricted hypothesis (a
+    functional enhancer-promoter set, an imported loop call set) mean what
+    it says. `baits_path`/`preys_path` are unused when it is supplied.
     """
 
     if index_strategy not in {"all", "cache"}:
@@ -102,8 +111,9 @@ def aggregate_apa(
             )
         else:
             indexes = build_contact_indexes(pairs_path, source=source, cis_only=True)
-        baits = read_bed_anchors(baits_path)
-        preys = read_bed_anchors(preys_path)
+        explicit_pairs = read_bedpe(pairs_list, cis_only=True) if pairs_list is not None else None
+        baits = read_bed_anchors(baits_path) if explicit_pairs is None else pl.DataFrame()
+        preys = read_bed_anchors(preys_path) if explicit_pairs is None else pl.DataFrame()
     result = compute_apa(
         indexes,
         baits,
@@ -112,6 +122,7 @@ def aggregate_apa(
         max_distance=max_distance,
         window=window,
         pixels=pixels,
+        pairs=explicit_pairs,
         shift=shift,
         progress=instrument,
     )
@@ -128,12 +139,17 @@ def compute_apa(
     max_distance: int,
     window: int,
     pixels: int,
+    pairs: pl.DataFrame | None = None,
     shift: int = 75,
     keep_chromosomes: bool = False,
     progress: bool | Instrumentation = False,
     profile: bool = False,
 ) -> ApaResult:
     """Compute APA matrix and 1D anchor signal from in-memory indexes and anchors.
+
+    Pass `pairs` (a canonical pair table from `touche.pairs`) to pile up an
+    explicit pair list instead of the distance-filtered product of `baits`
+    and `preys`; `baits`/`preys` are then ignored.
 
     `keep_chromosomes=True` additionally retains each chromosome's own
     pileup on the result, which is what
@@ -153,7 +169,10 @@ def compute_apa(
     prey_signal_arr = np.zeros(n, dtype=np.int64)
 
     chrom_matrices: dict[str, np.ndarray] = {}
-    chrom_list = baits["chr"].unique(maintain_order=True).to_list()
+    explicit = split_pair_anchors(pairs) if pairs is not None else None
+    chrom_list = (
+        list(explicit) if explicit is not None else baits["chr"].unique(maintain_order=True).to_list()
+    )
     chrom_iter = instrument.iter(
         chrom_list,
         total=len(chrom_list),
@@ -164,8 +183,11 @@ def compute_apa(
         index = indexes.get(chrom)
         if index is None:
             continue
-        chrom_baits = baits.filter(pl.col("chr") == chrom)
-        chrom_preys = preys.filter(pl.col("chr") == chrom)
+        anchors = explicit.get(chrom) if explicit is not None else None
+        if explicit is not None and anchors is None:
+            continue
+        chrom_baits = anchors.baits if anchors else baits.filter(pl.col("chr") == chrom)
+        chrom_preys = anchors.preys if anchors else preys.filter(pl.col("chr") == chrom)
         if chrom_preys.is_empty():
             continue
 
@@ -185,6 +207,7 @@ def compute_apa(
             long_range,
             chrom_baits,
             chrom_preys,
+            anchors,
             min_distance=min_distance,
             max_distance=max_distance,
             window=window,
@@ -216,6 +239,7 @@ def _add_chrom_apa_numba(
     long_range: np.ndarray,
     chrom_baits: pl.DataFrame,
     chrom_preys: pl.DataFrame,
+    anchors: PairAnchors | None = None,
     *,
     min_distance: int,
     max_distance: int,
@@ -224,9 +248,11 @@ def _add_chrom_apa_numba(
 ) -> None:
     """Accumulate one chromosome's contribution to `matrix`/`bait_signal`/`prey_signal` in place.
 
-    Baits are filtered to those with at least one prey candidate in
-    `[min_distance, max_distance]` before the (expensive) numba matrix kernel
-    runs, since most baits on a chromosome have none.
+    Without `anchors`, baits are filtered to those with at least one prey
+    candidate in `[min_distance, max_distance]` before the (expensive) numba
+    matrix kernel runs, since most baits on a chromosome have none. With
+    `anchors`, the pair grouping comes from the explicit pair list instead
+    and no distance filter is applied.
     """
     bait_centers = chrom_baits["center"].to_numpy().astype(np.int64)
     bait_strands = _strand_codes(chrom_baits["strand"])
@@ -238,20 +264,16 @@ def _add_chrom_apa_numba(
     sorted_pos_a = pos_a[order_a]
     sorted_pos_b = pos_b[order_b]
 
-    group_bait_indexes: list[int] = []
-    group_starts: list[int] = [0]
-    pair_prey_indexes: list[int] = []
-    active_bait = np.zeros(bait_centers.shape[0], dtype=bool)
-    for bait_index, bait_center in enumerate(bait_centers):
-        distances = np.abs(prey_centers - bait_center)
-        candidate_indexes = np.flatnonzero(
-            (distances >= min_distance) & (distances <= max_distance)
+    if anchors is None:
+        group_bait_indexes, group_starts, pair_prey_indexes = _distance_pair_groups(
+            bait_centers, prey_centers, min_distance=min_distance, max_distance=max_distance
         )
-        if len(candidate_indexes):
-            active_bait[bait_index] = True
-            group_bait_indexes.append(bait_index)
-            pair_prey_indexes.extend(candidate_indexes.tolist())
-            group_starts.append(len(pair_prey_indexes))
+    else:
+        group_bait_indexes, group_starts, pair_prey_indexes = _explicit_pair_groups(
+            anchors.bait_index, anchors.prey_index
+        )
+    active_bait = np.zeros(bait_centers.shape[0], dtype=bool)
+    active_bait[group_bait_indexes] = True
 
     if active_bait.any():
         bait_values = _apa_anchor_signal_numba(
@@ -304,6 +326,35 @@ def _add_chrom_apa_numba(
             pixels=pixels,
         )
         matrix += matrix_values
+
+
+def _distance_pair_groups(
+    bait_centers: np.ndarray, prey_centers: np.ndarray, *, min_distance: int, max_distance: int
+) -> tuple[list[int], list[int], list[int]]:
+    """Bait/prey grouping from the implicit distance-filtered pair universe."""
+    group_bait_indexes: list[int] = []
+    group_starts: list[int] = [0]
+    pair_prey_indexes: list[int] = []
+    for bait_index, bait_center in enumerate(bait_centers):
+        distances = np.abs(prey_centers - bait_center)
+        candidate_indexes = np.flatnonzero((distances >= min_distance) & (distances <= max_distance))
+        if len(candidate_indexes):
+            group_bait_indexes.append(bait_index)
+            pair_prey_indexes.extend(candidate_indexes.tolist())
+            group_starts.append(len(pair_prey_indexes))
+    return group_bait_indexes, group_starts, pair_prey_indexes
+
+
+def _explicit_pair_groups(
+    bait_index: np.ndarray, prey_index: np.ndarray
+) -> tuple[list[int], list[int], list[int]]:
+    """Bait/prey grouping from an explicit pair list, in the kernel's grouped-CSR layout."""
+    order = np.argsort(bait_index, kind="mergesort")
+    sorted_baits = bait_index[order]
+    boundaries = np.flatnonzero(np.diff(sorted_baits)) + 1
+    group_bait_indexes = sorted_baits[np.concatenate([[0], boundaries])].tolist() if order.size else []
+    starts = np.concatenate([[0], boundaries, [order.size]]).tolist() if order.size else [0]
+    return group_bait_indexes, [int(value) for value in starts], prey_index[order].tolist()
 
 
 def _apa_anchor_signal_numba(
