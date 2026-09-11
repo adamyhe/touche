@@ -72,6 +72,24 @@ rediscovering that functional pairs are closer together. `balance.tsv`
 gives standardized differences before and after; above ~0.1 means a
 covariate is still imbalanced.
 
+## Comparing decay models
+
+`--decay-model` is passed straight through to `local-decay call`, so the
+same benchmark answers whether the corrected background model is actually
+better calibrated:
+
+```bash
+for model in legacy normalized; do
+  uv run python scripts/gasperini_benchmark.py --demo \
+    --decay-model $model --out-dir benchmark/gasperini/$model
+done
+```
+
+On the demo data that moves `observed_over_expected` from 1.80 to 0.94 and
+the binomial test from rejecting 25.6% of null pairs at a nominal 5% to
+2.8%, with AUPRC unchanged. Re-run it on the real data before drawing the
+same conclusion there.
+
 ## Baselines are the point
 
 `observed` (raw contact count) and `neg_log10_distance` are scored

@@ -135,6 +135,13 @@ _TIDY_SCHEMA: dict[str, pl.DataType] = {
 SIGNIFICANCE_METHODS = {"legacy_fisher", "binomial", "poisson"}
 LOCAL_DECAY_SCHEMAS = {"legacy", "tidy"}
 
+# How the per-bait distance-decay background is turned into a density.
+# `legacy` reproduces the reference implementation exactly, scale error and
+# all. `normalized` drops the robust reweighting that biases a sparse count
+# histogram downward and rescales the fit to integrate to 1.
+DECAY_MODELS = {"legacy", "normalized"}
+NORMALIZED_DECAY_ITERATIONS = 0
+
 
 def call_local_decay(
     baits_path: str | Path,
@@ -157,6 +164,7 @@ def call_local_decay(
     cache_prefix: str = "contacts",
     require_cache: bool = False,
     method: str = "binomial",
+    decay_model: str = "legacy",
     schema: str = "legacy",
     fdr: str = "bh",
     fdr_scope: str | list[str] | None = None,
@@ -199,6 +207,8 @@ def call_local_decay(
         raise ValueError("index_strategy must be one of: all, chromosome, cache")
     if schema not in LOCAL_DECAY_SCHEMAS:
         raise ValueError(f"schema must be one of: {', '.join(sorted(LOCAL_DECAY_SCHEMAS))}")
+    if decay_model not in DECAY_MODELS:
+        raise ValueError(f"decay_model must be one of: {', '.join(sorted(DECAY_MODELS))}")
 
     instrument = make_instrumentation(progress, profile=profile)
     with instrument.step("read inputs"):
@@ -230,6 +240,7 @@ def call_local_decay(
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
             method=method,
+            decay_model=decay_model,
             schema=schema,
             progress=instrument,
         )
@@ -249,6 +260,7 @@ def call_local_decay(
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
             method=method,
+            decay_model=decay_model,
             schema=schema,
             progress=instrument,
         )
@@ -274,6 +286,7 @@ def call_local_decay(
             lowess_iterations=lowess_iterations,
             n_jobs=n_jobs,
             method=method,
+            decay_model=decay_model,
             schema=schema,
             progress=instrument,
         )
@@ -289,13 +302,16 @@ def call_local_decay(
                 # reproducing the reference leaves the directory unchanged.
                 from touche.significance import contact_method_info
 
-                contact_method_info(calls, method=method, recompute=False).write_sidecar(
-                    out_path, extra={"rows": calls.height}
-                )
+                contact_method_info(
+                    calls, method=method, recompute=False, decay_model=decay_model
+                ).write_sidecar(out_path, extra={"rows": calls.height})
         else:
             from touche.significance import test_contacts
 
-            result = test_contacts(calls, method=method, fdr=fdr, fdr_scope=fdr_scope, recompute=False)
+            result = test_contacts(
+                calls, method=method, fdr=fdr, fdr_scope=fdr_scope, recompute=False,
+                decay_model=decay_model,
+            )
             result.write(out_path)
             calls = result.table
     return calls
@@ -324,6 +340,7 @@ def _call_local_decay_by_chromosome(
     lowess_iterations: int,
     n_jobs: int,
     method: str,
+    decay_model: str,
     schema: str,
     progress: Instrumentation,
 ) -> pl.DataFrame:
@@ -371,6 +388,7 @@ def _call_local_decay_by_chromosome(
                 lowess_iterations=lowess_iterations,
                 n_jobs=n_jobs,
                 method=method,
+                decay_model=decay_model,
                 schema=schema,
                 progress=progress,
             )
@@ -396,6 +414,7 @@ def _call_local_decay_from_cache(
     lowess_iterations: int,
     n_jobs: int,
     method: str,
+    decay_model: str,
     schema: str,
     progress: Instrumentation,
 ) -> pl.DataFrame:
@@ -438,6 +457,7 @@ def _call_local_decay_from_cache(
                 lowess_iterations=lowess_iterations,
                 n_jobs=n_jobs,
                 method=method,
+                decay_model=decay_model,
                 schema=schema,
                 progress=progress,
             )
@@ -462,6 +482,7 @@ def compute_local_decay(
     lowess_iterations: int = 3,
     n_jobs: int = 1,
     method: str = "binomial",
+    decay_model: str = "legacy",
     schema: str = "legacy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
@@ -486,8 +507,12 @@ def compute_local_decay(
         raise ValueError("cap must be non-negative")
     if method not in SIGNIFICANCE_METHODS:
         raise ValueError(f"method must be one of: {', '.join(sorted(SIGNIFICANCE_METHODS))}")
+    if decay_model not in DECAY_MODELS:
+        raise ValueError(f"decay_model must be one of: {', '.join(sorted(DECAY_MODELS))}")
     if schema not in LOCAL_DECAY_SCHEMAS:
         raise ValueError(f"schema must be one of: {', '.join(sorted(LOCAL_DECAY_SCHEMAS))}")
+    if decay_model not in DECAY_MODELS:
+        raise ValueError(f"decay_model must be one of: {', '.join(sorted(DECAY_MODELS))}")
     lowess_backend = validate_lowess_backend(lowess_backend)
     fisher_backend = validate_fisher_backend(fisher_backend)
     if lowess_iterations < 0:
@@ -524,6 +549,7 @@ def compute_local_decay(
         fisher_backend=fisher_backend,
         lowess_iterations=lowess_iterations,
         method=method,
+        decay_model=decay_model,
     )
 
     # Baits are fully independent (no shared mutable state, no randomness),
@@ -857,6 +883,7 @@ def _call_bait_contacts(
     lowess_iterations: int,
     max_span: int,
     method: str = "binomial",
+    decay_model: str = "legacy",
 ) -> list[dict[str, float | int | str]]:
     """Call one bait's contacts against `prey_centers`: fit local decay, then test each prey.
 
@@ -881,6 +908,8 @@ def _call_bait_contacts(
     if len(bin_counts) > max_distance:
         counts[-1] += bin_counts[max_distance]
     counts_zero = np.where(counts != 0, 0.0, 1.0)
+    normalized = decay_model == "normalized"
+    decay_iterations = NORMALIZED_DECAY_ITERATIONS if normalized else lowess_iterations
     zero_model = fit_zero_inflation_model(
         counts_zero,
         dist=dist,
@@ -897,7 +926,8 @@ def _call_bait_contacts(
         winsize=lowess_window,
         delta=lowess_delta,
         backend=lowess_backend,
-        iterations=lowess_iterations,
+        iterations=decay_iterations,
+        normalize=normalized,
     )
 
     bait_start = bait_center - cap
@@ -1087,8 +1117,32 @@ def fit_distance_decay_model(
     delta: float = 16.0,
     backend: str = DEFAULT_LOWESS_BACKEND,
     iterations: int = 3,
+    normalize: bool = False,
 ) -> np.ndarray:
-    """Fit the reference distance-decay LOWESS model."""
+    """Fit the distance-decay background model, as a density over genomic distance.
+
+    `normalize=False` reproduces the reference implementation bit for bit,
+    including its scale error: it divides the fitted curve by the number of
+    contacts in the window, which would be right if the smoother preserved
+    the histogram's mass, and the smoother does not. Two effects compound --
+    `iterations` rounds of robust reweighting treat the populated bins of a
+    mostly-empty 1 bp histogram as outliers and pull the fit toward zero,
+    while `zero_model` adds a pedestal that was never a count. The result
+    integrates to roughly 0.54 rather than 1 on real-shaped data, so every
+    expected count built from it is about half what it should be. See
+    `docs/statistics.md`.
+
+    The size of that error depends on how sparse the histogram is, which
+    makes it worse than a fixed factor: at high per-bait coverage the
+    reference model is roughly unbiased, and at the sparsity of a real
+    Micro-C bait over a megabase window it loses about half the mass. The
+    bias therefore varies from bait to bait with local coverage.
+
+    `normalize=True` divides by the fitted curve's own mass instead, which
+    makes the result integrate to 1 over `[0, dist)` -- the defining
+    property of the density this is supposed to be, and one that holds
+    whatever the smoother does to the total.
+    """
 
     target_len = min(dist, len(contact_counts), len(zero_model))
     if target_len <= 0:
@@ -1167,10 +1221,20 @@ def fit_distance_decay_model(
         write_pos += len(counts_tail)
 
     bg_model = np.asarray(buffer[:write_pos][:target_len], dtype=float)
-    reads = int((np.asarray(distances) < dist).sum())
-    if reads == 0:
+    if int((np.asarray(distances) < dist).sum()) == 0:
+        # No contacts in the window means there is no density to estimate.
+        # The zero-inflation pedestal would otherwise normalize to a flat
+        # distribution, which looks like information and is not.
         return np.zeros_like(bg_model)
-    return bg_model / reads
+    if normalize:
+        # The background model is a probability distribution over distance,
+        # so its own mass is the only defensible divisor. Clipping first
+        # keeps a negative excursion of the local linear fit from eating
+        # mass that belongs to the positive bins.
+        bg_model = np.clip(bg_model, 0.0, None)
+        total = float(bg_model.sum())
+        return bg_model / total if total > 0 else np.zeros_like(bg_model)
+    return bg_model / int((np.asarray(distances) < dist).sum())
 
 
 def _safe_lowess(

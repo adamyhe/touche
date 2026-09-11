@@ -96,6 +96,7 @@ def main() -> int:
 
     inputs = build_demo_inputs(args.work_dir) if args.demo else fetch_inputs(args)
     call_kwargs = dict(
+        decay_model=args.decay_model,
         dist=args.dist,
         cap=args.cap,
         min_distance=args.min_distance,
@@ -184,6 +185,7 @@ def main() -> int:
         "demo": args.demo,
         "argv": sys.argv,
         "parameters": {
+            "decay_model": args.decay_model,
             "dist": args.dist, "cap": args.cap, "min_distance": args.min_distance,
             "shifts": args.shifts, "bootstrap": args.bootstrap, "seed": args.seed,
             "match_distance_caliper": args.match_distance_caliper,
@@ -226,6 +228,12 @@ def parse_args() -> argparse.Namespace:
         help="Run on a small synthetic dataset with a planted signal instead of downloading.",
     )
     parser.add_argument("--skip-download", action="store_true", help="Require inputs to already exist.")
+    parser.add_argument(
+        "--decay-model",
+        choices=["legacy", "normalized"],
+        default="legacy",
+        help="Background-density scaling passed to local-decay; see touche's --decay-model.",
+    )
     parser.add_argument("--dist", type=int, default=1_000_000)
     parser.add_argument("--cap", type=int, default=2_000)
     parser.add_argument("--min-distance", type=int, default=5_000)
@@ -737,6 +745,7 @@ def write_summary(
         "# Gasperini benchmark",
         "",
         f"- touche {manifest['touche_version']}, generated {manifest['created_at']}",
+        f"- decay model: **{manifest['parameters']['decay_model']}**",
         f"- demo mode: **{manifest['demo']}**"
         + ("  (synthetic data with a planted signal -- not evidence about real data)" if manifest["demo"] else ""),
         f"- labelled pairs: {manifest['counts']['positive']} functional, "

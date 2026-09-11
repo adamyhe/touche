@@ -16,7 +16,13 @@ import polars as pl
 from touche.backends import DEFAULT_FISHER_BACKEND, DEFAULT_LOWESS_BACKEND
 from touche.cli.utils import add_instrumentation_args, add_timings, make_cli_instrumentation, print_json
 from touche.compare import compare_groups, correlate
-from touche.local_decay import SIGNIFICANCE_METHODS, assign_pair_types, call_local_decay, plot_pair_type_distribution
+from touche.local_decay import (
+    DECAY_MODELS,
+    SIGNIFICANCE_METHODS,
+    assign_pair_types,
+    call_local_decay,
+    plot_pair_type_distribution,
+)
 from touche.pipelines import run_local_decay_pipeline
 from touche.significance import assess_calibration, read_local_decay_calls, test_contacts
 from touche.stats import ADJUST_METHODS
@@ -121,6 +127,7 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Number of baits to process concurrently. Use 1 for sequential processing.",
     )
     _add_significance_args(call_parser)
+    _add_decay_model_arg(call_parser)
     call_parser.add_argument(
         "--schema",
         choices=["legacy", "tidy"],
@@ -330,6 +337,7 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Number of baits to process concurrently. Use 1 for sequential processing.",
     )
     _add_method_arg(run_parser)
+    _add_decay_model_arg(run_parser)
     add_instrumentation_args(run_parser)
     run_parser.add_argument(
         "--plot-min-contacts",
@@ -404,6 +412,21 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     plot_parser.set_defaults(func=_plot_pair_type_distribution)
 
 
+def _add_decay_model_arg(parser: argparse.ArgumentParser) -> None:
+    """Register the `--decay-model` flag choosing how the background density is scaled."""
+    parser.add_argument(
+        "--decay-model",
+        choices=sorted(DECAY_MODELS),
+        default="legacy",
+        help=(
+            "How the per-bait distance-decay background is turned into a density. legacy "
+            "reproduces the reference implementation including its scale error, which makes "
+            "expected counts roughly half what they should be; normalized rescales the fit "
+            "to integrate to 1 and drops the robust reweighting that causes it."
+        ),
+    )
+
+
 def _add_method_arg(parser: argparse.ArgumentParser) -> None:
     """Register the shared `--method` flag and its guidance."""
     parser.add_argument(
@@ -460,6 +483,7 @@ def _call_local_decay(args: argparse.Namespace) -> None:
         cache_prefix=args.cache_prefix,
         require_cache=args.require_cache,
         method=args.method,
+        decay_model=args.decay_model,
         schema=args.schema,
         fdr=args.fdr,
         fdr_scope=args.fdr_scope or None,
@@ -470,6 +494,7 @@ def _call_local_decay(args: argparse.Namespace) -> None:
             {
                 "rows": int(len(calls)),
                 "method": args.method,
+                "decay_model": args.decay_model,
                 "schema": args.schema,
                 "out": str(args.out),
             },
@@ -548,6 +573,7 @@ def _run_local_decay(args: argparse.Namespace) -> None:
         fisher_backend=args.fisher_backend,
         lowess_iterations=args.lowess_iterations,
         method=args.method,
+        decay_model=args.decay_model,
         n_jobs=args.jobs,
         index_strategy=args.index_strategy,
         cache_dir=args.cache_dir,

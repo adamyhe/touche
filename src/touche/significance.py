@@ -43,6 +43,7 @@ def test_contacts(
     fdr_scope: str | list[str] | None = None,
     recompute: bool = True,
     fisher_backend: str = "numba",
+    decay_model: str | None = None,
 ) -> StatResult:
     """Test each called pair under `method` and attach multiplicity-adjusted q-values.
 
@@ -83,6 +84,7 @@ def test_contacts(
         fdr_scope=fdr_scope,
         recompute=recompute,
         fisher_backend=fisher_backend,
+        decay_model=decay_model,
         extra_warnings=warnings,
     )
     # q_value belongs next to the p_value it adjusts, not appended after the
@@ -101,6 +103,7 @@ def contact_method_info(
     fdr_scope: str | list[str] | None = None,
     recompute: bool = True,
     fisher_backend: str = "numba",
+    decay_model: str | None = None,
     extra_warnings: list[str] | None = None,
 ) -> MethodInfo:
     """Describe a per-pair significance run: counts, FDR family, and assumption warnings.
@@ -113,6 +116,14 @@ def contact_method_info(
     """
 
     warnings = list(extra_warnings or [])
+    if decay_model == "legacy" and method != "legacy_fisher":
+        warnings.append(
+            "decay_model='legacy' reproduces the reference background model including its scale "
+            "error, so expected counts are roughly half what they should be and this test rejects "
+            "several times more often than its nominal level. Treat q_value as a ranking, not as "
+            "an FDR-controlled discovery set. Use decay_model='normalized' for calibrated "
+            "p-values; see docs/statistics.md."
+        )
     n_input = calls.height
     n_tested = int(calls["p_value"].is_finite().sum()) if n_input and "p_value" in calls.columns else 0
     untestable = n_input - n_tested
@@ -152,6 +163,7 @@ def contact_method_info(
         parameters={
             "recompute": recompute,
             "fisher_backend": fisher_backend if method == "legacy_fisher" else None,
+            "decay_model": decay_model,
         },
     )
 

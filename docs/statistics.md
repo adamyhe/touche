@@ -158,7 +158,10 @@ The test is then
 - Assumptions: contacts anchored at the bait are independent draws;
   `p0_i` is correctly specified.
 - Expected/offset source: the per-bait LOWESS fit, described above.
-- Failure modes: `n_trials = 0` makes a pair untestable (reported as NaN in
+- Failure modes: **with the default `decay_model="legacy"` this test is
+  anticonservative**, because `p_null` is systematically too small -- see
+  [The distance-decay background model](#the-distance-decay-background-model);
+  `n_trials = 0` makes a pair untestable (reported as NaN in
   the output, excluded from the FDR family, never reported as
   non-significant); small `n_trials` makes the discrete p-value coarse, so
   the achievable minimum p-value can exceed your alpha — this is warned
@@ -531,6 +534,7 @@ Everything else is unchanged:
 | --- | --- | --- |
 | `local-decay call` p-values | **calibrated `binomial`** (changed) | `--method legacy_fisher` |
 | `local-decay call` layout | reference nine-column headerless TSV | `--schema tidy` |
+| `local-decay call` expected counts | `legacy` (reference-identical, but biased) | `--decay-model normalized` |
 | `background compare` filter | drops pairs without positive EP signal in every sample | `--zero-policy keep` |
 | `EP_CPB_*` divisor | `depth / 1e10` | `--scale per_billion` |
 | APA pileup universe | distance-filtered bait x prey product | `--pairs-list` |
@@ -544,43 +548,96 @@ remains the default as `--scale legacy`. `--scale per_billion` uses
 `depth / 1e9`, the conventionally named unit, for new analyses. Both are
 recorded in the command's JSON summary.
 
-## Known issues
+## The distance-decay background model
 
-### The fitted decay density loses mass
+`p_null`, and therefore `expected`, comes from a per-bait LOWESS fit to the
+bait window's 1 bp distance histogram. That fit is supposed to be a
+probability density over distance. In the reference implementation it is
+not: it integrates to well under 1 on sparse data, so every expected count
+built from it is too small.
 
-`touche.local_decay.fit_distance_decay_model` returns a background density
-that integrates to roughly **0.54** rather than 1, while the raw distance
-histogram it smooths integrates to ~1. Both LOWESS backends agree, so this
-is the chunked smooth-and-merge itself, not a backend approximation.
+### What is wrong with `legacy`
 
-The consequence is that `p_null` -- and therefore `expected` -- is roughly
-a factor of two too small. On distance-preserving null pairs the benchmark
-measures `observed / expected` at about **1.8**, roughly uniformly across
-distance strata.
+Two effects compound, both in the reference implementation:
 
-This predates the calibrated tests: `legacy_fisher` consumed the same
-`expected`. It mattered less there only because that test placed `expected`
-in a contingency table against a background of hundreds of thousands of
-histogram bins, where a factor of two barely moved a p-value that was
-pinned near 0.5 regardless. `binomial` and `poisson` use `expected`
-directly, so they inherit the bias and reject roughly twice as often as
-their nominal level.
+1. **Robust reweighting fights the data.** The smoother runs
+   `lowess_iterations` (default 3) rounds of robust reweighting. Those
+   rounds exist to suppress contaminating outliers, but in a 1 bp contact
+   histogram that is mostly empty, the populated bins *are* the signal.
+   Each round pulls the fit further toward the zero-majority.
+2. **A pedestal is added that was never a count.** The zero-inflation term
+   is added to the counts before smoothing, inflating the total by a
+   quantity with no contact interpretation.
 
-**Consequence for use:** treat `q_value` from `binomial`/`poisson` as a
-ranking, not as a calibrated FDR, until this is resolved. The *ranking* is
-unaffected -- a near-uniform multiplicative bias in `p_null` is monotone,
-so it does not reorder pairs -- which is why the benchmark's AUPRC
-comparison is still meaningful.
+The fit is then divided by the number of contacts in the window, which
+would be correct only if the smoother preserved the histogram's mass.
 
-It is not yet known whether the reference R implementation has the same
-behaviour (in which case `touche` is faithfully reproducing it) or whether
-this is a porting defect in the chunked merge. Resolving that needs the
-reference sources, and fixing it would change `expected` in the reference
-nine-column output, so it is deliberately not changed here.
+**This is a defect in the reference method, not in `touche`'s port.**
+`tests/test_decay_model.py::ReferenceParityTests` extracts the reference's
+own `optimize_lowess`/`optimize_lowess2` from its source with `ast` and
+asserts `touche`'s legacy path is bit-identical to them
+(`max |diff| == 0`). That test runs whenever `_reference/E-P_contacts` is
+checked out and skips otherwise.
 
-Reproduce with `scripts/gasperini_benchmark.py --demo`, which reports
-`observed_over_expected` in `expected_bias.tsv` and flags anticonservative
-methods in its summary verdict.
+### Why it is worse than a constant factor
+
+The size of the error depends on how sparse the histogram is:
+
+| contacts in window | empty 1 bp bins | fitted mass (should be 1.0) |
+| --- | --- | --- |
+| 2,000 | 98% | 0.63 |
+| 10,000 | 91% | 0.46 |
+| 50,000 | 67% | 1.05 |
+| 200,000 | 33% | 1.10 |
+| 1,000,000 | 5% | 1.04 |
+
+At high per-bait coverage the reference model is roughly unbiased. At the
+sparsity of a real Micro-C bait over a megabase window it loses about half
+its mass. So the bias **varies from bait to bait with local coverage** —
+which is precisely the covariate an enhancer-promoter comparison needs to
+control for. A low-coverage bait gets systematically inflated significance
+relative to a high-coverage one.
+
+### `decay_model="normalized"`
+
+The corrected model drops the robust reweighting for the decay fit and
+divides by the fitted curve's own mass, so it integrates to 1 over
+`[0, dist)` by construction — the defining property of the density,
+independent of what the smoother does to the total.
+
+```bash
+uv run touche local-decay call ... --decay-model normalized
+```
+
+On the benchmark's distance-preserving null pairs this moves
+`observed / expected` from **1.80** (range 1.43–2.11 across distance
+strata) to **0.94** (0.69–1.00), and moves the binomial test from
+rejecting **25.6%** of null pairs at a nominal 5% to **2.8%** — slightly
+conservative, which is the safe direction.
+
+**Rankings are unaffected.** The correction is monotone, so AUPRC against
+the functional labels is unchanged to three decimal places. What changes is
+whether a `q_value` means what it says.
+
+### Which to use
+
+| | `legacy` (default) | `normalized` |
+| --- | --- | --- |
+| Reproduces reference `expected` | yes, bit-identical | no |
+| `p_null` integrates to 1 | no (~0.54 when sparse) | yes |
+| `binomial` q-values FDR-controlled | **no** | yes |
+| Pair ranking | same | same |
+
+`legacy` remains the default so `expected` and `expected_background` in the
+reference nine-column output do not move. That means the shipped default
+pairs a calibrated *test* with a biased *expectation*: `touche` detects
+that combination and attaches a warning to the result metadata saying the
+q-values are a ranking, not an FDR-controlled discovery set. Use
+`--decay-model normalized` for any analysis that quotes a q-value.
+
+Reproduce all of the above with `scripts/gasperini_benchmark.py --demo`,
+which reports `observed_over_expected` in `expected_bias.tsv` and flags
+anticonservative methods in its verdict.
 
 ## Not yet implemented
 
@@ -598,3 +655,7 @@ not mistaken for something it is not:
   replicate concordance, HiCRep SCC, or downsampling stability curves.
 - **Cross-validated null fitting.** `p_null` is fitted from the same bait
   window the pair is tested in; the reuse is recorded but not removed.
+- **A validated replacement for the LOWESS decay fit.**
+  `decay_model="normalized"` corrects the scale but keeps the reference's
+  chunked-LOWESS shape. A spline or isotonic fit to the binned histogram
+  would likely be both better behaved and faster, and has not been tried.
