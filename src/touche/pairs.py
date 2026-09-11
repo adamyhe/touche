@@ -4,8 +4,9 @@ Public API: `PAIR_COLUMNS`/`PAIR_SCHEMA` (the canonical anchor-table layout
 every statistical module keys on), `make_pair_ids`, `build_pair_table`
 (Cartesian expansion of bait/prey anchor BEDs with a distance filter --
 the implicit pair universe `background`/`apa` have always used),
-`read_bedpe`/`write_bedpe` (explicit user-supplied pair lists), and
-`attach_pair_ids` (re-derive `pair_id` for a frame that already carries
+`read_bedpe`/`write_bedpe` (explicit user-supplied pair lists),
+`finalize_pair_table` (land an arbitrary anchor frame on the canonical
+schema), and `attach_pair_ids` (re-derive `pair_id` for a frame that already carries
 anchor coordinates).
 
 Coordinate convention: every start/end in this module is 0-based half-open,
@@ -174,7 +175,7 @@ def build_pair_table(
     pairs = pairs.filter(pl.col("distance") >= min_distance)
     if max_distance is not None:
         pairs = pairs.filter(pl.col("distance") <= max_distance)
-    return _finalize_pairs(pairs, id_style=id_style)
+    return finalize_pair_table(pairs, id_style=id_style)
 
 
 def pair_table_from_centers(
@@ -211,7 +212,7 @@ def pair_table_from_centers(
         (pl.col("prey_center") - pl.col("bait_center")).alias("directional_distance"),
     )
     frame = frame.with_columns(pl.col("directional_distance").abs().alias("distance"))
-    return _finalize_pairs(frame, id_style=id_style)
+    return finalize_pair_table(frame, id_style=id_style)
 
 
 def read_bedpe(
@@ -301,7 +302,7 @@ def read_bedpe(
 
     extra = [c for c in pairs.columns if c.startswith("extra_")]
     named = pairs["name"] if pairs["name"].null_count() < pairs.height else None
-    result = _finalize_pairs(pairs, id_style=id_style, extra_columns=extra)
+    result = finalize_pair_table(pairs, id_style=id_style, extra_columns=extra)
     if named is not None:
         result = result.with_columns(named.alias("name"))
     if "score" in pairs.columns and pairs["score"].null_count() < pairs.height:
@@ -396,13 +397,20 @@ def _validate_bedpe_intervals(raw: pl.DataFrame, path: str | Path) -> None:
             )
 
 
-def _finalize_pairs(
+def finalize_pair_table(
     pairs: pl.DataFrame,
     *,
     id_style: str,
     extra_columns: list[str] | None = None,
 ) -> pl.DataFrame:
-    """Derive `pair_id`/`bait_id`/`prey_id`/`chrom`/`is_cis` and order columns as `PAIR_COLUMNS`."""
+    """Derive `pair_id`/`bait_id`/`prey_id`/`chrom`/`is_cis` and order columns as `PAIR_COLUMNS`.
+
+    `pairs` must already carry the eight `bait_*`/`prey_*` coordinate columns
+    plus `distance` and `directional_distance`. Public so adapters for
+    external tools (`touche.adapters`) can land their imported calls on
+    exactly the same schema, and therefore the same `pair_id`s, as
+    `build_pair_table` and `read_bedpe`.
+    """
     pairs = pairs.with_columns(
         make_pair_ids("bait_chrom", "bait_center", "prey_chrom", "prey_center", style=id_style),
         _anchor_key("bait_chrom", "bait_center").alias("bait_id"),
