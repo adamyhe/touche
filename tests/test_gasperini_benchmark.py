@@ -108,5 +108,27 @@ class GasperiniBenchmarkDemoTests(unittest.TestCase):
         self.assertTrue((bias["n"] > 0).all())
 
 
+class SkipDownloadTests(unittest.TestCase):
+    def test_missing_inputs_are_reported_by_name_not_a_crash(self) -> None:
+        # --skip-download is the path someone uses with pre-staged data, so
+        # it must fail with a list of what is missing.
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = subprocess.run(
+                [
+                    sys.executable, str(SCRIPT), "--skip-download",
+                    "--data-dir", str(Path(tmp) / "absent"),
+                    "--out-dir", str(Path(tmp) / "report"),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("missing", completed.stderr.lower())
+        self.assertIn("Gasperini_dREG_based_TRE_baits_hg38.txt", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -39,7 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -77,6 +77,12 @@ BASELINES = ("log2_oe", "observed", "neg_log10_distance")
 # bait and `target_promoter` is the prey.
 LABEL_KEYS = ("target_site.chr", "target_promoter.center", "target_site.center")
 
+# Covariates the reference label files already carry, and the confounders the
+# benchmark plan asks to control for: enhancer accessibility and promoter
+# transcription. Carried through when present so the matched comparison can
+# balance on them instead of only on distance and coverage.
+LABEL_COVARIATES = {"mean_ATAC_RPM": "enhancer_atac", "PROseq_GB_RPKM": "promoter_proseq"}
+
 
 @dataclass(frozen=True, slots=True)
 class Inputs:
@@ -95,7 +101,9 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     inputs = build_demo_inputs(args.work_dir) if args.demo else fetch_inputs(args)
+    cache_dir = args.work_dir / "contact_cache"
     call_kwargs = dict(
+        cache_dir=cache_dir,
         decay_model=args.decay_model,
         dist=args.dist,
         cap=args.cap,
@@ -190,6 +198,7 @@ def main() -> int:
             "shifts": args.shifts, "bootstrap": args.bootstrap, "seed": args.seed,
             "match_distance_caliper": args.match_distance_caliper,
             "match_coverage_caliper": args.match_coverage_caliper,
+            "match_activity_caliper": args.match_activity_caliper,
         },
         "counts": {
             "real_pairs": real.height,
@@ -271,6 +280,15 @@ def parse_args() -> argparse.Namespace:
         default=0.10,
         help="Caliper on log10 n_trials (per-bait coverage) when matching.",
     )
+    parser.add_argument(
+        "--match-activity-caliper",
+        type=float,
+        default=0.15,
+        help=(
+            "Caliper on log10 enhancer accessibility and log10 promoter transcription, when "
+            "the label files supply them. Ignored otherwise."
+        ),
+    )
     parser.add_argument("--jobs", type=int, default=available_cores())
     parser.add_argument("--progress", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
@@ -300,7 +318,12 @@ def fetch_inputs(args: argparse.Namespace) -> Inputs:
         nonfunctional=data_dir / "Input_files" / LOCAL_DECAY_NONFUNCTIONAL,
     )
     if args.skip_download:
-        missing = [str(path) for path in vars(inputs).values() if not Path(path).exists()]
+        # `Inputs` uses slots, so it has no __dict__ to enumerate.
+        missing = [
+            str(getattr(inputs, field.name))
+            for field in fields(inputs)
+            if not Path(getattr(inputs, field.name)).exists()
+        ]
         if missing:
             raise SystemExit("--skip-download given but these inputs are missing:\n  " + "\n  ".join(missing))
         return inputs
@@ -485,13 +508,20 @@ def _near(values: np.ndarray, reference: np.ndarray, tolerance: int) -> np.ndarr
 # --------------------------------------------------------------------------
 
 
-def call_tidy(inputs: Inputs, work_dir: Path, tag: str, **kwargs: Any) -> pl.DataFrame:
+def call_tidy(
+    inputs: Inputs, work_dir: Path, tag: str, *, cache_dir: Path, **kwargs: Any
+) -> pl.DataFrame:
     """Call local-decay contacts once, on the tidy schema.
 
     One call is enough for every method: the tidy output carries `observed`,
     `n_trials`, and `p_null`, so each null can be applied afterwards with
     `test_contacts`. That also guarantees all methods are compared on
     identical counts rather than on separate runs that could drift.
+
+    `cache_dir` is shared across every call in a run. The NPZ contact cache
+    depends only on the pairs file, and the real and shifted calls all read
+    the same one -- giving each its own would rebuild a multi-gigabyte cache
+    once per shift, which is the slowest step in the whole benchmark.
     """
 
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -501,7 +531,7 @@ def call_tidy(inputs: Inputs, work_dir: Path, tag: str, **kwargs: Any) -> pl.Dat
         inputs.pairs,
         work_dir / f"{tag}_calls.tsv",
         schema="tidy",
-        cache_dir=work_dir / "cache",
+        cache_dir=cache_dir,
         **kwargs,
     )
 
@@ -545,16 +575,30 @@ def attach_labels(calls: pl.DataFrame, functional: Path, nonfunctional: Path) ->
 
     labelled = calls
     for path, label in ((functional, "positive"), (nonfunctional, "negative")):
-        keys = pl.read_csv(path).select(
+        source = pl.read_csv(path)
+        available = {
+            column: name for column, name in LABEL_COVARIATES.items() if column in source.columns
+        }
+        keys = source.select(
             pl.col(LABEL_KEYS[0]).cast(pl.Utf8).alias("chrom"),
             pl.col(LABEL_KEYS[1]).cast(pl.Int64).alias("prey_center"),
             pl.col(LABEL_KEYS[2]).cast(pl.Int64).alias("bait_center"),
             pl.lit(label).alias(f"_{label}"),
+            *[pl.col(column).cast(pl.Float64).alias(f"_{name}_{label}") for column, name in available.items()],
         )
         labelled = labelled.join(keys, on=["chrom", "prey_center", "bait_center"], how="left")
-    return labelled.with_columns(
+
+    labelled = labelled.with_columns(
         pl.coalesce(pl.col("_positive"), pl.col("_negative")).alias("label")
     ).drop("_positive", "_negative")
+    for name in LABEL_COVARIATES.values():
+        columns = [f"_{name}_positive", f"_{name}_negative"]
+        if all(column in labelled.columns for column in columns):
+            labelled = labelled.with_columns(
+                # log10 with an offset: both are RPM/RPKM-like and can be zero.
+                (pl.coalesce(pl.col(columns[0]), pl.col(columns[1])) + 0.01).log10().alias(f"log10_{name}")
+            ).drop(columns)
+    return labelled
 
 
 # --------------------------------------------------------------------------
@@ -661,17 +705,30 @@ def calibration_verdict(calibration: pl.DataFrame) -> list[str]:
 def matched_evaluation(
     real: pl.DataFrame, args: argparse.Namespace
 ) -> tuple[pl.DataFrame | None, pl.DataFrame]:
-    """Match positives to negatives on distance and coverage, and report balance either way."""
-    covariates = ["log10_distance", "log10_n_trials"]
+    """Match positives to negatives on every available confounder, and report balance either way.
+
+    Distance and coverage always; enhancer accessibility and promoter
+    transcription too when the label files supply them, since those are
+    strong confounders of functional status and leaving them unbalanced
+    credits a contact score for rediscovering them. Each added covariate
+    costs matched pairs, so the retained count is reported.
+    """
+    calipers = {
+        "log10_distance": args.match_distance_caliper,
+        "log10_n_trials": args.match_coverage_caliper,
+    }
+    for name in LABEL_COVARIATES.values():
+        column = f"log10_{name}"
+        if column in real.columns:
+            calipers[column] = args.match_activity_caliper
+    covariates = list(calipers)
+
     labelled = real.filter(pl.col("label").is_not_null()).drop_nulls(covariates)
     before = balance_table(labelled, group_col="label", covariates=covariates, groups=("positive", "negative"))
     matched = match_pairs(
         labelled,
         group_col="label",
-        covariates={
-            "log10_distance": args.match_distance_caliper,
-            "log10_n_trials": args.match_coverage_caliper,
-        },
+        covariates=calipers,
         groups=("positive", "negative"),
         seed=args.seed,
     )

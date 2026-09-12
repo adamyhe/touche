@@ -24,7 +24,12 @@ uv run python scripts/gasperini_benchmark.py \
 
 Useful flags: `--skip-download` (fail instead of fetching), `--jobs`,
 `--shifts` (the null offsets), `--null-exclusion`, `--bootstrap`,
-`--no-plots`. `--help` lists them all.
+`--decay-model`, `--no-plots`. `--help` lists them all.
+
+All four `local-decay` calls in a run (the real anchors plus one per shift)
+share a single NPZ contact cache under `--work-dir/contact_cache`, since
+the cache depends only on the pairs file. Building it is the slowest step,
+so budget for it once, not once per shift.
 
 Everything is importable, so a notebook can drive the stages directly:
 
@@ -67,10 +72,13 @@ interval over chromosomes, which is the honest uncertainty here: pairs
 within a chromosome share local chromatin structure and are not independent.
 
 **Matched prediction.** The same, after matching positives to negatives on
-log distance and log coverage, so a method is not credited for
-rediscovering that functional pairs are closer together. `balance.tsv`
-gives standardized differences before and after; above ~0.1 means a
-covariate is still imbalanced.
+every confounder available, so a method is not credited for rediscovering
+them: log distance and log per-bait coverage always, plus log enhancer
+accessibility (`mean_ATAC_RPM`) and log promoter transcription
+(`PROseq_GB_RPKM`) when the label files carry them -- the reference's
+Gasperini files do. `balance.tsv` gives standardized differences before and
+after; above ~0.1 in absolute value means a covariate is still imbalanced.
+Each added covariate costs matched pairs, so check the retained count too.
 
 ## Comparing decay models
 
