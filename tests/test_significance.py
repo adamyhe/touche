@@ -106,6 +106,70 @@ class TestContactsTests(unittest.TestCase):
         self.assertIn("--schema tidy", str(raised.exception))
 
 
+class NegativeBinomialTests(unittest.TestCase):
+    def _overdispersed_calls(self, n: int = 20_000, phi: float = 2.5, seed: int = 0) -> pl.DataFrame:
+        """Null pairs whose counts are `phi` times more variable than Poisson allows."""
+        rng = np.random.default_rng(seed)
+        trials = rng.integers(200, 2_000, n)
+        p_null = rng.uniform(0.005, 0.05, n)
+        mean = trials * p_null
+        observed = rng.negative_binomial(mean / (phi - 1.0), 1.0 / phi)
+        return _calls(observed.tolist(), trials.tolist(), p_null.tolist())
+
+    def test_dispersion_one_reduces_to_the_poisson_test(self) -> None:
+        calls = _calls([5, 0, 20], [100, 50, 100], [0.02, 0.1, 0.05])
+
+        nb = test_contacts(calls, method="negative_binomial", dispersion=1.0)
+        poisson = test_contacts(calls, method="poisson")
+
+        np.testing.assert_allclose(
+            nb.table["p_value"].to_numpy(), poisson.table["p_value"].to_numpy(), equal_nan=True
+        )
+
+    def test_it_controls_type_one_error_where_the_binomial_does_not(self) -> None:
+        calls = self._overdispersed_calls(phi=2.5)
+
+        binomial = assess_calibration(test_contacts(calls, method="binomial").table)
+        nb = assess_calibration(
+            test_contacts(calls, method="negative_binomial", dispersion=2.5).table
+        )
+
+        # The binomial over-rejects by roughly the dispersion factor; the NB
+        # with the right dispersion does not.
+        self.assertGreater(binomial["reject_rate_at_0.05"][0], 0.10)
+        self.assertLessEqual(nb["reject_rate_at_0.05"][0], 0.055)
+
+    def test_estimated_dispersion_recovers_the_simulated_one(self) -> None:
+        calls = self._overdispersed_calls(phi=2.5)
+
+        result = test_contacts(calls, method="negative_binomial", dispersion="pearson")
+
+        self.assertAlmostEqual(result.info.parameters["dispersion"], 2.5, delta=0.3)
+        self.assertTrue(any("estimated from the pairs" in w for w in result.info.warnings))
+
+    def test_dispersion_is_recorded_and_validated(self) -> None:
+        calls = self._overdispersed_calls(n=500)
+
+        self.assertEqual(
+            test_contacts(calls, method="negative_binomial", dispersion=3.0).info.parameters["dispersion"],
+            3.0,
+        )
+        with self.assertRaises(ValueError):
+            test_contacts(calls, method="negative_binomial", dispersion=0.5)
+        with self.assertRaises(ValueError):
+            test_contacts(calls, method="negative_binomial", dispersion="mle")
+
+    def test_the_per_bait_path_refuses_the_method_with_an_actionable_error(self) -> None:
+        from touche.local_decay import _contact_p_values
+
+        with self.assertRaises(ValueError) as raised:
+            _contact_p_values(
+                np.array([1.0]), np.array([1.0]), np.array([10.0]), np.array([0.1]), 1000,
+                method="negative_binomial", fisher_backend="numba",
+            )
+        self.assertIn("local-decay test", str(raised.exception))
+
+
 class NullCalibrationTests(unittest.TestCase):
     """The plan's acceptance criterion: under the declared null, p-values are uniform."""
 

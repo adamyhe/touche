@@ -197,6 +197,15 @@ changed. When touching these paths, keep it that way:
   `tests/test_decay_model.py::ReferenceParityTests` proves equality against
   the reference's own functions when `_reference/E-P_contacts` is checked
   out. Don't change the legacy path's numbers; add to the normalized one.
+- Real contact counts are ~2.7x overdispersed relative to binomial (Pearson
+  dispersion measured on the Gasperini K562 null set with an unbiased
+  `expected`). `method="binomial"`/`"poisson"` therefore over-reject by
+  roughly that factor no matter how good the expected-count model is;
+  `"negative_binomial"` keeps the same mean and inflates the variance by a
+  constant `phi`. It is not the default because `phi` has to come from
+  somewhere -- estimate it on a matched null, not on the pairs under test.
+  It is unavailable in the per-bait path (`_contact_p_values`) by design,
+  since a dispersion is a property of the whole call set.
 - These per-pair tests are discrete: about half of all pairs have zero
   observed contacts and therefore `p = 1` exactly. A rejection rate below
   the nominal level is expected, and a KS test against a continuous uniform

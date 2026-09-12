@@ -59,6 +59,12 @@ class GasperiniBenchmarkDemoTests(unittest.TestCase):
         ):
             self.assertTrue((self.out_dir / name).exists(), name)
 
+    def test_dispersion_is_estimated_on_the_null_pairs(self) -> None:
+        # Estimating it from the pairs under test would fold real signal into
+        # the variance and make the test conservative by an unknown amount.
+        self.assertIn("dispersion", self.manifest["parameters"])
+        self.assertGreaterEqual(self.manifest["parameters"]["dispersion"], 1.0)
+
     def test_labels_are_attached_to_both_classes(self) -> None:
         counts = self.manifest["counts"]
         self.assertGreater(counts["positive"], 50)
@@ -67,7 +73,10 @@ class GasperiniBenchmarkDemoTests(unittest.TestCase):
 
     def test_planted_signal_is_recovered_by_every_contact_score(self) -> None:
         rows = {row["score"]: row for row in self.report.iter_rows(named=True)}
-        for name in ("neg_log10_p_binomial", "neg_log10_p_legacy_fisher", "log2_oe", "observed"):
+        for name in (
+            "neg_log10_p_binomial", "neg_log10_p_negative_binomial",
+            "neg_log10_p_legacy_fisher", "log2_oe", "observed",
+        ):
             self.assertGreater(rows[name]["auprc"], 0.8, f"{name} failed to recover the planted signal")
 
     def test_distance_only_baseline_sits_at_chance(self) -> None:
@@ -93,7 +102,7 @@ class GasperiniBenchmarkDemoTests(unittest.TestCase):
 
         self.assertEqual(
             sorted(calibration["method"].unique().to_list()),
-            ["binomial", "legacy_fisher", "poisson"],
+            ["binomial", "legacy_fisher", "negative_binomial", "poisson"],
         )
         self.assertEqual(
             sorted(calibration["stratification"].unique().to_list()),

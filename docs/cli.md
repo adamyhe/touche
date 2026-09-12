@@ -486,6 +486,21 @@ Pair *rankings* are unchanged either way; what changes is whether a
 `q_value` means what it says. See the
 [statistics guide](statistics.md#the-distance-decay-background-model).
 
+Real contact counts are roughly 2.7x more variable than a binomial null
+allows, so `--method binomial` over-rejects by about that factor however
+good the expected counts are. For q-values you intend to act on, retest
+with an overdispersed null:
+
+```bash
+uv run touche local-decay test \
+  --calls results/calls.tsv --out results/calls.nb.tsv \
+  --method negative_binomial --dispersion 2.7
+```
+
+`--dispersion pearson` estimates it from the pairs being tested, which real
+signal inflates; estimating it on a matched random-shift null set and
+passing the number is the defensible route.
+
 Retest an existing tidy table without recounting contacts, and check whether
 its p-values are actually uniform under the null:
 

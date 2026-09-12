@@ -64,6 +64,19 @@ METHOD_REGISTRY: dict[str, dict[str, str]] = {
         "unit_of_analysis": "bait-prey pair",
         "reference": "FitHiC2-style distance-aware binomial contact significance",
     },
+    "negative_binomial": {
+        "inference_class": "technical",
+        "hypothesis": (
+            "K ~ NegativeBinomial with mean N * p0 and variance phi * N * p0, where phi is "
+            "the dispersion of contact counts about their expectation."
+        ),
+        "null": (
+            "The bait's contacts follow its fitted local distance decay, with counts phi "
+            "times more variable than a Poisson/binomial null allows."
+        ),
+        "unit_of_analysis": "bait-prey pair",
+        "reference": "Quasi-Poisson variance function; edgeR/diffHic-style overdispersed count model",
+    },
     "poisson": {
         "inference_class": "technical",
         "hypothesis": "K ~ Poisson(N * p0), the rare-event limit of the binomial model.",

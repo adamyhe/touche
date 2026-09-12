@@ -158,9 +158,12 @@ The test is then
 - Assumptions: contacts anchored at the bait are independent draws;
   `p0_i` is correctly specified.
 - Expected/offset source: the per-bait LOWESS fit, described above.
-- Failure modes: **with `--decay-model legacy` this test is
-  anticonservative** and with `normalized` it is badly underpowered,
-  because `p_null` is biased in either case --
+- Failure modes: **this test assumes the counts are binomial, and on real
+  data they are ~2.7x overdispersed**, so it over-rejects by roughly that
+  factor however good `expected` is -- use `negative_binomial` for
+  FDR-controlled q-values. Separately, with `--decay-model legacy` it is
+  anticonservative and with `normalized` badly underpowered, because
+  `p_null` is biased in either case --
   see [The distance-decay background model](#the-distance-decay-background-model);
   `n_trials = 0` makes a pair untestable (reported as NaN in
   the output, excluded from the FDR family, never reported as
@@ -201,6 +204,54 @@ calibrate a null before you can control an error rate over it.
 - Unit of analysis: bait-prey pair.
 - Failure mode: p-values are not uniform under any null you can construct;
   `q < 0.05` language is not supportable.
+
+### `negative_binomial` — technical
+
+The mean of the null model can be exactly right and the test still
+over-reject, because the binomial also fixes the *variance*. On the real
+Gasperini K562 null set, with `decay_model="anchored"` giving
+`sum(observed)/sum(expected) = 1.027`, the Pearson dispersion of counts
+about their expectation is **2.67** — the counts are nearly three times more
+variable than a binomial or Poisson null allows. Contact counts are not
+independent draws: they cluster in domains and loops.
+
+So this method keeps the same mean `N·p0` and inflates the variance:
+
+> K_i ~ NegativeBinomial with mean `N_i·p0_i` and variance `φ·N_i·p0_i`.
+
+Realized as a genuine distribution (size `μ/(φ-1)`, probability `1/φ`) so
+the tail probability is exact. `φ` is constant across pairs, which is what
+the data supports: the measured dispersion is flat (~2.4–3.1) over expected
+counts from 0.4 to 12, where the textbook NB2 form (`Var = μ + μ²/r`, whose
+dispersion rises with the mean) would not fit.
+
+Measured on the real null pairs, against the attainable ceiling:
+
+| method | @0.05 | @0.01 |
+| --- | ---: | ---: |
+| binomial | 0.0602 | 0.0284 |
+| poisson | 0.0603 | 0.0284 |
+| **negative_binomial, φ = 2.67** | **0.0237** | **0.0059** |
+| attainable | 0.0264 | 0.0049 |
+
+That is the difference between q-values that over-reject by 2–6× and
+q-values at the discreteness ceiling.
+
+- Null: the bait's contacts follow its fitted local distance decay, with
+  counts `φ` times more variable than Poisson.
+- Unit of analysis: bait-prey pair. Still *technical* inference.
+- **Where `φ` comes from is your choice, and the tool cannot make it.**
+  `dispersion="pearson"` estimates it from the pairs being tested, which
+  real signal inflates — conservative, by an unknown amount, and warned
+  about in the metadata. Estimating it on a distance-matched random-shift
+  null set (`touche.stats.pearson_dispersion`) and passing it explicitly is
+  the defensible route; `scripts/gasperini_benchmark.py` does exactly that.
+- Failure mode: the deep tail is still over-rejecting (~3.6× at α = 0.001
+  on real data). Some of that is shifted pairs landing on genuine loops, so
+  it is partly real signal rather than miscalibration — this null design
+  cannot separate the two. Do not quote α below 0.01 without a better null.
+- This is not the default. Overdispersion correction needs a `φ` from
+  somewhere, and picking one silently would be worse than making you choose.
 
 ### `poisson` — technical
 
@@ -701,8 +752,9 @@ baselines alongside the contact scores.
 These are real gaps, not oversights. They are documented here so a result is
 not mistaken for something it is not:
 
-- **Replicate-aware differential contacts.** No negative-binomial GLM over a
-  sample/design table yet, so no `biological` inference class is reachable.
+- **Replicate-aware differential contacts.** `negative_binomial` handles
+  overdispersion for a single library, but there is no GLM over a
+  sample/design table, so no `biological` inference class is reachable.
   Until then, a condition comparison in `touche` is conditional on the
   libraries observed.
 - **APA null controls.** No distance- and chromosome-matched random-shift

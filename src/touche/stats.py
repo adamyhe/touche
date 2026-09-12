@@ -119,6 +119,70 @@ def poisson_sf_greater(successes: np.ndarray, expected: np.ndarray) -> np.ndarra
     return np.clip(result, 0.0, 1.0)
 
 
+def nbinom_sf_greater(
+    successes: np.ndarray, expected: np.ndarray, dispersion: float
+) -> np.ndarray:
+    """Upper-tail p-values under a negative binomial with `Var = dispersion * mean`.
+
+    The quasi-Poisson variance function, realized as a proper distribution so
+    the tail probability is exact rather than an approximation. Parameterized
+    from the mean `mu` and the dispersion `phi`: size `r = mu / (phi - 1)` and
+    probability `1 / phi`, which give mean `mu` and variance `phi * mu`.
+
+    `phi` is constant across pairs by design. On real Micro-C the measured
+    Pearson dispersion is roughly flat (~2.4-3.1) over expected counts from
+    0.4 to 12, so a constant factor fits where the textbook NB2 form
+    (`Var = mu + mu^2 / r`, whose dispersion rises with the mean) does not.
+
+    `dispersion == 1` has no overdispersion to model and falls through to the
+    Poisson tail, which is that limit exactly.
+    """
+
+    if dispersion < 1.0:
+        raise ValueError("dispersion must be at least 1 (1 is the Poisson limit)")
+    successes = np.asarray(successes, dtype=np.float64)
+    expected = np.asarray(expected, dtype=np.float64)
+    if dispersion == 1.0:
+        return poisson_sf_greater(successes, expected)
+
+    from scipy.stats import nbinom
+
+    testable = (expected > 0) & np.isfinite(expected) & np.isfinite(successes)
+    result = np.full(successes.shape, np.nan, dtype=np.float64)
+    if testable.any():
+        size = expected[testable] / (dispersion - 1.0)
+        result[testable] = nbinom.sf(successes[testable] - 1, size, 1.0 / dispersion)
+    return np.clip(result, 0.0, 1.0)
+
+
+def pearson_dispersion(
+    observed: np.ndarray, expected: np.ndarray, *, min_expected: float = 0.0
+) -> float:
+    """Pearson dispersion `mean[(O - E)^2 / E]`: how much counts exceed Poisson variance.
+
+    1.0 means the counts are as variable as a Poisson/binomial null assumes.
+    A value `phi` means a test built on that null rejects roughly `phi` times
+    too often *even when the mean is exactly right* -- a failure no
+    improvement to the expected-count model can repair.
+
+    Estimate this on pairs that are null. On real pairs it is inflated by
+    genuine signal, which makes the resulting test conservative rather than
+    wrong, but conservative by an unknown amount.
+
+    `min_expected` drops pairs with a tiny expectation, where one contact
+    makes `(O - E)^2 / E` enormous. The estimate is mildly sensitive to it
+    (2.7 at 0, 2.4 at 0.1 on real Micro-C), so pass an explicit dispersion
+    when the choice matters.
+    """
+
+    observed = np.asarray(observed, dtype=np.float64)
+    expected = np.asarray(expected, dtype=np.float64)
+    usable = np.isfinite(observed) & np.isfinite(expected) & (expected > max(min_expected, 0.0))
+    if not usable.any():
+        return float("nan")
+    return float(np.mean((observed[usable] - expected[usable]) ** 2 / expected[usable]))
+
+
 def adjust_pvalues(p_values: np.ndarray, *, method: str = "bh") -> np.ndarray:
     """Multiple-testing correction matching R's `p.adjust`.
 

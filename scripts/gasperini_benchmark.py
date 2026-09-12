@@ -65,11 +65,12 @@ from touche.compare import balance_table, match_pairs  # noqa: E402
 from touche.evaluate import evaluate_scores, precision_recall_curve  # noqa: E402
 from touche.local_decay import call_local_decay, read_center_anchors  # noqa: E402
 from touche.significance import assess_calibration, test_contacts  # noqa: E402
+from touche.stats import pearson_dispersion  # noqa: E402
 
 K562_PAIRS = "GSE206131_K562_cis_mapq30_pairs.txt.gz"
 GEO_BASE = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE206nnn/GSE206131/suppl"
 
-METHODS = ("binomial", "poisson", "legacy_fisher")
+METHODS = ("binomial", "poisson", "legacy_fisher", "negative_binomial")
 BASELINES = ("log2_oe", "observed", "neg_log10_distance")
 
 # Keys of the reference functional/nonfunctional CSVs. In the reference
@@ -114,23 +115,35 @@ def main() -> int:
     )
 
     log("calling contacts on the real anchor pairs")
-    real = call_tidy(inputs, args.work_dir / "real", "real", **call_kwargs)
-    real = score_all_methods(real)
-    real = add_abc_score(attach_labels(real, inputs.functional, inputs.nonfunctional))
+    real_calls = call_tidy(inputs, args.work_dir / "real", "real", **call_kwargs)
 
     log(f"calling contacts on {len(args.shifts)} distance-preserving shifted anchor sets")
-    null = pl.concat(
+    null_calls = pl.concat(
         [
-            score_all_methods(
-                call_tidy(
-                    shifted_inputs(inputs, shift, args.work_dir / f"shift{shift}"),
-                    args.work_dir / f"shift{shift}",
-                    f"shift{shift}",
-                    **call_kwargs,
-                )
+            call_tidy(
+                shifted_inputs(inputs, shift, args.work_dir / f"shift{shift}"),
+                args.work_dir / f"shift{shift}",
+                f"shift{shift}",
+                **call_kwargs,
             ).with_columns(pl.lit(shift).alias("shift"))
             for shift in args.shifts
         ]
+    )
+    # The dispersion belongs to the null, not to the pairs being tested.
+    dispersion = float(
+        pearson_dispersion(
+            null_calls["observed"].to_numpy().astype(float),
+            null_calls["expected"].to_numpy().astype(float),
+        )
+    )
+    log(f"  dispersion estimated on the null pairs: {dispersion:.3f}")
+    null = score_all_methods(null_calls, dispersion=dispersion)
+    real = add_abc_score(
+        attach_labels(
+            score_all_methods(real_calls, dispersion=dispersion),
+            inputs.functional,
+            inputs.nonfunctional,
+        )
     )
     null, contaminated = drop_contaminated_null(null, inputs, tolerance=args.null_exclusion)
     log(f"  dropped {contaminated} shifted pairs that landed back on real anchors")
@@ -194,6 +207,7 @@ def main() -> int:
         "argv": sys.argv,
         "parameters": {
             "decay_model": args.decay_model,
+            "dispersion": dispersion,
             "dist": args.dist, "cap": args.cap, "min_distance": args.min_distance,
             "shifts": args.shifts, "bootstrap": args.bootstrap, "seed": args.seed,
             "match_distance_caliper": args.match_distance_caliper,
@@ -536,11 +550,17 @@ def call_tidy(
     )
 
 
-def score_all_methods(calls: pl.DataFrame) -> pl.DataFrame:
-    """Add one `p_<method>`/`q_<method>`/`neg_log10_p_<method>` triple per method, plus baselines."""
+def score_all_methods(calls: pl.DataFrame, *, dispersion: float | str = "pearson") -> pl.DataFrame:
+    """Add one `p_<method>`/`q_<method>`/`neg_log10_p_<method>` triple per method, plus baselines.
+
+    `dispersion` is only consumed by `negative_binomial`. Pass the value
+    estimated on the *null* pairs: estimating it from the pairs being scored
+    folds real signal into the variance and makes the test conservative by
+    an unknown amount.
+    """
     scored = calls
     for method in METHODS:
-        result = test_contacts(calls, method=method, fdr="bh")
+        result = test_contacts(calls, method=method, fdr="bh", dispersion=dispersion)
         p_values = result.table["p_value"].to_numpy()
         scored = scored.with_columns(
             pl.Series(f"p_{method}", p_values),

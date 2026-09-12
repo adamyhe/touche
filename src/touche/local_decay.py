@@ -132,7 +132,7 @@ _TIDY_SCHEMA: dict[str, pl.DataType] = {
     "expected_background": pl.Float64,
 }
 
-SIGNIFICANCE_METHODS = {"legacy_fisher", "binomial", "poisson"}
+SIGNIFICANCE_METHODS = {"legacy_fisher", "binomial", "poisson", "negative_binomial"}
 LOCAL_DECAY_SCHEMAS = {"legacy", "tidy"}
 
 # How the per-bait distance-decay background is turned into a density.
@@ -1072,6 +1072,15 @@ def _contact_p_values(
         return binom_sf_greater(observed, n_trials, p_null)
     if method == "poisson":
         return poisson_sf_greater(observed, expected)
+    if method == "negative_binomial":
+        # A dispersion is a property of the whole call set, not of one bait,
+        # so it cannot be estimated here. Call under `binomial` and retest
+        # with `touche.significance.test_contacts`, which sees every pair.
+        raise ValueError(
+            "method='negative_binomial' needs a dispersion estimated across all pairs. Call "
+            "with --method binomial --schema tidy, then `touche local-decay test --method "
+            "negative_binomial`."
+        )
     raise ValueError(f"method must be one of: {', '.join(sorted(SIGNIFICANCE_METHODS))}")
 
 

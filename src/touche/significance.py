@@ -30,7 +30,15 @@ from touche.local_decay import (
     to_tidy_calls,
 )
 from touche.metadata import MethodInfo, StatResult, method_info
-from touche.stats import ADJUST_METHODS, adjust_pvalue_column, binom_sf_greater, fisher_greater_batch, poisson_sf_greater
+from touche.stats import (
+    ADJUST_METHODS,
+    adjust_pvalue_column,
+    binom_sf_greater,
+    fisher_greater_batch,
+    nbinom_sf_greater,
+    pearson_dispersion,
+    poisson_sf_greater,
+)
 
 DEFAULT_ALPHA_LEVELS = (0.001, 0.01, 0.05, 0.1)
 
@@ -44,6 +52,7 @@ def test_contacts(
     recompute: bool = True,
     fisher_backend: str = "numba",
     decay_model: str | None = None,
+    dispersion: float | str = "pearson",
 ) -> StatResult:
     """Test each called pair under `method` and attach multiplicity-adjusted q-values.
 
@@ -69,8 +78,25 @@ def test_contacts(
 
     table = calls
     warnings: list[str] = []
+    resolved_dispersion: float | None = None
+    if method == "negative_binomial":
+        resolved_dispersion = _resolve_dispersion(table, dispersion)
+        if dispersion == "pearson":
+            warnings.append(
+                f"Dispersion {resolved_dispersion:.3g} was estimated from the pairs being "
+                "tested, which include real signal and therefore inflate it. That makes the "
+                "test conservative by an unknown amount. Estimate it on a matched null set "
+                "(touche.stats.pearson_dispersion) and pass it explicitly."
+            )
+        if resolved_dispersion <= 1.0:
+            warnings.append(
+                "Dispersion is at or below 1, so this reduces exactly to the Poisson test and "
+                "models no overdispersion."
+            )
     if recompute:
-        table = _recompute_p_values(table, method=method, fisher_backend=fisher_backend)
+        table = _recompute_p_values(
+            table, method=method, fisher_backend=fisher_backend, dispersion=resolved_dispersion
+        )
     elif "p_value" not in table.columns:
         raise ValueError("recompute=False requires an existing p_value column")
 
@@ -85,6 +111,7 @@ def test_contacts(
         recompute=recompute,
         fisher_backend=fisher_backend,
         decay_model=decay_model,
+        dispersion=resolved_dispersion,
         extra_warnings=warnings,
     )
     # q_value belongs next to the p_value it adjusts, not appended after the
@@ -104,6 +131,7 @@ def contact_method_info(
     recompute: bool = True,
     fisher_backend: str = "numba",
     decay_model: str | None = None,
+    dispersion: float | None = None,
     extra_warnings: list[str] | None = None,
 ) -> MethodInfo:
     """Describe a per-pair significance run: counts, FDR family, and assumption warnings.
@@ -164,6 +192,7 @@ def contact_method_info(
             "recompute": recompute,
             "fisher_backend": fisher_backend if method == "legacy_fisher" else None,
             "decay_model": decay_model,
+            "dispersion": dispersion,
         },
     )
 
@@ -264,7 +293,28 @@ def assess_calibration(
     return pl.DataFrame(rows)
 
 
-def _recompute_p_values(table: pl.DataFrame, *, method: str, fisher_backend: str) -> pl.DataFrame:
+def _resolve_dispersion(table: pl.DataFrame, dispersion: float | str) -> float:
+    """Turn a dispersion argument into a number, estimating it from the table if asked."""
+    if isinstance(dispersion, str):
+        if dispersion != "pearson":
+            raise ValueError("dispersion must be a number or the string 'pearson'")
+        estimate = pearson_dispersion(
+            _required(table, "observed", "negative_binomial"),
+            _required(table, "expected", "negative_binomial"),
+        )
+        if not np.isfinite(estimate):
+            raise ValueError(
+                "Could not estimate a dispersion: no pairs have a positive expected count."
+            )
+        return max(float(estimate), 1.0)
+    if dispersion < 1.0:
+        raise ValueError("dispersion must be at least 1 (1 is the Poisson limit)")
+    return float(dispersion)
+
+
+def _recompute_p_values(
+    table: pl.DataFrame, *, method: str, fisher_backend: str, dispersion: float | None = None
+) -> pl.DataFrame:
     """Replace `p_value` with the upper-tail p-value under `method`, validating required columns."""
     observed = _required(table, "observed", method)
     if method == "binomial":
@@ -279,6 +329,10 @@ def _recompute_p_values(table: pl.DataFrame, *, method: str, fisher_backend: str
         p_values = binom_sf_greater(observed, trials, probability)
     elif method == "poisson":
         p_values = poisson_sf_greater(observed, _required(table, "expected", method))
+    elif method == "negative_binomial":
+        if dispersion is None:
+            raise ValueError("method='negative_binomial' requires a dispersion")
+        p_values = nbinom_sf_greater(observed, _required(table, "expected", method), dispersion)
     else:
         expected = _required(table, "expected", method)
         p_values = fisher_greater_batch(

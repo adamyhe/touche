@@ -154,6 +154,16 @@ def add_local_decay_parser(subparsers: argparse._SubParsersAction) -> None:
     test_parser.add_argument("--calls", required=True, type=Path, help="Contact-call TSV from call.")
     test_parser.add_argument("--out", required=True, type=Path, help="Output tidy TSV path.")
     _add_significance_args(test_parser)
+    test_parser.add_argument(
+        "--dispersion",
+        default="pearson",
+        help=(
+            "For --method negative_binomial: the factor by which counts exceed Poisson "
+            "variance. A number, or 'pearson' to estimate it from the pairs being tested -- "
+            "which real signal inflates, making the test conservative by an unknown amount. "
+            "Prefer estimating it on a matched null set and passing it here."
+        ),
+    )
     test_parser.set_defaults(func=_test_contacts)
 
     calibration_parser = local_decay_sub.add_parser(
@@ -505,11 +515,15 @@ def _call_local_decay(args: argparse.Namespace) -> None:
 
 
 def _test_contacts(args: argparse.Namespace) -> None:
+    dispersion = args.dispersion
+    if dispersion != "pearson":
+        dispersion = float(dispersion)
     result = test_contacts(
         read_local_decay_calls(args.calls),
         method=args.method,
         fdr=args.fdr,
         fdr_scope=args.fdr_scope or None,
+        dispersion=dispersion,
     )
     result.write(args.out)
     print_json({**result.to_dict(), "out": str(args.out)})
