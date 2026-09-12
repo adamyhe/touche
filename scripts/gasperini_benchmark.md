@@ -40,7 +40,13 @@ from gasperini_benchmark import build_demo_inputs, call_tidy, score_all_methods,
 
 ## What it measures
 
-**Null calibration.** Both anchor sets are translated by the same offset,
+**Null calibration.** Read the rejection rates, not the KS statistic. These
+tests are discrete -- every pair with zero observed contacts gets `p = 1`
+exactly, about half of them on real data -- so KS against a continuous
+uniform is dominated by that atom and reads ~0.5 with `p = 0` even for a
+well-calibrated test. `fraction_at_one` quantifies it.
+
+Both anchor sets are translated by the same offset,
 which preserves every pair's genomic distance exactly while moving it off
 its real locus. A correctly specified test produces uniform p-values on
 those pairs. Reported as a KS statistic against `Uniform(0, 1)` plus the

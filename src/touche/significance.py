@@ -208,9 +208,16 @@ def assess_calibration(
 
     Under a correctly specified null, p-values are uniform on `[0, 1]` and
     the fraction below any nominal alpha equals that alpha. This returns, per
-    stratum, the number tested, a one-sample Kolmogorov-Smirnov test against
-    `Uniform(0, 1)`, and the empirical rejection rate at each level in
-    `alpha_levels`. Stratify by distance or coverage bins (`strata`) --
+    stratum, the number tested, the fraction of p-values at exactly 1, a
+    one-sample Kolmogorov-Smirnov test against `Uniform(0, 1)`, and the
+    empirical rejection rate at each level in `alpha_levels`.
+
+    **The rejection rates are the diagnostic; the KS statistic usually is
+    not.** An upper-tail test on small counts is discrete, and every pair
+    with zero observed contacts gets `p = 1` exactly. On real Micro-C data
+    that atom is roughly half the pairs, which drives the KS statistic to
+    ~0.5 with `p = 0` no matter how well calibrated the test is.
+    `fraction_at_one` is reported so that is visible rather than alarming. Stratify by distance or coverage bins (`strata`) --
     a method can look uniform overall while being badly anticonservative for
     short-range or low-coverage pairs, which are exactly the pairs of
     interest.
@@ -272,6 +279,13 @@ def _calibration_row(p_values: np.ndarray, alpha_levels: tuple[float, ...]) -> d
 
     finite = p_values[np.isfinite(p_values)]
     row: dict[str, float | int] = {"n_tested": int(finite.size), "n_input": int(p_values.size)}
+    # Discreteness diagnostics, reported *before* the KS columns because they
+    # decide whether those columns mean anything. An upper-tail test on small
+    # counts puts an atom at exactly 1 (every pair with zero observed
+    # contacts), and KS against a continuous uniform is then dominated by that
+    # atom rather than by any miscalibration. When `fraction_at_one` is
+    # large, read the rejection rates and ignore the KS statistic.
+    row["fraction_at_one"] = float(np.mean(finite == 1.0)) if finite.size else float("nan")
     if finite.size < 2:
         row.update(ks_statistic=float("nan"), ks_p_value=float("nan"))
     else:

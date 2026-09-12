@@ -172,6 +172,14 @@ def evaluate_scores(
             f"Only {int(labels.sum())} positive pairs; AUPRC is very noisy at this count and "
             "differences between methods should not be read as meaningful."
         )
+    if held_out_col is not None:
+        groups_used = min(int(row["n_groups"]) for row in rows if row.get("n_groups") is not None)
+        if groups_used < 10:
+            warnings.append(
+                f"The held-out bootstrap resampled only {groups_used} groups; intervals from this "
+                "few independent units are wide and unreliable, and differences between scores "
+                "inside them are not evidence. Lower min_group_size or pool groups."
+            )
     if held_out_col is None:
         warnings.append(
             "No held_out_col: metrics are computed over all pairs pooled, with no uncertainty. "
