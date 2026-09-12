@@ -4,12 +4,25 @@ Public API: `roc_auc`, `average_precision`, `precision_recall_curve` (pure
 numpy, tie-correct), and `evaluate_scores` (compare several score columns on
 one labelled pair table, optionally held out by chromosome).
 
-Enhancer-promoter functional labels are heavily imbalanced -- a few hundred
-validated pairs against tens of thousands of candidates -- so **average
-precision (AUPRC) is the primary metric here and ROC AUC is secondary**. ROC
-AUC is dominated by the enormous negative class and stays deceptively high
-for a score that is useless at the top of the ranking, which is the only
-part anyone acts on.
+How imbalanced the evaluation is depends on a design choice, and it changes
+which metric to lead with -- so `evaluate_scores` reports both and the
+no-skill AUPRC baseline alongside them.
+
+`evaluate_scores` evaluates only *labelled* rows. A CRISPRi screen tests
+specific pairs, so an unlabelled candidate means "never tested", not
+"non-functional"; calling it a negative would invent data. On the
+Gasperini K562 set that leaves 623 functional against 745 non-functional --
+near balanced, with an AUPRC no-skill line around 0.46, and ROC AUC
+perfectly readable.
+
+Treat the untested candidates as negatives instead and the same set becomes
+623 positives in 12,801 pairs, about 5% prevalence. *There* AUPRC is
+clearly primary and ROC AUC misleads, because it is dominated by an
+enormous negative class and stays high for a score that is useless at the
+top of the ranking.
+
+Always read `auprc` against `baseline_auprc` in the same row rather than
+against any remembered number.
 
 Two things this module insists on, because both are easy to get wrong and
 both flatter a method that does not deserve it:
