@@ -733,19 +733,40 @@ reproducing intermediate results, with a warning attached to its metadata.
 
 ## What contact can explain
 
-Worth stating plainly, because it bounds every prediction number in this
-package: `touche` measures contact frequency and nothing else. Whether
-perturbing an enhancer measurably changes a gene depends also on the
+`touche` measures contact frequency and nothing else, while whether
+perturbing an enhancer measurably changes a gene also depends on the
 enhancer's intrinsic activity, the promoter's activity, and how responsive
-that promoter is to additional input.
+that promoter is to additional input. That is a real limit on what any
+contact score can be expected to predict.
 
-So a contact score's AUPRC against CRISPRi labels is being read against a
-ceiling nobody has measured, and a modest number is not necessarily a
-modest method. The defensible question is conditional: *given* distance,
-coverage, enhancer accessibility and promoter transcription, does contact
-add information? `scripts/gasperini_benchmark.py` answers that by matching
-on all four and by scoring activity-only and Activity-by-Contact-style
-baselines alongside the contact scores.
+On the Gasperini K562 set specifically, though, it turns out not to bite —
+and the reason matters for how the benchmark is read. Standardized
+differences between the functional and non-functional label sets, before
+any matching:
+
+| covariate | standardized difference |
+| --- | ---: |
+| log distance | **−0.65** |
+| log per-bait coverage | 0.08 |
+| log enhancer accessibility | 0.02 |
+| log promoter transcription | −0.01 |
+
+The screen's two label sets are already balanced on activity, so enhancer
+accessibility and promoter transcription cannot discriminate here and score
+at the prevalence (AUPRC 0.46 against a 0.4554 baseline, AUROC 0.497). That
+is a property of the label design, not evidence that activity is
+biologically unimportant.
+
+What the sets *do* differ on is distance. So the unmatched prediction table
+largely rewards whichever score best proxies distance — which is why raw
+distance tops it. The **matched** table is the comparison that answers
+anything: with distance, coverage and activity balanced, contact scores
+retain AUPRC ≈ 0.58 against a 0.50 baseline while distance, activity, and
+raw contact count all fall to chance.
+
+Two lessons that generalize past this dataset: check `balance.tsv` before
+reading any prediction number, and treat a covariate scoring at the
+prevalence as "controlled by construction" rather than "unimportant".
 
 ## Not yet implemented
 

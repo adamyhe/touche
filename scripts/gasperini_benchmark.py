@@ -934,12 +934,17 @@ def write_summary(
         "",
         "## Functional prediction",
         "",
-        "`touche` measures contact and nothing else. A CRISPRi outcome also depends on the",
-        "enhancer's own activity, the promoter's activity, and how responsive that promoter is",
-        "to added input -- so there is a ceiling on what any contact score can reach here, and",
-        "nobody has measured it. The activity columns are scored as baselines for that reason:",
-        "read the contact scores against `log10_enhancer_atac` and `log10_promoter_proseq`, and",
-        "read `abc_score` as the question of whether contact adds anything on top of activity.",
+        "`touche` measures contact and nothing else, while a CRISPRi outcome also depends on",
+        "enhancer activity, promoter activity, and promoter responsiveness. The activity",
+        "columns are scored as baselines so that gap is visible rather than assumed: compare",
+        "the contact scores against `log10_enhancer_atac` and `log10_promoter_proseq`, and read",
+        "`abc_score` as the question of whether contact adds anything on top of activity.",
+        "",
+        "Check `balance.tsv` before interpreting any of it. If the label sets are already",
+        "balanced on a covariate, that covariate cannot predict here and its baseline will sit",
+        "at the prevalence -- which says nothing about whether it matters biologically, only",
+        "that this comparison controlled it by construction. Conversely the *unmatched* table",
+        "rewards whichever score best proxies the covariate the label sets differ on most.",
         "",
         "Compare each AUPRC against `baseline_auprc` (the prevalence), not against 0.5.",
         "`held_out_auprc_mean` averages per-chromosome AUPRC with a bootstrap interval over",
@@ -947,6 +952,7 @@ def write_summary(
         "",
         _markdown_table(prediction.table),
         "",
+        *_warning_lines(prediction),
     ]
     if matched_prediction is not None:
         lines += [
@@ -957,6 +963,7 @@ def write_summary(
             "",
             _markdown_table(matched_prediction.table),
             "",
+            *_warning_lines(matched_prediction),
         ]
     lines += [
         "## Caveats",
@@ -972,6 +979,18 @@ def write_summary(
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def _warning_lines(result: Any) -> list[str]:
+    """Render a result's warnings into the summary.
+
+    Without this they live only in the `.meta.json` sidecar, which is where
+    the least-read and most-important part of a statistical result should
+    not be.
+    """
+    if not result.info.warnings:
+        return []
+    return ["**Warnings**", "", *[f"- {warning}" for warning in result.info.warnings], ""]
 
 
 def _markdown_table(frame: pl.DataFrame) -> str:

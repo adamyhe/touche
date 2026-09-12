@@ -125,6 +125,15 @@ Read the contact scores against the activity baselines, and read
 anything on top of activity?** A contact score that merely matches activity
 has not been shown to contribute.
 
+On the Gasperini K562 set the activity baselines score at the prevalence
+(AUROC ≈ 0.50), because the screen's functional and non-functional sets are
+already balanced on accessibility and transcription — standardized
+differences of 0.02 and −0.01 in `balance.tsv`. A covariate at the
+prevalence here means "controlled by construction", not "unimportant", and
+`abc_score` does *worse* than contact alone because multiplying by an
+uninformative activity term only adds noise. **Check `balance.tsv` before
+reading any of these numbers.**
+
 Two limits on `abc_score`: its denominator sums only over *labelled* pairs
 sharing a promoter, which is a restricted candidate universe, and its
 activity term is one accessibility measure rather than the ABC model's

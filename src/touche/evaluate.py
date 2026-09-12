@@ -174,11 +174,19 @@ def evaluate_scores(
         )
     if held_out_col is not None:
         groups_used = min(int(row["n_groups"]) for row in rows if row.get("n_groups") is not None)
+        groups_skipped = max(int(row["n_groups_skipped"]) for row in rows if row.get("n_groups_skipped") is not None)
         if groups_used < 10:
             warnings.append(
                 f"The held-out bootstrap resampled only {groups_used} groups; intervals from this "
                 "few independent units are wide and unreliable, and differences between scores "
                 "inside them are not evidence. Lower min_group_size or pool groups."
+            )
+        if groups_skipped >= groups_used:
+            warnings.append(
+                f"{groups_skipped} of {groups_used + groups_skipped} groups were skipped for "
+                f"having fewer than {min_group_size} labelled pairs or only one class, so the "
+                "held-out mean describes the better-covered groups rather than the whole "
+                "dataset."
             )
     if held_out_col is None:
         warnings.append(
