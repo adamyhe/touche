@@ -286,9 +286,16 @@ uv run touche preprocess build-cache \
   --prefix sample
 ```
 
-Add `--compressed` to write compressed NPZ shards. The default is uncompressed
-NPZ, which is usually faster to load and avoids turning one cache into a large
-monolithic archive.
+Add `--compressed` to write compressed NPZ shards. The default is uncompressed,
+and should stay that way unless disk is the binding constraint.
+
+Measured on a position-only shard, compression is roughly **3.4x smaller** but
+**~40x slower to write** and ~5x slower to load. Writing is single-threaded
+while the rest of the cache build runs across cores, so it becomes a serial
+tail. On a 1.3-billion-contact library that is about 13 minutes added to the
+build to turn a 21 GB cache into 6 GB -- against a full analysis pipeline that
+takes roughly 15 minutes end to end. Loading is the cheap half: about 27
+seconds more per pass over the whole cache.
 
 The default cache builder emits chromosome-sharded NPZ files and
 `.cache/touche/sample/sample.qc.json` from one streaming pass over the input. Use
