@@ -136,10 +136,13 @@ SIGNIFICANCE_METHODS = {"legacy_fisher", "binomial", "poisson"}
 LOCAL_DECAY_SCHEMAS = {"legacy", "tidy"}
 
 # How the per-bait distance-decay background is turned into a density.
-# `legacy` reproduces the reference implementation exactly, scale error and
-# all. `normalized` drops the robust reweighting that biases a sparse count
-# histogram downward and rescales the fit to integrate to 1.
-DECAY_MODELS = {"legacy", "normalized"}
+# `legacy` reproduces the reference implementation exactly, biases and all.
+# `normalized` drops the robust reweighting that pulls a sparse count
+# histogram toward zero and rescales the fit to integrate to 1, which fixes
+# the scale but not the shape. `anchored` additionally divides out the
+# window's own inclusion geometry and restricts the trial total to the
+# modelled range, which makes the expected counts unbiased.
+DECAY_MODELS = {"legacy", "normalized", "anchored"}
 NORMALIZED_DECAY_ITERATIONS = 0
 
 
@@ -164,7 +167,7 @@ def call_local_decay(
     cache_prefix: str = "contacts",
     require_cache: bool = False,
     method: str = "binomial",
-    decay_model: str = "normalized",
+    decay_model: str = "anchored",
     schema: str = "legacy",
     fdr: str = "bh",
     fdr_scope: str | list[str] | None = None,
@@ -179,9 +182,10 @@ def call_local_decay(
     `method` defaults to `"binomial"`: the calibrated upper-tail test against
     the bait's own fitted distance decay, using the trial total and null
     probability the model already computes. `decay_model` defaults to
-    `"normalized"`, the corrected background density; the reference's own
-    model integrates to roughly half of one on sparse data, which biases
-    every expected count (see `docs/statistics.md`).
+    `"anchored"`, which estimates the background density for the population
+    the test is actually about -- contacts anchored at the bait. The
+    reference's own model is biased in both scale and shape (see
+    `docs/statistics.md`).
 
     Reproducing the reference workflow's numbers therefore takes **both**
     `method="legacy_fisher"` and `decay_model="legacy"`, which is what the
@@ -487,7 +491,7 @@ def compute_local_decay(
     lowess_iterations: int = 3,
     n_jobs: int = 1,
     method: str = "binomial",
-    decay_model: str = "normalized",
+    decay_model: str = "anchored",
     schema: str = "legacy",
     progress: bool | Instrumentation = False,
     profile: bool = False,
@@ -898,7 +902,7 @@ def _call_bait_contacts(
     lowess_iterations: int,
     max_span: int,
     method: str = "binomial",
-    decay_model: str = "normalized",
+    decay_model: str = "anchored",
 ) -> list[dict[str, float | int | str]]:
     """Call one bait's contacts against `prey_centers`: fit local decay, then test each prey.
 
@@ -923,8 +927,9 @@ def _call_bait_contacts(
     if len(bin_counts) > max_distance:
         counts[-1] += bin_counts[max_distance]
     counts_zero = np.where(counts != 0, 0.0, 1.0)
-    normalized = decay_model == "normalized"
-    decay_iterations = NORMALIZED_DECAY_ITERATIONS if normalized else lowess_iterations
+    corrected = decay_model in {"normalized", "anchored"}
+    anchored = decay_model == "anchored"
+    decay_iterations = NORMALIZED_DECAY_ITERATIONS if corrected else lowess_iterations
     zero_model = fit_zero_inflation_model(
         counts_zero,
         dist=dist,
@@ -933,6 +938,10 @@ def _call_bait_contacts(
         backend=lowess_backend,
         iterations=lowess_iterations,
     )
+    if anchored:
+        # The zero-inflation pedestal has no contact interpretation, so it
+        # only distorts a density that is now being estimated properly.
+        zero_model = np.zeros_like(zero_model)
     bg_pdf = fit_distance_decay_model(
         counts,
         zero_model,
@@ -942,7 +951,8 @@ def _call_bait_contacts(
         delta=lowess_delta,
         backend=lowess_backend,
         iterations=decay_iterations,
-        normalize=normalized,
+        normalize=corrected,
+        geometry_weight=anchored,
     )
 
     bait_start = bait_center - cap
@@ -972,6 +982,22 @@ def _call_bait_contacts(
     contact_counts = contact_counts[keep]
     if prey_centers.size == 0:
         return []
+
+    if anchored:
+        # `n_trials` is the denominator that `p_null` is a probability over,
+        # so it must describe the same population: bait-anchored contacts
+        # inside the modelled range. Counting contacts beyond `dist`, where
+        # the density carries no mass, inflates every expected count.
+        #
+        # Only the denominator is restricted. `observed` counts contacts in
+        # the prey window and must not be touched -- filtering the arrays the
+        # kernel reads would silently drop observed contacts for preys near
+        # the edge of the window.
+        contact_counts = np.where(
+            directional_distances > 0,
+            int(np.count_nonzero(np.abs(plus - bait_center) < dist)),
+            int(np.count_nonzero(np.abs(minus - bait_center) < dist)),
+        )
 
     # Windowed sum of bg_pdf via a cumulative-sum lookup, vectorized across all
     # preys at once instead of a fresh slice-sum + scipy call per prey.
@@ -1133,6 +1159,7 @@ def fit_distance_decay_model(
     backend: str = DEFAULT_LOWESS_BACKEND,
     iterations: int = 3,
     normalize: bool = False,
+    geometry_weight: bool = False,
 ) -> np.ndarray:
     """Fit the distance-decay background model, as a density over genomic distance.
 
@@ -1157,6 +1184,19 @@ def fit_distance_decay_model(
     makes the result integrate to 1 over `[0, dist)` -- the defining
     property of the density this is supposed to be, and one that holds
     whatever the smoother does to the total.
+
+    `geometry_weight=True` additionally removes the window's own selection
+    bias, which is a *shape* error that normalizing cannot touch. The
+    histogram counts contacts with **either** endpoint inside
+    `bait +/- dist`, and a contact spanning distance `d` has
+    `2 * dist + d` positions at which it would qualify -- so long-range
+    contacts are over-represented, by up to a factor of two across the
+    window. `p_null` is meant to describe contacts *anchored at the bait*,
+    for which the qualifying measure is a constant `2 * cap` regardless of
+    `d`. Dividing the counts by `2 * dist + d` converts the one into an
+    estimate of the other. Verified against a simulation with a known
+    `P(s)`: the raw histogram's shape tracks `2 * dist + d` to within a few
+    percent across a megabase.
     """
 
     target_len = min(dist, len(contact_counts), len(zero_model))
@@ -1164,6 +1204,8 @@ def fit_distance_decay_model(
         return np.asarray([], dtype=float)
     counts = np.asarray(contact_counts[:target_len], dtype=float)
     zero = np.asarray(zero_model[:target_len], dtype=float)
+    if geometry_weight:
+        counts = counts / (2.0 * dist + np.arange(target_len, dtype=float))
     winsize = max(1, min(winsize, target_len))
 
     seed_len = min(1_000, target_len)

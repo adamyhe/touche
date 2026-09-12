@@ -178,20 +178,30 @@ changed. When touching these paths, keep it that way:
   (`zero_policy="drop"`) and CPB divisor (`scale="legacy"`, `depth / 1e10`
   -- contacts per *ten* billion despite the name). Inferential work belongs
   in `touche.differential`, which keeps zeros by default.
-- `decay_model` defaults to `"normalized"`, the corrected background
-  density. Reproducing the reference output requires **both**
+- `decay_model` defaults to `"anchored"`: the background density estimated
+  for bait-anchored contacts, which is the population `p_null` is a
+  probability over. It divides out the window's `2*dist + d` inclusion
+  geometry, drops the zero-inflation pedestal, and restricts `n_trials` (but
+  *not* `observed`) to the modelled range. Verified unbiased to ~1% against
+  simulations with a known `P(s)`; `normalized` fixes only the scale and
+  leaves expectations ~25% high. Reproducing the reference output requires **both**
   `method="legacy_fisher"` and `decay_model="legacy"` -- the first sets the
   p-value column, the second the expected-count columns -- and only that
   combination suppresses the metadata sidecar
   (`local_decay._reproduces_reference`).
 - `decay_model="legacy"` reproduces the reference background
   model bit-for-bit, *including* its scale error: the fit integrates to
-  ~0.54 rather than 1 on sparse histograms, so expected counts are about
-  half what they should be, by an amount that varies with per-bait
-  coverage. This is a defect in the reference method, not the port --
+  ~0.54 rather than 1 on sparse histograms, and its *shape* is tilted by the
+  window's inclusion geometry, so expected counts are wrong by an amount
+  that varies with both per-bait coverage and distance. This is a defect in the reference method, not the port --
   `tests/test_decay_model.py::ReferenceParityTests` proves equality against
   the reference's own functions when `_reference/E-P_contacts` is checked
   out. Don't change the legacy path's numbers; add to the normalized one.
+- These per-pair tests are discrete: about half of all pairs have zero
+  observed contacts and therefore `p = 1` exactly. A rejection rate below
+  the nominal level is expected, and a KS test against a continuous uniform
+  is meaningless. Compare against `assess_calibration`'s
+  `attainable_rate_at_*` instead, and report `fraction_at_one`.
 - Uncertainty always resamples a defensible cluster: chromosomes for APA
   pileups, the caller-supplied `cluster_by` for pair-level comparisons.
   Never resample pixels or treat pairs sharing an anchor as independent.

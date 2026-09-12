@@ -118,7 +118,7 @@ class LegacyLocalDecayTests(unittest.TestCase):
         self.assertEqual(calls.columns, LOCAL_DECAY_OUTPUT_COLUMNS)
         self.assertEqual(written.width, 9, "the default must not change the reference layout")
         self.assertEqual(sidecar["method"], "binomial")
-        self.assertEqual(sidecar["parameters"]["decay_model"], "normalized")
+        self.assertEqual(sidecar["parameters"]["decay_model"], "anchored")
         self.assertEqual(sidecar["inference_class"], "technical")
         self.assertIsNone(sidecar["fdr_method"], "the legacy layout has no q_value column")
         self.assertEqual(sidecar["rows"], calls.height)

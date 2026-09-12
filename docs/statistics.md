@@ -159,7 +159,8 @@ The test is then
   `p0_i` is correctly specified.
 - Expected/offset source: the per-bait LOWESS fit, described above.
 - Failure modes: **with `--decay-model legacy` this test is
-  anticonservative**, because `p_null` is then systematically too small --
+  anticonservative** and with `normalized` it is badly underpowered,
+  because `p_null` is biased in either case --
   see [The distance-decay background model](#the-distance-decay-background-model);
   `n_trials = 0` makes a pair untestable (reported as NaN in
   the output, excluded from the FDR family, never reported as
@@ -537,7 +538,7 @@ Everything else is unchanged:
 | --- | --- | --- |
 | `local-decay call` p-values | **calibrated `binomial`** (changed) | `--method legacy_fisher` |
 | `local-decay call` layout | reference nine-column headerless TSV | `--schema tidy` |
-| `local-decay call` expected counts | **corrected `normalized`** (changed) | `--decay-model legacy` |
+| `local-decay call` expected counts | **corrected `anchored`** (changed) | `--decay-model legacy` |
 | `background compare` filter | drops pairs without positive EP signal in every sample | `--zero-policy keep` |
 | `EP_CPB_*` divisor | `depth / 1e10` | `--scale per_billion` |
 | APA pileup universe | distance-filtered bait x prey product | `--pairs-list` |
@@ -601,57 +602,83 @@ which is precisely the covariate an enhancer-promoter comparison needs to
 control for. A low-coverage bait gets systematically inflated significance
 relative to a high-coverage one.
 
-### `decay_model="normalized"`
+### The two errors, and the two corrections
 
-The corrected model drops the robust reweighting for the decay fit and
-divides by the fitted curve's own mass, so it integrates to 1 over
-`[0, dist)` by construction — the defining property of the density,
-independent of what the smoother does to the total.
+`normalized` drops the robust reweighting and divides by the fitted curve's
+own mass, so it integrates to 1. That fixes the **scale**. It does not touch
+the **shape**, and the shape is also wrong.
 
-```bash
-uv run touche local-decay call ... --decay-model normalized
-```
+The histogram counts contacts with *either* endpoint inside
+`bait ± dist`. A contact spanning distance `d` has `2·dist + d` positions
+at which it would qualify, so long-range contacts are over-represented by
+up to a factor of two across a megabase window. But `p_null` is meant to
+describe contacts *anchored at the bait*, for which the qualifying measure
+is a constant `2·cap` regardless of `d`. Measured against a simulation with
+a known `P(s)`, the raw histogram's shape tracks `2·dist + d` to within a
+few percent.
 
-On the benchmark's distance-preserving null pairs this moves
-`observed / expected` from **1.80** (range 1.43–2.11 across distance
-strata) to **0.94** (0.69–1.00), and moves the binomial test from
-rejecting **25.6%** of null pairs at a nominal 5% to **2.8%** — slightly
-conservative, which is the safe direction.
+`anchored` divides the counts by `2·dist + d`, drops the zero-inflation
+pedestal (which has no contact interpretation), and restricts `n_trials` to
+bait-anchored contacts inside `dist` — so the denominator describes the
+same population the density does. Only the denominator: `observed` still
+counts every contact in the prey window.
 
-**Rankings are unaffected.** The correction is monotone, so AUPRC against
-the functional labels is unchanged to three decimal places. What changes is
-whether a `q_value` means what it says.
+### What each model achieves
 
-It is also *faster*, by about 30% on a small two-chromosome fixture, since
-skipping the robust reweighting removes three LOWESS passes over every
-bait's histogram. `--lowess-iterations` therefore only affects the
-zero-inflation fit under this model.
+`mean(observed) / mean(expected)` over pairs that are null by construction,
+where 1.0 is unbiased:
+
+| regime | `legacy` | `normalized` | `anchored` |
+| --- | ---: | ---: | ---: |
+| `P(s) ~ s⁻¹`, 1 Mb window | 1.07 | 0.78 | **0.99** |
+| `P(s) ~ s⁻¹·⁵` | 1.10 | 0.74 | **0.99** |
+| 400 kb window | 0.96 | 0.72 | **1.01** |
+| 4× sparser | 1.71 | 0.82 | **1.01** |
+
+On the real Gasperini K562 run, `normalized` gave 0.78 overall and declined
+monotonically from 0.87 at 82 kb to 0.45 at 889 kb — the signature of the
+shape error, since normalization pins the total but not its distribution.
+
+### Reading the rejection rates
+
+These tests are **discrete**: every pair with zero observed contacts gets
+`p = 1` exactly, which on real Micro-C is about half of them. That makes the
+*attainable* size well below the nominal level, so a rejection rate under
+alpha is not evidence of a problem. `assess_calibration(...,
+trials_col="n_trials", probability_col="p_null")` computes the attainable
+rate — the mean of `P(reject | the null holds exactly)` — and that is what
+to compare against:
+
+| model | nominal | observed | attainable | observed / attainable |
+| --- | ---: | ---: | ---: | ---: |
+| `normalized` | 0.05 | 0.0116 | 0.0290 | 0.40 |
+| `anchored` | 0.05 | 0.0271 | 0.0251 | **1.08** |
+| `normalized` | 0.01 | 0.0016 | 0.0051 | 0.32 |
+| `anchored` | 0.01 | 0.0058 | 0.0049 | **1.19** |
+
+`anchored` reaches the ceiling; `normalized` was reaching 40% of it, i.e.
+discarding most of the power the test could have to a biased expectation.
+The KS statistic against a continuous uniform is ~0.5 with `p = 0` for all
+of these and means nothing here — `fraction_at_one` says why.
 
 ### Which to use
 
-| | `legacy` | `normalized` (default) |
-| --- | --- | --- |
-| Reproduces reference `expected` | yes, bit-identical | no |
-| `p_null` integrates to 1 | no (~0.54 when sparse) | yes |
-| `binomial` q-values FDR-controlled | **no** | yes |
-| Pair ranking | same | same |
+| | `legacy` | `normalized` | `anchored` (default) |
+| --- | --- | --- | --- |
+| Reproduces reference `expected` | yes, bit-identical | no | no |
+| Density integrates to 1 | no | yes | yes |
+| Expected counts unbiased | no | no (~25% high) | **yes** |
+| Reaches attainable power | anticonservative | ~40% | **yes** |
+| Pair ranking | ≈ same | ≈ same | ≈ same |
 
-`normalized` is the default, because pairing a calibrated *test* with a
-biased *expectation* would ship a known-miscalibrated result. Selecting
-`--decay-model legacy` with a calibrated method is still allowed and still
-useful for comparison, and `touche` attaches a warning to that
-combination's metadata saying its q-values are a ranking rather than an
-FDR-controlled discovery set.
+Rankings barely move between any of them — the corrections are close to
+monotone — so this is about whether a `q_value` means what it says, not
+about prediction. Reproducing the reference output still takes **both**
+`--method legacy_fisher` and `--decay-model legacy`, and only that
+combination suppresses the metadata sidecar.
 
-Reproducing the reference output now takes **both**
-`--method legacy_fisher` and `--decay-model legacy`: the first sets the
-p-value column, the second the expected-count columns. A run with both
-writes no metadata sidecar, so a reference-reproduction directory stays
-byte-identical.
-
-Reproduce all of the above with `scripts/gasperini_benchmark.py --demo`,
-which reports `observed_over_expected` in `expected_bias.tsv` and flags
-anticonservative methods in its verdict.
+`--decay-model normalized` is kept for comparison and for anyone
+reproducing intermediate results, with a warning attached to its metadata.
 
 ## Not yet implemented
 
@@ -669,9 +696,9 @@ not mistaken for something it is not:
   replicate concordance, HiCRep SCC, or downsampling stability curves.
 - **Cross-validated null fitting.** `p_null` is fitted from the same bait
   window the pair is tested in; the reuse is recorded but not removed.
-- **A validated replacement for the LOWESS decay fit.** The default
-  `decay_model="normalized"` corrects the scale but keeps the
-  reference's chunked-LOWESS shape. Residual `observed / expected` still
-  ranges about 0.69-1.00 across distance strata on the demo data. A spline
-  or isotonic fit to the binned histogram would likely be both better
-  behaved and faster, and has not been tried.
+- **A faster replacement for the chunked LOWESS fit.**
+  `decay_model="anchored"` makes the expected counts unbiased, but it still
+  goes through the reference's chunk-and-merge LOWESS, which dominates
+  local-decay's runtime. A spline or isotonic fit to the binned histogram
+  would likely be both simpler and faster at the same accuracy, and has not
+  been tried.

@@ -176,6 +176,115 @@ class ReferenceParityTests(unittest.TestCase):
         self.assertLess(reference_bg.sum(), 0.8)
 
 
+def _simulated_chromosome(
+    *, length: int = 6_000_000, n: int = 500_000, exponent: float = 1.0, seed: int = 0
+) -> ContactIndex:
+    """Contacts drawn from a known `P(s) ~ s**-exponent` with no focal structure.
+
+    Every bait-prey pair over this index is null by construction, so a
+    correctly specified background model must predict the observed counts:
+    `mean(observed) / mean(expected)` has to come out at 1.
+    """
+    rng = np.random.default_rng(seed)
+    start = rng.integers(0, length, n)
+    u = rng.random(n)
+    low, high = 1_000.0, 400_000.0
+    if exponent == 1.0:
+        distance = low * (high / low) ** u
+    else:
+        power = 1.0 - exponent
+        distance = (low**power + u * (high**power - low**power)) ** (1.0 / power)
+    left = np.minimum(start, length - 1)
+    right = np.minimum(start + distance.astype(np.int64), length - 1)
+    keep = right > left
+    left, right = left[keep], right[keep]
+    order = np.argsort(left, kind="mergesort")
+    left, right = left[order], right[order]
+    return ContactIndex(
+        chrom="chr1", pos_a=left, pos_b=right,
+        strand_a=np.ones(left.size, dtype=np.int8), strand_b=-np.ones(left.size, dtype=np.int8),
+        mapq_a=np.full(left.size, 30, dtype=np.int16), mapq_b=np.full(left.size, 30, dtype=np.int16),
+    )
+
+
+def _null_anchors(dist: int, length: int = 6_000_000) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Baits and preys spread over the simulated chromosome, away from its edges."""
+    def frame(values: list[int]) -> pl.DataFrame:
+        return pl.DataFrame({"chr": ["chr1"] * len(values), "center": values})
+
+    baits = list(range(2 * dist, length - 2 * dist, max(dist // 4, 1)))
+    preys = sorted({b + off for b in baits for off in (dist // 10, dist // 3, dist // 2, int(dist * 0.85))})
+    return frame(baits), frame(preys)
+
+
+def _bias(decay_model: str, *, dist: int = 200_000, **kwargs: object) -> float:
+    """`mean(observed) / mean(expected)` over null pairs; 1.0 means unbiased."""
+    index = _simulated_chromosome(**kwargs)
+    baits, preys = _null_anchors(dist)
+    calls = compute_local_decay(
+        {"chr1": index}, baits, preys, dist=dist, cap=2_000, min_distance=5_000,
+        schema="tidy", decay_model=decay_model,
+    )
+    return float(calls["observed"].mean() / calls["expected"].mean())
+
+
+class UnbiasedExpectationTests(unittest.TestCase):
+    """`anchored` must predict observed counts on pairs that are null by construction."""
+
+    def test_anchored_is_unbiased_where_the_others_are_not(self) -> None:
+        anchored = _bias("anchored")
+        normalized = _bias("normalized")
+
+        self.assertAlmostEqual(anchored, 1.0, delta=0.10)
+        # `normalized` fixes the total mass but not the window's shape bias,
+        # so it over-predicts expected counts by roughly a quarter.
+        self.assertLess(normalized, 0.9)
+
+    def test_anchored_stays_unbiased_across_decay_shapes_and_window_sizes(self) -> None:
+        for label, kwargs in (
+            ("steeper P(s)", {"exponent": 1.5}),
+            ("shallower P(s)", {"exponent": 0.5}),
+            ("sparser", {"n": 150_000}),
+        ):
+            self.assertAlmostEqual(_bias("anchored", **kwargs), 1.0, delta=0.12, msg=label)
+        for dist in (100_000, 400_000):
+            self.assertAlmostEqual(_bias("anchored", dist=dist), 1.0, delta=0.12, msg=f"dist={dist}")
+
+    def test_geometry_weight_divides_out_the_window_inclusion_measure(self) -> None:
+        # A contact spanning d has 2*dist + d qualifying positions, so a flat
+        # histogram must come back tilted by exactly that factor.
+        dist, span = 50_000, 100_000
+        counts = np.ones(span)
+        zero = np.zeros(span)
+        distances = np.arange(1, span)
+
+        plain = fit_distance_decay_model(counts, zero, distances, dist=dist, winsize=5_000, iterations=0, normalize=True)
+        weighted = fit_distance_decay_model(
+            counts, zero, distances, dist=dist, winsize=5_000, iterations=0, normalize=True, geometry_weight=True
+        )
+
+        offsets = np.arange(plain.size, dtype=float)
+        expected_ratio = 1.0 / (2.0 * dist + offsets)
+        usable = (offsets > 1_000) & (offsets < dist - 1_000) & (plain > 0)
+        observed_ratio = weighted[usable] / plain[usable]
+        observed_ratio /= observed_ratio[0]
+        reference = expected_ratio[usable] / expected_ratio[usable][0]
+        np.testing.assert_allclose(observed_ratio, reference, rtol=0.02)
+
+    def test_anchored_restricts_trials_to_the_modelled_range(self) -> None:
+        index = _simulated_chromosome()
+        baits, preys = _null_anchors(200_000)
+        kwargs = dict(dist=200_000, cap=2_000, min_distance=5_000, schema="tidy")
+
+        anchored = compute_local_decay({"chr1": index}, baits, preys, decay_model="anchored", **kwargs)
+        normalized = compute_local_decay({"chr1": index}, baits, preys, decay_model="normalized", **kwargs)
+
+        # p_null carries no mass beyond `dist`, so trials there cannot belong
+        # in its denominator.
+        self.assertLess(anchored["n_trials"].sum(), normalized["n_trials"].sum())
+        self.assertEqual(anchored["observed"].to_list(), normalized["observed"].to_list())
+
+
 class DecayModelWiringTests(unittest.TestCase):
     def _fixture(self) -> tuple[dict[str, ContactIndex], pl.DataFrame, pl.DataFrame]:
         rng = np.random.default_rng(3)
@@ -226,7 +335,7 @@ class DecayModelWiringTests(unittest.TestCase):
         indexes, baits, preys = self._fixture()
         with self.assertRaises(ValueError):
             compute_local_decay(indexes, baits, preys, decay_model="spline")
-        self.assertEqual(DECAY_MODELS, {"legacy", "normalized"})
+        self.assertEqual(DECAY_MODELS, {"legacy", "normalized", "anchored"})
 
 
 if __name__ == "__main__":

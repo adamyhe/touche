@@ -437,7 +437,7 @@ value only after checking `--profile` timings and CPU utilization.
 
 ### Calibrated significance and q-values
 
-`local-decay call` defaults to `--method binomial --decay-model normalized
+`local-decay call` defaults to `--method binomial --decay-model anchored
 --schema legacy`: the calibrated test over a corrected distance-decay
 background, written into the reference nine-column headerless layout. The
 layout is unchanged from the reference workflow; the p-value and

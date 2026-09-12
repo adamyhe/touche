@@ -47,7 +47,7 @@ def run_local_decay_pipeline(
     lowess_backend: str = DEFAULT_LOWESS_BACKEND,
     fisher_backend: str = DEFAULT_FISHER_BACKEND,
     method: str = "binomial",
-    decay_model: str = "normalized",
+    decay_model: str = "anchored",
     n_jobs: int = 1,
     index_strategy: str = "cache",
     cache_dir: str | Path | None = None,

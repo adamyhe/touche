@@ -142,7 +142,7 @@ class LocalDecayStatisticsCommandTests(unittest.TestCase):
             sidecar = json.loads((tmp_path / "ld.tsv.meta.json").read_text(encoding="utf-8"))
 
         self.assertEqual(summary["method"], "binomial")
-        self.assertEqual(summary["decay_model"], "normalized")
+        self.assertEqual(summary["decay_model"], "anchored")
         self.assertEqual(summary["schema"], "legacy")
         self.assertEqual(table.width, 9, "the default must not change the output layout")
         self.assertEqual(sidecar["method"], "binomial")

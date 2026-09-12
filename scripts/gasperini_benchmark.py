@@ -239,8 +239,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-download", action="store_true", help="Require inputs to already exist.")
     parser.add_argument(
         "--decay-model",
-        choices=["legacy", "normalized"],
-        default="normalized",
+        choices=["legacy", "normalized", "anchored"],
+        default="anchored",
         help="Background-density scaling passed to local-decay; see touche's --decay-model.",
     )
     parser.add_argument("--dist", type=int, default=1_000_000)
@@ -622,10 +622,12 @@ def calibration_report(null: pl.DataFrame) -> pl.DataFrame:
     frames = []
     for method in METHODS:
         table = binned.select(
-            pl.col(f"p_{method}").alias("p_value"), "distance_bin", "coverage_bin"
+            pl.col(f"p_{method}").alias("p_value"), "n_trials", "p_null", "distance_bin", "coverage_bin"
         )
         for strata, name in ((None, "overall"), ("distance_bin", "distance"), ("coverage_bin", "coverage")):
-            report = assess_calibration(table, strata=strata)
+            report = assess_calibration(
+                table, strata=strata, trials_col="n_trials", probability_col="p_null"
+            )
             frames.append(
                 report.with_columns(
                     pl.lit(method).alias("method"),
@@ -826,6 +828,12 @@ def write_summary(
         _markdown_table(expected_bias),
         "",
         "## Null calibration",
+        "",
+        "**Compare each rejection rate against `attainable_rate_at_*`, not against its",
+        "nominal level.** These tests are discrete, so the attainable size is well below",
+        "alpha -- around half of it on real data. A rate at the attainable rate is correctly",
+        "calibrated; one far below it is losing power to a biased expectation; one far above",
+        "it is anticonservative.",
         "",
         "**Read the rejection rates, not the KS statistic.** An upper-tail test on small",
         "counts is discrete: every pair with zero observed contacts gets p = 1 exactly, which",

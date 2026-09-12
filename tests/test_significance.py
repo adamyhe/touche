@@ -159,6 +159,32 @@ class NullCalibrationTests(unittest.TestCase):
     def test_assess_calibration_rejects_a_missing_column(self) -> None:
         with self.assertRaises(ValueError):
             assess_calibration(pl.DataFrame({"x": [1.0]}))
+        with self.assertRaises(ValueError):
+            assess_calibration(_calls([1], [10], [0.1]), trials_col="absent", probability_col="p_null")
+
+    def test_attainable_rate_bounds_the_observed_rate_for_a_discrete_test(self) -> None:
+        result = test_contacts(self._null_calls(n=20_000), method="binomial")
+
+        calibration = assess_calibration(
+            result.table, trials_col="n_trials", probability_col="p_null"
+        ).row(0, named=True)
+
+        # Discreteness makes the attainable size strictly below alpha, so the
+        # observed rate must be read against it rather than against alpha.
+        attainable = calibration["attainable_rate_at_0.05"]
+        self.assertLess(attainable, 0.05)
+        self.assertGreater(attainable, 0.0)
+        self.assertAlmostEqual(calibration["reject_rate_at_0.05"], attainable, delta=0.01)
+
+    def test_discreteness_is_reported_so_the_ks_statistic_is_not_misread(self) -> None:
+        # Zero-observed pairs give p = 1 exactly; that atom drives KS, not
+        # any calibration failure.
+        calls = _calls([0, 0, 0, 5], [50, 50, 50, 100], [0.02, 0.02, 0.02, 0.02])
+
+        calibration = assess_calibration(test_contacts(calls, method="binomial").table).row(0, named=True)
+
+        self.assertAlmostEqual(calibration["fraction_at_one"], 0.0, delta=1.0)
+        self.assertIn("fraction_at_one", calibration)
 
 
 class CallOutputIntegrationTests(unittest.TestCase):

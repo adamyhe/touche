@@ -203,6 +203,8 @@ def assess_calibration(
     p_col: str = "p_value",
     strata: str | list[str] | None = None,
     alpha_levels: tuple[float, ...] = DEFAULT_ALPHA_LEVELS,
+    trials_col: str | None = None,
+    probability_col: str | None = None,
 ) -> pl.DataFrame:
     """Check whether a p-value column behaves like a null p-value column.
 
@@ -217,7 +219,16 @@ def assess_calibration(
     with zero observed contacts gets `p = 1` exactly. On real Micro-C data
     that atom is roughly half the pairs, which drives the KS statistic to
     ~0.5 with `p = 0` no matter how well calibrated the test is.
-    `fraction_at_one` is reported so that is visible rather than alarming. Stratify by distance or coverage bins (`strata`) --
+    `fraction_at_one` is reported so that is visible rather than alarming.
+
+    For the same reason, a rejection rate *below* nominal is not evidence of
+    a problem. Pass `trials_col`/`probability_col` (`"n_trials"`/`"p_null"`
+    for local-decay calls) to add `attainable_rate_at_*`: the mean over
+    pairs of `P(reject | the null holds exactly)`, which a discrete test
+    cannot exceed. Compare the observed rate against *that*, not against
+    alpha. On real Micro-C the attainable rate at a nominal 0.05 is around
+    0.025, so a well-specified test should land near 0.025 and not near
+    0.05. Stratify by distance or coverage bins (`strata`) --
     a method can look uniform overall while being badly anticonservative for
     short-range or low-coverage pairs, which are exactly the pairs of
     interest.
@@ -231,11 +242,25 @@ def assess_calibration(
     if p_col not in table.columns:
         raise ValueError(f"{p_col!r} is not a column of the input table")
     keys = [] if strata is None else ([strata] if isinstance(strata, str) else list(strata))
+    for name in (trials_col, probability_col):
+        if name is not None and name not in table.columns:
+            raise ValueError(f"{name!r} is not a column of the input table")
     if keys:
         groups = [(dict(zip(keys, key)), part) for key, part in table.group_by(keys, maintain_order=True)]
     else:
         groups = [({}, table)]
-    rows = [{**labels, **_calibration_row(part[p_col].to_numpy(), alpha_levels)} for labels, part in groups]
+    rows = []
+    for labels, part in groups:
+        row = _calibration_row(part[p_col].to_numpy(), alpha_levels)
+        if trials_col is not None and probability_col is not None:
+            row.update(
+                _attainable_rates(
+                    part[trials_col].cast(pl.Float64).to_numpy(),
+                    part[probability_col].cast(pl.Float64).to_numpy(),
+                    alpha_levels,
+                )
+            )
+        rows.append({**labels, **row})
     return pl.DataFrame(rows)
 
 
@@ -271,6 +296,30 @@ def _required(table: pl.DataFrame, column: str, method: str) -> np.ndarray:
     if column not in table.columns:
         raise ValueError(f"method={method!r} requires a {column!r} column")
     return table[column].cast(pl.Float64).to_numpy()
+
+
+def _attainable_rates(
+    trials: np.ndarray, probability: np.ndarray, alpha_levels: tuple[float, ...]
+) -> dict[str, float]:
+    """Mean `P(reject | exact null)` per alpha -- the size a discrete test can actually reach.
+
+    For a pair with `N` trials and null probability `p0`, rejection needs
+    `K >= k` for the smallest `k` whose upper tail is at or below alpha; the
+    probability of that under the null is the size actually attained. It is
+    strictly below alpha whenever the distribution is coarse, which for
+    contact counts is always.
+    """
+    from scipy.stats import binom
+
+    usable = np.isfinite(trials) & np.isfinite(probability) & (trials > 0)
+    rates: dict[str, float] = {}
+    for alpha in alpha_levels:
+        if not usable.any():
+            rates[f"attainable_rate_at_{alpha:g}"] = float("nan")
+            continue
+        n, p = trials[usable], np.clip(probability[usable], 0.0, 1.0)
+        rates[f"attainable_rate_at_{alpha:g}"] = float(np.mean(binom.sf(binom.isf(alpha, n, p), n, p)))
+    return rates
 
 
 def _calibration_row(p_values: np.ndarray, alpha_levels: tuple[float, ...]) -> dict[str, float | int]:

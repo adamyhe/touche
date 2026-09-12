@@ -417,13 +417,13 @@ def _add_decay_model_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--decay-model",
         choices=sorted(DECAY_MODELS),
-        default="normalized",
+        default="anchored",
         help=(
-            "How the per-bait distance-decay background is turned into a density. normalized "
-            "rescales the fit to integrate to 1 and drops the robust reweighting that biases "
-            "a sparse count histogram downward. legacy reproduces the reference "
-            "implementation including its scale error, which makes expected counts roughly "
-            "half what they should be on sparse data."
+            "How the per-bait distance-decay background is turned into a density. anchored "
+            "estimates it for the population the test is about -- contacts anchored at the "
+            "bait -- and gives unbiased expected counts. normalized fixes only the scale, "
+            "leaving expectations ~25%% too large. legacy reproduces the reference "
+            "implementation including both biases."
         ),
     )
 
