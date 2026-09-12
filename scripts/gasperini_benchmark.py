@@ -116,7 +116,7 @@ def main() -> int:
     log("calling contacts on the real anchor pairs")
     real = call_tidy(inputs, args.work_dir / "real", "real", **call_kwargs)
     real = score_all_methods(real)
-    real = attach_labels(real, inputs.functional, inputs.nonfunctional)
+    real = add_abc_score(attach_labels(real, inputs.functional, inputs.nonfunctional))
 
     log(f"calling contacts on {len(args.shifts)} distance-preserving shifted anchor sets")
     null = pl.concat(
@@ -154,7 +154,7 @@ def main() -> int:
     prediction = evaluate_scores(
         real,
         label_col="label",
-        score_cols=list(score_columns()),
+        score_cols=score_columns(real),
         positive_label="positive",
         held_out_col="chrom",
         bootstrap=args.bootstrap,
@@ -173,7 +173,7 @@ def main() -> int:
         matched_prediction = evaluate_scores(
             matched,
             label_col="label",
-            score_cols=list(score_columns()),
+            score_cols=score_columns(matched),
             positive_label="positive",
             held_out_col="chrom",
             bootstrap=args.bootstrap,
@@ -557,9 +557,48 @@ def score_all_methods(calls: pl.DataFrame) -> pl.DataFrame:
     return scored.drop("p_value", "method", strict=False)
 
 
-def score_columns() -> tuple[str, ...]:
-    """Every column `evaluate_scores` ranks: the methods, then the baselines."""
-    return (*[f"neg_log10_p_{method}" for method in METHODS], *BASELINES)
+def score_columns(table: pl.DataFrame) -> list[str]:
+    """Every column `evaluate_scores` ranks: the methods, then the baselines.
+
+    Contact is only one determinant of a CRISPRi outcome. Whether perturbing
+    an enhancer measurably changes a gene also depends on the enhancer's own
+    activity, the promoter's activity, and how responsive that promoter is
+    to added input -- none of which `touche` measures. So the activity
+    columns the label files carry are scored as baselines in their own right,
+    and an ABC-style combination is scored too. Without them, a contact
+    score's AUPRC is being read against an implicit ceiling nobody has
+    measured.
+    """
+
+    wanted = [*[f"neg_log10_p_{method}" for method in METHODS], *BASELINES]
+    wanted += [f"log10_{name}" for name in LABEL_COVARIATES.values() if f"log10_{name}" in table.columns]
+    if "abc_score" in table.columns:
+        wanted.append("abc_score")
+    return [column for column in wanted if column in table.columns]
+
+
+def add_abc_score(table: pl.DataFrame) -> pl.DataFrame:
+    """Activity-by-Contact style score, if the label files supplied an activity term.
+
+    `A_e * C_ep / sum over that promoter's candidate enhancers`, following the
+    ABC model's form: enhancer activity times contact, normalized within the
+    promoter. Activity is `mean_ATAC_RPM` and contact is the raw observed
+    count.
+
+    This exists to answer one question -- does contact add anything on top of
+    activity? -- and not as an ABC implementation. The denominator sums only
+    over *labelled* pairs sharing a promoter, which is a restricted candidate
+    universe, and the activity term is a single accessibility measure rather
+    than the model's enhancer-activity definition.
+    """
+
+    if "log10_enhancer_atac" not in table.columns:
+        return table
+    activity = (10 ** pl.col("log10_enhancer_atac")) - 0.01
+    numerator = activity.clip(lower_bound=0.0) * pl.col("observed").cast(pl.Float64)
+    return table.with_columns(
+        (numerator / numerator.sum().over("prey_id")).alias("abc_score")
+    )
 
 
 def attach_labels(calls: pl.DataFrame, functional: Path, nonfunctional: Path) -> pl.DataFrame:
@@ -635,10 +674,11 @@ def calibration_report(null: pl.DataFrame) -> pl.DataFrame:
                     pl.col(strata).cast(pl.Utf8).alias("stratum") if strata else pl.lit("all").alias("stratum"),
                 ).drop(strata if strata else [])
             )
-    return pl.concat(frames, how="diagonal_relaxed").select(
-        "method", "stratification", "stratum", "n_tested", "ks_statistic", "ks_p_value",
-        *[column for column in frames[0].columns if column.startswith("reject_rate")],
-    )
+    combined = pl.concat(frames, how="diagonal_relaxed")
+    lead = ["method", "stratification", "stratum", "n_tested", "fraction_at_one"]
+    rates = [c for c in combined.columns if c.startswith("reject_rate")]
+    attainable = [c for c in combined.columns if c.startswith("attainable_rate")]
+    return combined.select(*lead, *rates, *attainable, "ks_statistic", "ks_p_value")
 
 
 def expected_bias_report(null: pl.DataFrame) -> pl.DataFrame:
@@ -650,9 +690,14 @@ def expected_bias_report(null: pl.DataFrame) -> pl.DataFrame:
     choice of null. A ratio of `r` means the expectation is `r` times too
     small, and any test built on it will reject roughly `r` times too often.
 
-    `p_null_sum` is the fitted decay density integrated over all distances.
-    It should be ~1 for a probability distribution; a value well below 1 is
-    direct evidence that the smoother is losing mass.
+    `dispersion` is the Pearson dispersion of the observed counts about
+    `expected`. The binomial and Poisson nulls both assume it is 1. A value
+    above 1 means the counts are more variable than the model allows, which
+    inflates the tails and over-rejects *even when the mean is exactly
+    right* -- so read it together with `observed_over_expected`. A
+    dispersion of `phi` over-rejects by roughly `phi`, and no improvement to
+    the decay fit can repair it; that needs a null with a dispersion
+    parameter.
     """
 
     binned = null.with_columns(
@@ -664,6 +709,13 @@ def expected_bias_report(null: pl.DataFrame) -> pl.DataFrame:
         pl.lit(binned["observed"].mean()).alias("mean_observed"),
         pl.lit(binned["expected"].mean()).alias("mean_expected"),
     )
+    binned = binned.with_columns(
+        pl.when(pl.col("expected") > 0)
+        .then((pl.col("observed") - pl.col("expected")) ** 2 / pl.col("expected"))
+        .otherwise(None)
+        .alias("_pearson")
+    )
+    overall = overall.with_columns(pl.lit(binned["_pearson"].mean()).alias("dispersion"))
     per_stratum = (
         binned.group_by("stratum")
         .agg(
@@ -671,6 +723,7 @@ def expected_bias_report(null: pl.DataFrame) -> pl.DataFrame:
             pl.col("distance").median().alias("median_distance"),
             pl.col("observed").mean().alias("mean_observed"),
             pl.col("expected").mean().alias("mean_expected"),
+            pl.col("_pearson").mean().alias("dispersion"),
         )
         .sort("stratum")
         .with_columns(pl.col("stratum").cast(pl.Utf8))
@@ -771,7 +824,7 @@ def write_figures(real: pl.DataFrame, null: pl.DataFrame, out_dir: Path) -> dict
     labelled = real.filter(pl.col("label").is_not_null())
     labels = (labelled["label"] == "positive").to_numpy()
     figure, axis = plt.subplots(figsize=(6, 5))
-    for name in score_columns():
+    for name in score_columns(labelled):
         scores = labelled[name].cast(pl.Float64).to_numpy()
         usable = np.isfinite(scores)
         precision, recall, _ = precision_recall_curve(labels[usable], scores[usable])
@@ -821,9 +874,15 @@ def write_summary(
         "## Is `expected` unbiased?",
         "",
         "Every method consumes the same `expected`, so this table is about the distance-decay",
-        "model rather than the choice of null. On null pairs the ratio should be ~1. A ratio of",
-        "`r` means the expectation is `r` times too small and any test built on it rejects",
-        "roughly `r` times too often.",
+        "model rather than the choice of null. On null pairs `observed_over_expected` should be",
+        "~1; a ratio of `r` means the expectation is `r` times too small and any test built on",
+        "it rejects roughly `r` times too often.",
+        "",
+        "`dispersion` is the Pearson dispersion, which the binomial and Poisson nulls both",
+        "assume is 1. Above 1 the counts are more variable than the model allows, so the tails",
+        "are too heavy and the test over-rejects **even with the mean exactly right**. No",
+        "improvement to the decay fit can repair that -- it needs a null carrying a dispersion",
+        "parameter.",
         "",
         _markdown_table(expected_bias),
         "",
@@ -855,7 +914,14 @@ def write_summary(
         "",
         "## Functional prediction",
         "",
-        "AUPRC is primary; compare it against `baseline_auprc` (the prevalence), not against 0.5.",
+        "`touche` measures contact and nothing else. A CRISPRi outcome also depends on the",
+        "enhancer's own activity, the promoter's activity, and how responsive that promoter is",
+        "to added input -- so there is a ceiling on what any contact score can reach here, and",
+        "nobody has measured it. The activity columns are scored as baselines for that reason:",
+        "read the contact scores against `log10_enhancer_atac` and `log10_promoter_proseq`, and",
+        "read `abc_score` as the question of whether contact adds anything on top of activity.",
+        "",
+        "Compare each AUPRC against `baseline_auprc` (the prevalence), not against 0.5.",
         "`held_out_auprc_mean` averages per-chromosome AUPRC with a bootstrap interval over",
         "chromosomes -- the honest uncertainty, since pairs within a chromosome are not independent.",
         "",

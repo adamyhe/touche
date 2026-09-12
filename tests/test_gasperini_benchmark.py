@@ -100,12 +100,25 @@ class GasperiniBenchmarkDemoTests(unittest.TestCase):
             ["coverage", "distance", "overall"],
         )
 
-    def test_expected_bias_table_reports_the_observed_over_expected_ratio(self) -> None:
+    def test_expected_bias_table_reports_the_ratio_and_the_dispersion(self) -> None:
         bias = pl.read_csv(self.out_dir / "expected_bias.tsv", separator="\t")
 
+        # Both are needed: a correct mean with an overdispersed variance still
+        # over-rejects, and only `dispersion` shows that.
         self.assertIn("observed_over_expected", bias.columns)
+        self.assertIn("dispersion", bias.columns)
         self.assertIn("all", bias["stratum"].to_list())
         self.assertTrue((bias["n"] > 0).all())
+        self.assertTrue((bias["dispersion"] > 0).all())
+
+    def test_calibration_table_keeps_the_columns_needed_to_read_it(self) -> None:
+        calibration = pl.read_csv(self.out_dir / "calibration.tsv", separator="\t")
+
+        # A rejection rate is uninterpretable without the attainable rate to
+        # compare it against, and without knowing how discrete the test is.
+        self.assertIn("attainable_rate_at_0.05", calibration.columns)
+        self.assertIn("fraction_at_one", calibration.columns)
+        self.assertIn("reject_rate_at_0.05", calibration.columns)
 
 
 class SkipDownloadTests(unittest.TestCase):

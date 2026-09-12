@@ -680,6 +680,22 @@ combination suppresses the metadata sidecar.
 `--decay-model normalized` is kept for comparison and for anyone
 reproducing intermediate results, with a warning attached to its metadata.
 
+## What contact can explain
+
+Worth stating plainly, because it bounds every prediction number in this
+package: `touche` measures contact frequency and nothing else. Whether
+perturbing an enhancer measurably changes a gene depends also on the
+enhancer's intrinsic activity, the promoter's activity, and how responsive
+that promoter is to additional input.
+
+So a contact score's AUPRC against CRISPRi labels is being read against a
+ceiling nobody has measured, and a modest number is not necessarily a
+modest method. The defensible question is conditional: *given* distance,
+coverage, enhancer accessibility and promoter transcription, does contact
+add information? `scripts/gasperini_benchmark.py` answers that by matching
+on all four and by scoring activity-only and Activity-by-Contact-style
+baselines alongside the contact scores.
+
 ## Not yet implemented
 
 These are real gaps, not oversights. They are documented here so a result is

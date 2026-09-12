@@ -104,6 +104,35 @@ the binomial test from rejecting 25.6% of null pairs at a nominal 5% to
 2.8%, with AUPRC unchanged. Re-run it on the real data before drawing the
 same conclusion there.
 
+## What a contact score can and cannot explain
+
+`touche` measures contact. A CRISPRi outcome also depends on the enhancer's
+intrinsic activity, the promoter's activity, and how responsive that
+promoter is to additional input — none of which `touche` sees. There is
+therefore a ceiling on any contact score's AUPRC here, and nobody has
+measured where it is.
+
+So the activity columns the reference label files carry are scored as
+baselines in their own right:
+
+- `log10_enhancer_atac` — enhancer accessibility (`mean_ATAC_RPM`)
+- `log10_promoter_proseq` — promoter transcription (`PROseq_GB_RPKM`)
+- `abc_score` — an Activity-by-Contact-style combination, enhancer activity
+  times observed contact, normalized within the promoter
+
+Read the contact scores against the activity baselines, and read
+`abc_score` as the question that actually matters: **does contact add
+anything on top of activity?** A contact score that merely matches activity
+has not been shown to contribute.
+
+Two limits on `abc_score`: its denominator sums only over *labelled* pairs
+sharing a promoter, which is a restricted candidate universe, and its
+activity term is one accessibility measure rather than the ABC model's
+enhancer-activity definition. It is a probe, not an ABC implementation.
+
+The distance- and activity-matched table is the cleaner form of the same
+question, since it conditions on all of these at once.
+
 ## Baselines are the point
 
 `observed` (raw contact count) and `neg_log10_distance` are scored
