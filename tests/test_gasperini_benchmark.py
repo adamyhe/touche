@@ -59,6 +59,19 @@ class GasperiniBenchmarkDemoTests(unittest.TestCase):
         ):
             self.assertTrue((self.out_dir / name).exists(), name)
 
+    def test_the_per_bait_fit_is_compared_against_a_global_curve(self) -> None:
+        # The per-bait LOWESS is the most expensive part of local-decay, so
+        # the report has to carry the control that says whether it pays.
+        comparison = pl.read_csv(self.out_dir / "decay_model_comparison.tsv", separator="\t")
+
+        for column in (
+            "per_bait_observed_over_expected", "per_bait_dispersion",
+            "global_observed_over_expected", "global_dispersion",
+        ):
+            self.assertIn(column, comparison.columns)
+        self.assertIn("all", comparison["stratum"].to_list())
+        self.assertIn("log2_oe_global", self.report["score"].to_list())
+
     def test_dispersion_is_estimated_on_the_null_pairs(self) -> None:
         # Estimating it from the pairs under test would fold real signal into
         # the variance and make the test conservative by an unknown amount.

@@ -65,13 +65,13 @@ from touche.compare import balance_table, match_pairs  # noqa: E402
 from touche.evaluate import evaluate_scores, precision_recall_curve  # noqa: E402
 from touche.local_decay import call_local_decay, read_center_anchors  # noqa: E402
 from touche.significance import assess_calibration, test_contacts  # noqa: E402
-from touche.stats import pearson_dispersion  # noqa: E402
+from touche.stats import log2_fold_change, pearson_dispersion  # noqa: E402
 
 K562_PAIRS = "GSE206131_K562_cis_mapq30_pairs.txt.gz"
 GEO_BASE = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE206nnn/GSE206131/suppl"
 
 METHODS = ("binomial", "poisson", "legacy_fisher", "negative_binomial")
-BASELINES = ("log2_oe", "observed", "neg_log10_distance")
+BASELINES = ("log2_oe", "observed", "neg_log10_distance", "log2_oe_global")
 
 # Keys of the reference functional/nonfunctional CSVs. In the reference
 # workflow baits are TREs and preys are promoters, so `target_site` is the
@@ -140,7 +140,9 @@ def main() -> int:
     null = score_all_methods(null_calls, dispersion=dispersion)
     real = add_abc_score(
         attach_labels(
-            score_all_methods(real_calls, dispersion=dispersion),
+            add_global_decay_score(
+                score_all_methods(real_calls, dispersion=dispersion), null
+            ),
             inputs.functional,
             inputs.nonfunctional,
         )
@@ -162,6 +164,11 @@ def main() -> int:
     outputs["calibration"] = write_table(calibration, out_dir / "calibration.tsv")
     expected_bias = expected_bias_report(null)
     outputs["expected_bias"] = write_table(expected_bias, out_dir / "expected_bias.tsv")
+    decay_comparison = decay_model_comparison(null)
+    if not decay_comparison.is_empty():
+        outputs["decay_comparison"] = write_table(
+            decay_comparison, out_dir / "decay_model_comparison.tsv"
+        )
 
     log("evaluating functional prediction")
     prediction = evaluate_scores(
@@ -230,6 +237,7 @@ def main() -> int:
         manifest=manifest,
         calibration=calibration,
         expected_bias=expected_bias,
+        decay_comparison=decay_comparison,
         prediction=prediction,
         matched_prediction=matched_prediction,
     )
@@ -597,6 +605,46 @@ def score_columns(table: pl.DataFrame) -> list[str]:
     return [column for column in wanted if column in table.columns]
 
 
+def add_global_decay_score(real: pl.DataFrame, null: pl.DataFrame, *, bins: int = 80) -> pl.DataFrame:
+    """Score pairs against a single genome-wide `P(s)` instead of a per-bait fit.
+
+    This is the control for `touche`'s most expensive component. The per-bait
+    LOWESS fit dominates local-decay's runtime; the cheap alternative is one
+    distance curve for the whole genome, scaled by each bait's own coverage.
+    Without this baseline there is no way to tell whether the per-bait
+    modelling earns its cost.
+
+    The curve is `mean(observed / n_trials)` in distance bins, fitted on the
+    *null* pairs so it is not contaminated by the signal being scored, and
+    applied as `n_trials * g(distance)`.
+    """
+
+    usable = null.filter((pl.col("n_trials") > 0) & (pl.col("distance") > 0))
+    if usable.is_empty():
+        return real
+    distance = usable["distance"].to_numpy().astype(float)
+    rate = usable["observed"].to_numpy().astype(float) / usable["n_trials"].to_numpy().astype(float)
+    edges = np.unique(np.quantile(distance, np.linspace(0.0, 1.0, bins)))
+    if edges.size < 3:
+        return real
+    index = np.clip(np.searchsorted(edges, distance) - 1, 0, edges.size - 2)
+    curve = np.array(
+        [rate[index == k].mean() if np.any(index == k) else np.nan for k in range(edges.size - 1)]
+    )
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    known = np.isfinite(curve)
+    if not known.any():
+        return real
+
+    expected = real["n_trials"].to_numpy().astype(float) * np.interp(
+        real["distance"].to_numpy().astype(float), centers[known], curve[known]
+    )
+    return real.with_columns(
+        pl.Series("expected_global", expected),
+        pl.Series("log2_oe_global", log2_fold_change(real["observed"].to_numpy(), expected)),
+    )
+
+
 def add_abc_score(table: pl.DataFrame) -> pl.DataFrame:
     """Activity-by-Contact style score, if the label files supplied an activity term.
 
@@ -699,6 +747,57 @@ def calibration_report(null: pl.DataFrame) -> pl.DataFrame:
     rates = [c for c in combined.columns if c.startswith("reject_rate")]
     attainable = [c for c in combined.columns if c.startswith("attainable_rate")]
     return combined.select(*lead, *rates, *attainable, "ks_statistic", "ks_p_value")
+
+
+def decay_model_comparison(null: pl.DataFrame, *, bins: int = 80) -> pl.DataFrame:
+    """Per-bait versus global expectations on null pairs, out of sample.
+
+    The global curve is fitted on one shift and evaluated on the others, so
+    the comparison does not flatter it. Reports the bias
+    (`observed_over_expected`, want 1) and the dispersion (want low -- it
+    sets how much variance a calibrated test must inflate, and therefore how
+    much power it gives up).
+    """
+
+    shifts = sorted(set(null["shift"].to_list()))
+    if len(shifts) < 2:
+        return pl.DataFrame()
+    fit = null.filter((pl.col("shift") == shifts[0]) & (pl.col("n_trials") > 0) & (pl.col("distance") > 0))
+    held = null.filter(pl.col("shift") != shifts[0])
+    if fit.is_empty() or held.is_empty():
+        return pl.DataFrame()
+
+    distance = fit["distance"].to_numpy().astype(float)
+    rate = fit["observed"].to_numpy().astype(float) / fit["n_trials"].to_numpy().astype(float)
+    edges = np.unique(np.quantile(distance, np.linspace(0.0, 1.0, bins)))
+    index = np.clip(np.searchsorted(edges, distance) - 1, 0, edges.size - 2)
+    curve = np.array(
+        [rate[index == k].mean() if np.any(index == k) else np.nan for k in range(edges.size - 1)]
+    )
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    known = np.isfinite(curve)
+
+    held = held.with_columns(
+        pl.Series(
+            "expected_global",
+            held["n_trials"].to_numpy().astype(float)
+            * np.interp(held["distance"].to_numpy().astype(float), centers[known], curve[known]),
+        ),
+        pl.col("distance").qcut(4, labels=[f"d{i}" for i in range(4)], allow_duplicates=True).alias("stratum"),
+    )
+
+    rows = []
+    for label, frame in [("all", held)] + [
+        (s, held.filter(pl.col("stratum") == s)) for s in ("d0", "d1", "d2", "d3")
+    ]:
+        observed = frame["observed"].to_numpy().astype(float)
+        row: dict[str, Any] = {"stratum": label, "n": frame.height}
+        for name, column in (("per_bait", "expected"), ("global", "expected_global")):
+            expected = frame[column].to_numpy().astype(float)
+            row[f"{name}_observed_over_expected"] = float(observed.sum() / expected.sum())
+            row[f"{name}_dispersion"] = pearson_dispersion(observed, expected)
+        rows.append(row)
+    return pl.DataFrame(rows)
 
 
 def expected_bias_report(null: pl.DataFrame) -> pl.DataFrame:
@@ -869,6 +968,7 @@ def write_summary(
     manifest: dict[str, Any],
     calibration: pl.DataFrame,
     expected_bias: pl.DataFrame,
+    decay_comparison: pl.DataFrame,
     prediction: Any,
     matched_prediction: Any,
 ) -> Path:
@@ -905,6 +1005,19 @@ def write_summary(
         "parameter.",
         "",
         _markdown_table(expected_bias),
+        "",
+        "## Does the per-bait fit earn its cost?",
+        "",
+        "`touche`'s per-bait LOWESS fit dominates local-decay's runtime. The cheap alternative",
+        "is a single genome-wide P(s) curve scaled by each bait's coverage. This compares the",
+        "two on held-out null pairs -- the global curve is fitted on one shift and evaluated on",
+        "the others -- so the question is answerable rather than assumed. Lower dispersion means",
+        "a calibrated test has to inflate the variance less, and so gives up less power.",
+        "",
+        _markdown_table(decay_comparison),
+        "",
+        "`log2_oe_global` in the prediction tables below is the same global curve used as a",
+        "ranking score, against `log2_oe` from the per-bait fit.",
         "",
         "## Null calibration",
         "",
