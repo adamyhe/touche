@@ -56,10 +56,11 @@ Before creating a release:
 
 1. update the version in `pyproject.toml`
 2. update `uv.lock`
-3. run the local checks listed above
-4. push changes and confirm CI passes
-5. create and publish a GitHub release
-6. confirm the package appears at `https://pypi.org/project/ep-touche/`
+3. move the `Unreleased` entries in `CHANGELOG.md` under the new version and date
+4. run the local checks listed above
+5. push changes and confirm CI passes
+6. create and publish a GitHub release
+7. confirm the package appears at `https://pypi.org/project/ep-touche/`
 
 After installation, users should run:
 
