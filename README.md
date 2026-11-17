@@ -169,6 +169,9 @@ Detailed usage notes live under `docs/`:
   reference implementation, and why.
 - [Testing and publishing](docs/testing-and-publishing.md): CI, local checks,
   and PyPI release workflow for the `ep-touche` distribution.
+- [Changelog](CHANGELOG.md): what changed in each release, including changed
+  defaults and how to restore the previous behavior.
+- [Roadmap](ROADMAP.md): planned work and what `touche` deliberately leaves out.
 
 Implementation plans, experiment logs, and agent-facing notes belong in
 `notes/`.

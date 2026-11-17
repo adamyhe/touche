@@ -21,11 +21,14 @@
 >    histograms, by an amount that varies with per-bait coverage, so every
 >    expected count it produces is biased. Verified bit-identical against
 >    the reference's own source, so this is an upstream defect faithfully
->    ported. `decay_model` now defaults to the corrected `normalized`;
+>    ported. `decay_model` now defaults to `anchored`, which also removes
+>    the window's inclusion-geometry tilt that `normalized` leaves in place;
 >    reproducing the reference takes `legacy_fisher` *and* `legacy`.
 >
-> The largest outstanding gap is that the benchmark has only been run on
-> synthetic data. See "Not yet implemented" in `docs/statistics.md`.
+> The benchmark has since been run on the real Gasperini K562 set; it showed
+> the remaining over-rejection is overdispersion, which led to
+> `method="negative_binomial"`. Outstanding gaps are listed under "Not yet
+> implemented" in `docs/statistics.md` and in `ROADMAP.md`.
 
 ## Task objective
 
@@ -558,7 +561,7 @@ Release A should avoid new mandatory dependencies beyond the existing NumPy/SciP
 
 - [x] Add FitHiC2, MaxHiC, and HiC-DC+ import/export adapters.
 - [x] Add generic BEDPE loop imports for Mustache, Peakachu, Chromosight, and HiCCUPS.
-- [~] Benchmark native and external significance methods. (`scripts/gasperini_benchmark.py` compares the native methods against baselines on null calibration and functional prediction; external callers are importable but not yet run in it, and the benchmark has only been run on synthetic demo data.)
+- [~] Benchmark native and external significance methods. (`scripts/gasperini_benchmark.py` compares the native methods against baselines on null calibration and functional prediction; external callers are importable but not yet run in it, and the benchmark has been run on the real Gasperini K562 set.)
 - [ ] Add an experimental AbLE-compatible local-quantification module.
 - [ ] Add optional ABC scoring.
 - [ ] Add optional promoter-centric graph and stripe summaries.

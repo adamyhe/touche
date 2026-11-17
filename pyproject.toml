@@ -35,6 +35,12 @@ touche = "touche.cli:main"
 Homepage = "https://github.com/adamyhe/touche"
 Repository = "https://github.com/adamyhe/touche"
 Issues = "https://github.com/adamyhe/touche/issues"
+Documentation = "https://github.com/adamyhe/touche/blob/main/docs/README.md"
+Changelog = "https://github.com/adamyhe/touche/blob/main/CHANGELOG.md"
+Roadmap = "https://github.com/adamyhe/touche/blob/main/ROADMAP.md"
+"CLI Reference" = "https://github.com/adamyhe/touche/blob/main/docs/cli.md"
+"Statistics Guide" = "https://github.com/adamyhe/touche/blob/main/docs/statistics.md"
+Citation = "https://github.com/adamyhe/touche/blob/main/CITATION.cff"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/touche"]

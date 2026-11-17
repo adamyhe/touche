@@ -153,8 +153,11 @@ code:
 
 ### Statistical compatibility rules
 
-Every statistical addition is opt-in and no default numerical behavior has
-changed. When touching these paths, keep it that way:
+Every statistical addition is opt-in except two deliberate default changes
+to `local-decay call` (`method="binomial"`, `decay_model="anchored"`), both
+recorded in `CHANGELOG.md` with the options that restore reference behavior.
+Any further default change must be listed there the same way. When touching
+these paths, keep to these rules:
 
 - `local-decay call` defaults to `method="binomial"` (the calibrated test)
   with `schema="legacy"`, so the *layout* is still the reference
