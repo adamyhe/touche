@@ -145,7 +145,12 @@ def add_preprocess_parser(subparsers: argparse._SubParsersAction) -> None:
     cache_parser.add_argument(
         "--compressed",
         action="store_true",
-        help="Write compressed NPZ shards. Smaller on disk, slower to build/load.",
+        help=(
+            "Write compressed NPZ shards: roughly 3.4x smaller, but ~40x slower to write "
+            "(single-threaded) and ~5x slower to load. On a deeply sequenced library that "
+            "is minutes added to the build, so prefer it only when disk is the binding "
+            "constraint."
+        ),
     )
     cache_parser.add_argument(
         "--cis-only",

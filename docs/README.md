@@ -36,3 +36,5 @@ CPUs and x86-64 Python on Apple Silicon under Rosetta.
   reusable contact indexes, and figure-returning plot helpers.
 - [Testing and publishing](testing-and-publishing.md): CI, local checks, PyPI
   trusted publishing, and release checklist for the `ep-touche` distribution.
+- [Changelog](../CHANGELOG.md) and [roadmap](../ROADMAP.md): release history
+  and planned work.
